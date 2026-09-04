@@ -13,7 +13,7 @@ export interface ScrapeClient {
 }
 
 const UA =
-  "Mozilla/5.0 (compatible; automator/0.1; +https://github.com/yourname/automator)";
+  "Mozilla/5.0 (compatible; automator/0.1; +https://github.com/huzaifah-s/automator)";
 
 export function createScrape(http: HttpClient): ScrapeClient {
   return {

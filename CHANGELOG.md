@@ -8,17 +8,26 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
-### Compose is the deploy path, so a workflow change is a restart
+### Compose is the deploy path, and the compose file is Coolify-correct
 
-The Dockerfile build pack bakes `workflows/` into the image, so editing one
-line of a workflow meant rebuilding and redeploying the whole thing. The
-compose file already bind-mounted the directory; it just wasn't what Coolify
-was pointed at, and it had three things in it that a Coolify deployment trips
-over.
+The compose file had three things in it that a Coolify deployment trips over,
+so it was unusable as a build pack even though it was checked in. Fixed, and
+Coolify now points at it.
 
-Measured after the change: `docker compose up -d --build` against a modified
-workflow completes in about two seconds, because the layer cache makes the
-build a no-op and the bind mount means the file is already in place.
+**The speed argument for this was wrong, and is recorded here so it is not
+made again.** The claim was that the Dockerfile build pack rebuilds the image
+on every workflow change while Compose only restarts — minutes versus seconds.
+Measured: a workflow-only change invalidates one `COPY` layer and rebuilds in
+**0.78s** warm, against **5.5s** for a full cold build. Coolify runs
+`docker compose up -d --build` regardless, so Compose skips no build at all.
+The two paths are within noise of each other for a `git push` deploy.
+
+What Compose does buy is real but smaller: the deployment config lives in the
+repo under review rather than in Coolify form fields, and the bind mount makes
+`git pull && docker compose restart` (~0.2s, no build) available as an escape
+hatch. Not a reason to migrate an already-working Dockerfile deployment — the
+build packs use different volumes and the migration costs more than the
+difference.
 
 **Decided along the way:**
 
@@ -39,8 +48,10 @@ build a no-op and the bind mount means the file is already in place.
 - **Zero-downtime was considered and rejected as unavailable.** Two overlapping
   processes would share one SQLite file and each run their own in-process
   scheduler, so every cron fires twice across the swap. Single-process is the
-  settled architecture; the restart is the price, and it is now seconds rather
-  than minutes.
+  settled architecture and a couple of seconds of downtime is the price. A cron
+  due inside that window is skipped rather than caught up — croner is
+  constructed without a catch-up option — and a webhook arriving in it relies
+  on the sender retrying.
 - **The build packs use different volumes.** Switching drops you on an empty
   database — run history, state, OAuth tokens, and the secret store. The README
   carries the backup and volume-copy steps; this is the one part of the switch

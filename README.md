@@ -830,8 +830,9 @@ is the whole of your run history, durable state, and OAuth refresh tokens.
 ### Docker Compose
 
 `docker-compose.yml` is the whole deployment — see [Quick start](#quick-start).
-`workflows/` is bind-mounted read-only from the host, so editing a workflow is
-a restart and not an image build.
+`workflows/` is bind-mounted read-only from the host, so the running container
+reads them from the checkout rather than from the image. That makes
+`docker compose restart` (~0.2s, no build) enough to pick up a workflow change.
 
 The port is published by `compose.local.yml`, which is only ever loaded when
 named. It is deliberately *not* called `docker-compose.override.yml`: Compose
@@ -858,10 +859,23 @@ Not Railpack or Nixpacks. Both autodetect Bun and will boot something, but
 they ignore what the Dockerfile sets up — the non-root user, tini, and
 `DATABASE_PATH=/data/automator.db`.
 
-**Why Compose over the Dockerfile build pack.** Both work. Compose is the one
-that bind-mounts `workflows/` from the checkout, so a workflow change is a
-container restart rather than an image build — seconds instead of minutes. The
-Dockerfile pack bakes workflows into the image and has no way to do that.
+**Why Compose over the Dockerfile build pack.** Both work, and — measured, not
+assumed — **neither is meaningfully faster for a `git push` deploy**. Docker's
+layer cache means a workflow-only change invalidates just the final `COPY
+workflows` layer: 0.78s against a warm cache, versus 5.5s for a full cold
+build. Coolify runs `docker compose up -d --build` either way, so Compose does
+not skip the build.
+
+What Compose actually buys is the deployment *config* — volume, health check,
+log rotation, port exposure — living in the repo under review, instead of in
+form fields in the Coolify UI. Plus one escape hatch: because `workflows/` is
+bind-mounted, `git pull && docker compose restart` on the server applies a
+workflow change in ~0.2s with no build at all. Useful in a hurry; not what a
+normal push does.
+
+If you are already on the Dockerfile build pack and it works, this is not worth
+switching for — the two build packs use different volumes, and migrating costs
+more than the difference is worth.
 
 The compose file is written for this: no `container_name` and no fixed image
 tag, both of which Coolify assigns per deployment and which collide if pinned;
@@ -918,10 +932,11 @@ have its credentials put in the store first.
 
 Don't set `PORT` or `DATABASE_PATH` — the Dockerfile already has both right.
 
-**Changing a workflow** is a push and a redeploy, but on this path the redeploy
-is a restart: Docker's layer cache makes the build a no-op and the bind mount
-means the new file is already there. Measured at roughly two seconds for
-`docker compose up -d --build` against a changed workflow.
+**Changing a workflow** is a push and a redeploy. The redeploy is fast because
+of Docker's layer cache, not because of the build pack: only the final `COPY
+workflows` layer re-runs, measured at 0.78s. Add Coolify's own overhead — clone,
+image swap, health check — and expect a handful of seconds end to end, with the
+app down for about two of them.
 
 ## Trade-offs
 
@@ -930,9 +945,10 @@ Worth knowing before you commit:
 - **Workflows live in the repo.** Changing one means a redeploy, and on a
   single-process SQLite app that means a restart — two overlapping processes
   would double-fire every cron and both write the same database, so a
-  zero-downtime rolling deploy is not available here. Use the Docker Compose
-  build pack, which bind-mounts `workflows/` and turns a workflow change into a
-  restart rather than an image rebuild. In exchange for all of it there is no
+  zero-downtime rolling deploy is not available here. The redeploy itself is
+  cheap — Docker's layer cache reduces a workflow change to one small `COPY`
+  layer — so the cost is a couple of seconds of downtime, not a long build. In
+  exchange for all of it there is no
   code sandbox to secure and no way to break production from a browser.
   Credentials are the exception and no longer need any of this — see the
   [secret store](#the-secret-store--changing-a-credential-without-a-redeploy).

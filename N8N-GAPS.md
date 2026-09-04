@@ -18,7 +18,7 @@ what's left, and enough detail to pick any of it up cold.
 |---|---|---|
 | 1 | No durable state between runs | **Done** — `ctx.state` |
 | 2 | No polling trigger | **Done** — `poll()` |
-| 3 | OAuth2 with refresh tokens | Open — deferred, see below |
+| 3 | OAuth2 with refresh tokens | **Done** — `defineOAuth()` |
 | 4 | Wait / suspend / human-in-the-loop | Open — needs an architecture call |
 | 5 | Provider webhook registration | **Done** — `register` on `webhook()` |
 | 6 | Pagination helpers | **Done** — `ctx.http.paginate()` |
@@ -44,53 +44,6 @@ The constraints in AGENTS.md under "Settled architecture — do not drift" bound
 most of what follows. Raise a trade-off before breaking one.
 
 ---
-
-## 3. OAuth2 with refresh tokens
-
-**What n8n did:** a "Connect account" button ran the authorization-code flow,
-stored the refresh token, and silently refreshed the access token before expiry.
-
-**Why it matters:** every user-consent OAuth integration is blocked without it —
-Notion, HubSpot, Salesforce, Shopify, Xero, Gmail-as-a-person, Drive-as-a-person.
-`process.env` is immutable at runtime and a refresh token *rotates*, so there was
-nowhere to put the new one. `src/integrations/sheets.ts` sidesteps this by
-self-signing a service-account JWT, which only covers Google server-to-server.
-
-**Now unblocked:** `ctx.state` is the mutable store this was missing.
-
-**Sketch:** `src/integrations/oauth.ts` exporting something like
-`createOAuth(state)` with `getAccessToken(name)`. Store
-`{ accessToken, refreshToken, expiresAt }` per credential name. On read, if
-`expiresAt` is within ~60s, refresh and write back. The initial refresh token
-still comes from an env var — we are **not** building a browser consent flow;
-the user pastes a refresh token obtained once, out of band.
-
-**The wrinkle that will bite you:** `ctx.state.update()` takes a *synchronous*
-function, deliberately — that's what makes it atomic. You cannot wrap an async
-token refresh in it. Two concurrent runs hitting an expired token will both
-refresh, and many providers invalidate the old refresh token on use, so the
-second write can clobber a live credential with a dead one. Because we are
-single-process by design, an in-process `Map<string, Promise<Token>>` keyed by
-credential name is a sufficient lock — first caller refreshes, everyone else
-awaits the same promise. Do not skip this.
-
-**Also decide:** refresh tokens in `ctx.state` are stored unencrypted (see the
-"State is deliberately not redacted" section in README). That was fine when
-state held cursors. If it's about to hold live credentials for a dozen services,
-encryption at rest — a master key from the environment, AES-256-GCM — may now be
-worth it. **This is a real decision, not a detail.** Make it explicitly and
-write it down.
-
-**Verify:** point it at a real provider with a short-lived token, force expiry,
-confirm one refresh happens under 20 concurrent runs and the stored refresh
-token still works afterwards.
-
-**Deferred, deliberately (2026-09-05).** The encryption question above was put
-to the owner with four options — encrypt credentials only, encrypt all of
-`ctx.state`, don't encrypt and document the DB as `.env`-sensitive, or skip.
-The call was **skip for now**: revisit when a specific integration actually
-needs user-consent OAuth, and settle the storage question then rather than
-build the machinery speculatively. Nothing here is blocked; it is unstarted.
 
 ## 4. Wait / suspend / human-in-the-loop
 
@@ -185,8 +138,10 @@ redaction guarantee at every storage boundary.
 
 1. **4 (wait/suspend)**, and only after deciding whether a durable execution
    engine is on the table — that answer changes several items above.
-2. **3 (OAuth)** whenever an integration actually needs it, settling the
-   storage question then.
-3. **10 (AI agent loop)** when something concrete wants it.
+2. **10 (AI agent loop)** when something concrete wants it.
+
+Item 3 settled the credential-encryption question on the way past: `@oauth:`
+keys are encrypted, the rest of `ctx.state` is not. Anything else that wants to
+store a credential inherits that answer rather than reopening it.
 
 Delete this file when the table at the top has no "Open" rows left.

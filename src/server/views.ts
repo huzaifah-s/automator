@@ -63,14 +63,47 @@ tr.folder:hover td{background:#12171d}
 .stat span{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
 `;
 
+/**
+ * Refreshes the page by swapping `.wrap` from a fetch, not by re-navigating.
+ *
+ * A `<meta http-equiv="refresh">` re-runs the whole navigation, which under
+ * basic auth means re-running the credential exchange every few seconds — and
+ * a browser that declines to reuse the credentials answers with a prompt and
+ * an error page instead of the dashboard. A fetch carries the credentials the
+ * page already has, and a failed one leaves what you were reading on screen.
+ *
+ * The interval is read back off `.wrap` after every swap, so a page that stops
+ * asking to be refreshed — a run that has finished — stops being polled.
+ */
+const POLL = (seconds: number) => `
+(() => {
+  const tick = async () => {
+    const el = document.querySelector(".wrap");
+    const secs = el ? Number(el.dataset.poll || 0) : 0;
+    if (!secs) return;
+    if (!document.hidden) {
+      try {
+        const res = await fetch(location.href, { credentials: "same-origin" });
+        if (res.ok) {
+          const doc = new DOMParser().parseFromString(await res.text(), "text/html");
+          const next = doc.querySelector(".wrap");
+          if (next) el.replaceWith(next);
+        }
+      } catch {}
+    }
+    setTimeout(tick, secs * 1000);
+  };
+  setTimeout(tick, ${seconds} * 1000);
+})();`;
+
 function layout(title: string, refresh: number | null, body: HtmlEscapedString | Promise<HtmlEscapedString>) {
   return html`<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${title} · automator</title>
-${refresh ? raw(`<meta http-equiv="refresh" content="${refresh}">`) : ""}
 <style>${raw(CSS)}</style>
-</head><body><div class="wrap">
+${refresh ? raw(`<script>${POLL(refresh)}</script>`) : ""}
+</head><body><div class="wrap"${refresh ? raw(` data-poll="${refresh}"`) : ""}>
 <header><h1><a href="/">automator</a></h1><span class="crumb">${title}</span></header>
 ${body}
 </div></body></html>`;

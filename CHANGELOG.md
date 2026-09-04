@@ -8,6 +8,31 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### The dashboard refreshes by fetch, not by re-navigating
+
+`<meta http-equiv="refresh" content="15">` re-ran the whole navigation every
+15 seconds, which under basic auth means re-running the credential exchange
+every 15 seconds. A browser that declines to reuse the credentials answers
+with a prompt and an error page, so an intermittent auth hiccup became a
+permanent-looking one: four chances a minute to lose the page you were reading.
+`.wrap` is now swapped in from a `fetch` instead.
+
+**Decided along the way:**
+
+- **A failed refresh leaves the page alone.** That is the whole point. A
+  re-navigation replaces what you were reading with a browser error page; a
+  failed fetch is caught and the next tick tries again, so a redeploy or a
+  restart no longer costs you the run you had open.
+- **The interval is read back off `.wrap` after every swap.** A run page asks
+  for 5 seconds while the run is `running` and `null` once it is not, so the
+  polling stops on its own when the finished page arrives — a fixed
+  `setInterval` would have outlived the reason it was started.
+- **A hidden tab is not polled.** Same 15 seconds, but nothing is fetched
+  while nobody is looking, which matters for a page people leave open.
+- **No-JS loses auto-refresh, and that is accepted.** The alternative is
+  keeping the meta tag as a fallback, which would keep the bug for exactly the
+  case that reported it.
+
 ### A 401 a browser can render
 
 `basicAuth` answers with its own response, and that response is an

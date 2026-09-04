@@ -22,16 +22,20 @@ export default defineWorkflow({
   async run(ctx) {
     const contributors = await ctx.step(
       "page through contributors",
-      () =>
-        ctx.http
+      async () => {
+        const all = await ctx.http
           .paginate<Contributor>("https://api.github.com/repos/oven-sh/bun/contributors", {
-            query: { per_page: 30 },
-            // Unauthenticated GitHub allows 60 requests an hour, so this asks
-            // for three pages rather than all ninety-odd.
-            maxItems: 90,
+            // Small pages on purpose: three round trips prove the Link header
+            // is being followed, and a demo's run page should stay readable.
+            query: { per_page: 10 },
+            maxItems: 30,
           })
-          .all(),
-      { input: { repo: "oven-sh/bun", perPage: 30 } },
+          .all();
+        // A step's return value is its checkpoint, so hand back what the rest
+        // of the workflow needs rather than the provider's whole object.
+        return all.map((c) => ({ login: c.login, contributions: c.contributions }));
+      },
+      { input: { repo: "oven-sh/bun", perPage: 10 } },
     );
 
     // The iterator form is the one to reach for when the pages are big: it
@@ -39,7 +43,7 @@ export default defineWorkflow({
     let commits = 0;
     for await (const c of ctx.http.paginate<Contributor>(
       "https://api.github.com/repos/oven-sh/bun/contributors",
-      { query: { per_page: 100 }, maxItems: 100 },
+      { query: { per_page: 25 }, maxItems: 50 },
     )) {
       commits += c.contributions;
     }

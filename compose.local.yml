@@ -1,0 +1,14 @@
+# Local development only. Publishes the port on your machine.
+#
+# NOT named docker-compose.override.yml on purpose. Compose auto-loads that
+# name for a bare `docker compose up`, and Coolify starts the stack with
+# exactly that command — which would publish 3000 on the server and put the
+# dashboard on plain HTTP beside the proxy's HTTPS. This name is only ever
+# loaded when it is asked for by name, so the server cannot pick it up.
+#
+#   bun run up                       # localhost:3000
+#   HOST_PORT=3100 bun run up
+services:
+  automator:
+    ports:
+      - "${HOST_PORT:-3000}:3000"

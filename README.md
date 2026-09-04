@@ -833,13 +833,15 @@ is the whole of your run history, durable state, and OAuth refresh tokens.
 `workflows/` is bind-mounted read-only from the host, so editing a workflow is
 a restart and not an image build.
 
-The port is published by `docker-compose.override.yml`, which Compose loads
-automatically for a bare `docker compose up` and ignores when a file is named
-with `-f`. That is the split: published on your machine, proxied on a server.
+The port is published by `compose.local.yml`, which is only ever loaded when
+named. It is deliberately *not* called `docker-compose.override.yml`: Compose
+auto-loads that name for a bare `docker compose up`, which is exactly how
+Coolify starts the stack, and the server must not publish 3000.
 
 ```bash
-docker compose up -d --build       # localhost:3000
-HOST_PORT=3100 docker compose up -d
+bun run up                         # localhost:3000
+HOST_PORT=3100 bun run up
+bun run down
 ```
 
 ### Coolify

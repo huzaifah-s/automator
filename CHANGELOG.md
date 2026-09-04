@@ -24,10 +24,13 @@ build a no-op and the bind mount means the file is already in place.
 
 - **`expose`, not `ports`.** Publishing 3000 on the host makes the dashboard
   answerable over plain HTTP alongside the proxy's HTTPS, on basic auth alone.
-  Local use needs the published port though, so it moved to
-  `docker-compose.override.yml` — Compose auto-loads that for a bare
-  `docker compose up` and ignores it under `-f`, which is how Coolify invokes
-  compose. Verified both ways with `docker compose config` rather than assumed.
+  Local use needs the published port though, so it moved to a second file —
+  named `compose.local.yml`, *not* `docker-compose.override.yml`. The override
+  name is auto-loaded by a bare `docker compose up`, and that turned out to be
+  literally Coolify's start command, so the "server never publishes" property
+  would have depended on a flag nobody controls. A name Compose only loads when
+  asked for makes it unconditional. Verified with `docker compose up --dry-run`
+  rather than assumed.
 - **`env_file` is optional.** `.env` is gitignored, so a required one fails the
   deploy on a file that is never meant to be committed, and Coolify injects the
   environment itself.

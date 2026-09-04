@@ -60,7 +60,8 @@ export async function loadWorkflows(dir = "./workflows"): Promise<LoadedWorkflow
       seenHooks.set(key, rel);
     }
 
-    workflows.push({ ...def, file: rel });
+    const slash = rel.lastIndexOf("/");
+    workflows.push({ ...def, file: rel, folder: slash === -1 ? null : rel.slice(0, slash) });
   }
 
   const secretProblems = collectSecretProblems();

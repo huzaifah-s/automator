@@ -32,6 +32,8 @@ src/integrations/  index (barrel + lazy ctx clients) · http · messaging
                    ai · email · sql · sheets · scrape · oauth
 src/server/        app (webhooks + REST + dashboard routes) · views (HTML)
 workflows/         user workflows — the only directory most changes touch
+                   subdirectories just group them: workflows/pblsh/thing.ts
+                   loads the same way, and names stay global and flat
 ```
 
 `src/core/define.ts` is the **public API surface** that workflow files import
@@ -40,7 +42,9 @@ from. Nothing in `workflows/` should reach deeper than that.
 ## The most common task: adding a workflow
 
 Create one file in `workflows/`. Default-export `defineWorkflow`. Nothing else
-needs editing — the loader finds it.
+needs editing — the loader finds it, subdirectories included. A file one level
+down imports `../../src/core/define.ts`; that is the only thing a folder
+changes.
 
 ```ts
 import { z } from "zod";

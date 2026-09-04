@@ -194,7 +194,14 @@ export interface WorkflowDef<Input = unknown> {
 }
 
 export interface LoadedWorkflow extends WorkflowDef<any> {
+  /** Path relative to the workflows directory, subdirectories included. */
   file: string;
+  /**
+   * The subdirectory the file was found in — `"pblsh"`, or `"acme/billing"`
+   * for a nested one — and `null` at the top level. Workflow names stay
+   * global and flat; this only groups them for the eye.
+   */
+  folder: string | null;
 }
 
 export type RunStatus = "running" | "success" | "failed" | "skipped";

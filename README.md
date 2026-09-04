@@ -17,7 +17,7 @@ Four small pieces:
 
 | Piece | Job |
 |---|---|
-| **Loader** | Imports `workflows/*.ts`, validates everything at boot |
+| **Loader** | Imports `workflows/**/*.ts`, validates everything at boot |
 | **Triggers** | cron (croner), webhooks (Hono), manual |
 | **Runner** | Retries, timeouts, overlap control, run history in SQLite |
 | **Dashboard** | Read-only view of workflows, runs, and logs |
@@ -76,6 +76,23 @@ export default defineWorkflow({
 Worked examples ship in `workflows/`: a cron + AI + Slack digest, a
 schema-validated Stripe webhook, a minimal uptime check, and demos for
 checkpoint resume, `ctx.state`, and polling.
+
+### Folders
+
+Subdirectories are filing, nothing more. The loader recurses, so
+`workflows/pblsh/send-signed-agreement.ts` loads exactly like a top-level file,
+and the dashboard groups its table by folder once there is more than one.
+
+Names stay global and flat — a folder is **not** a namespace. A workflow in
+`workflows/pblsh/` still has to pick a `name` no other workflow uses, and the
+convention worth keeping is to prefix it with the project
+(`pblsh-send-signed-agreement`). Hook paths nest if you want them to:
+`webhook("pblsh/agreement-signed")` mounts `/hooks/pblsh/agreement-signed`.
+
+The one thing to remember is the import depth — a workflow one level down
+imports `../../src/core/define.ts`. Nothing else about a folder is load-bearing:
+secrets, state namespaces, the concurrency cap, and run history are all
+unaffected by where the file sits.
 
 ### Triggers
 

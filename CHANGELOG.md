@@ -8,6 +8,21 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### Folders in `workflows/`
+
+Projects now group: `workflows/pblsh/…` loads exactly like a top-level file
+(the loader always globbed `**/*.ts`), `LoadedWorkflow.folder` carries the
+subdirectory, and the dashboard prints a folder header above each group — only
+once there is more than one, so a flat repo looks unchanged.
+
+**Folders are filing, not namespacing.** Workflow names stay global and flat,
+because they are URLs, CLI arguments, and `ctx.run()` targets; deriving
+`pblsh/send-signed-agreement` from the path would have changed all three and
+made a file move a breaking change. The convention is to prefix the name with
+the project instead. Nothing else is scoped by directory either — secrets,
+state namespaces, and the concurrency cap are all indifferent to where a file
+sits, and the only cost of moving one down a level is the import depth.
+
 ### Approval gates, without a Wait node
 
 The last n8n gap anyone was likely to hit: a workflow that stops and waits for a

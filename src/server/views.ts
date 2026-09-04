@@ -53,6 +53,9 @@ summary:hover{background:#1c2129}
 .payload pre{margin:0;background:#0d1117;border:1px solid var(--border);border-radius:6px;
 padding:9px 11px;overflow-x:auto;font-family:var(--mono);font-size:11.5px;max-height:320px}
 .tag{font-size:10px;padding:1px 6px;border-radius:4px;background:#21262d;color:var(--muted)}
+.folder td{background:#12171d;padding:6px 14px;font-family:var(--mono);font-size:11px;
+letter-spacing:.04em;color:var(--muted)}
+tr.folder:hover td{background:#12171d}
 .bar{display:flex;gap:8px;align-items:center;margin:16px 0 0}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
 .stat{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:12px 14px}
@@ -92,6 +95,35 @@ const triggerLabel = (wf: LoadedWorkflow) =>
 
 /* ------------------------------------------------------------------ index */
 
+/** Top-level workflows first — `""` sorts before any folder name. */
+function groupByFolder(workflows: LoadedWorkflow[]): [string, LoadedWorkflow[]][] {
+  const groups = new Map<string, LoadedWorkflow[]>();
+  for (const w of workflows) {
+    const key = w.folder ?? "";
+    const list = groups.get(key);
+    if (list) list.push(w);
+    else groups.set(key, [w]);
+  }
+  return [...groups].sort(([a], [b]) => a.localeCompare(b));
+}
+
+function workflowRow(w: LoadedWorkflow, nextRun: (name: string) => Date | null) {
+  return html`
+    <tr class="${w.enabled === false ? "disabled" : ""}">
+      <td><a href="/workflows/${w.name}"><b>${w.name}</b></a>
+        ${w.description ? html`<div class="muted">${w.description}</div>` : ""}</td>
+      <td class="mono">${triggerLabel(w)}</td>
+      <td class="mono muted">${nextRun(w.name)?.toISOString().replace("T", " ").slice(0, 19) ?? "—"}</td>
+      <td class="mono muted">${w.file}</td>
+      <td>
+        <form method="post" action="/workflows/${w.name}/run">
+          <button class="btn" type="submit">Run</button>
+        </form>
+      </td>
+    </tr>
+  `;
+}
+
 export function indexPage(
   workflows: LoadedWorkflow[],
   nextRun: (name: string) => Date | null,
@@ -100,6 +132,17 @@ export function indexPage(
   const failed24h = runs.filter(
     (r) => r.status === "failed" && r.started_at > Date.now() - 86_400_000,
   ).length;
+
+  // Folders are a filing convenience — the loader recurses and workflow names
+  // stay global — so the header rows only appear once there is more than one
+  // group to tell apart.
+  const groups = groupByFolder(workflows);
+  const rows = groups.flatMap(([folder, group]) => [
+    ...(groups.length > 1
+      ? [html`<tr class="folder"><td colspan="5">workflows/${folder ? `${folder}/` : ""}</td></tr>`]
+      : []),
+    ...group.map((w) => workflowRow(w, nextRun)),
+  ]);
 
   return layout(
     "overview",
@@ -118,22 +161,7 @@ export function indexPage(
           <tbody>
             ${workflows.length === 0
               ? html`<tr><td colspan="5" class="empty">No workflows found in ./workflows</td></tr>`
-              : workflows.map(
-                  (w) => html`
-                    <tr class="${w.enabled === false ? "disabled" : ""}">
-                      <td><a href="/workflows/${w.name}"><b>${w.name}</b></a>
-                        ${w.description ? html`<div class="muted">${w.description}</div>` : ""}</td>
-                      <td class="mono">${triggerLabel(w)}</td>
-                      <td class="mono muted">${nextRun(w.name)?.toISOString().replace("T", " ").slice(0, 19) ?? "—"}</td>
-                      <td class="mono muted">${w.file}</td>
-                      <td>
-                        <form method="post" action="/workflows/${w.name}/run">
-                          <button class="btn" type="submit">Run</button>
-                        </form>
-                      </td>
-                    </tr>
-                  `,
-                )}
+              : rows}
           </tbody>
         </table>
       </div>

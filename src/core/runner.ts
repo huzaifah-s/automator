@@ -1,5 +1,5 @@
 import { store } from "./db.ts";
-import { createLogger } from "./logger.ts";
+import { createLogger, log } from "./logger.ts";
 import { alertFailure } from "./alerts.ts";
 import { buildIntegrations } from "../integrations/index.ts";
 import { capture, MAX_CHECKPOINT_BYTES } from "./capture.ts";
@@ -30,6 +30,59 @@ export function beginShutdown(): void {
 
 export function activeCount(): number {
   return active.size;
+}
+
+/* --------------------------------------------------- global concurrency */
+
+/**
+ * `onOverlap` bounds one workflow against itself. Nothing bounded the process:
+ * 50 webhooks arriving together meant 50 runs at once in a single Bun process,
+ * every one of them holding sockets, memory, and a share of the event loop.
+ * This is the ceiling across all workflows. 0 disables it.
+ */
+const MAX_CONCURRENT_RUNS = readLimit(process.env.MAX_CONCURRENT_RUNS);
+
+/** Runs executing right now — past the semaphore, not yet finished. */
+let running = 0;
+/** Runs that have been accepted and are waiting for a slot, oldest first. */
+const waiting: Array<() => void> = [];
+
+export function runningCount(): number {
+  return running;
+}
+
+export function queuedCount(): number {
+  return waiting.length;
+}
+
+/**
+ * Waits for a slot. Callers queue rather than being rejected — a webhook that
+ * arrives during a burst should be slow, not lost.
+ */
+function acquireSlot(): Promise<void> {
+  if (MAX_CONCURRENT_RUNS === 0 || running < MAX_CONCURRENT_RUNS) {
+    running++;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => waiting.push(resolve));
+}
+
+function releaseSlot(): void {
+  // The slot is handed straight to the next waiter instead of being released
+  // and re-contended for: strict FIFO, and no wake-everyone stampede.
+  const next = waiting.shift();
+  if (next) next();
+  else running--;
+}
+
+function readLimit(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") return 10;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0) {
+    log.warn(`MAX_CONCURRENT_RUNS="${raw}" is not a non-negative integer — using 10`);
+    return 10;
+  }
+  return n;
 }
 
 export interface RunOptions {
@@ -77,7 +130,42 @@ export async function runWorkflow(
   return p;
 }
 
+/**
+ * One run, from queueing to outcome. The workflow is marked active *before*
+ * waiting for a slot, so onOverlap: "skip" still sees a queued run as in
+ * flight — otherwise a burst of webhooks would slip past it while the first
+ * one sat in the queue.
+ */
 async function execute(wf: LoadedWorkflow, opts: RunOptions): Promise<RunOutcome> {
+  active.add(wf.name);
+  try {
+    if (MAX_CONCURRENT_RUNS > 0 && running >= MAX_CONCURRENT_RUNS) {
+      createLogger(wf.name).info(
+        `waiting for a run slot — ${running} running, ${waiting.length} queued`,
+      );
+    }
+    await acquireSlot();
+    try {
+      // Shutdown can begin while a run sits in the queue. Starting it now
+      // would race the shutdown deadline, so it is recorded as skipped —
+      // dropped work that leaves a trace beats dropped work that doesn't.
+      if (shuttingDown) {
+        const runId = crypto.randomUUID();
+        store.startRun(runId, wf.name, opts.trigger);
+        store.finishRun(runId, "skipped", 0, "Shutting down before its turn in the queue", null);
+        createLogger(wf.name, runId).warn("Skipped — shutting down while queued");
+        return { runId, status: "skipped" };
+      }
+      return await executeNow(wf, opts);
+    } finally {
+      releaseSlot();
+    }
+  } finally {
+    active.delete(wf.name);
+  }
+}
+
+async function executeNow(wf: LoadedWorkflow, opts: RunOptions): Promise<RunOutcome> {
   const runId = crypto.randomUUID();
   const checkpointKey = opts.checkpointKey ?? runId;
   const logger = createLogger(wf.name, runId);
@@ -85,7 +173,6 @@ async function execute(wf: LoadedWorkflow, opts: RunOptions): Promise<RunOutcome
   const timeoutMs = wf.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const baseDelay = wf.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
 
-  active.add(wf.name);
   store.startRun(runId, wf.name, opts.trigger, checkpointKey, opts.resumedFrom ?? null);
   const startedAt = Date.now();
 
@@ -100,55 +187,51 @@ async function execute(wf: LoadedWorkflow, opts: RunOptions): Promise<RunOutcome
   let lastError: Error = new Error("Workflow did not run");
   let ctx!: Ctx<unknown>;
 
-  try {
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const controller = new AbortController();
-      const timer = setTimeout(
-        () => controller.abort(new Error(`Timed out after ${timeoutMs}ms`)),
-        timeoutMs,
-      );
-      ctx = buildCtx(wf, runId, checkpointKey, attempt, opts, logger, controller.signal);
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(new Error(`Timed out after ${timeoutMs}ms`)),
+      timeoutMs,
+    );
+    ctx = buildCtx(wf, runId, checkpointKey, attempt, opts, logger, controller.signal);
 
-      try {
-        const result = await Promise.race([wf.run(ctx), rejectOnAbort(controller.signal)]);
-        clearTimeout(timer);
-        store.finishRun(runId, "success", attempt, null, result);
-        logger.info(`✓ succeeded in ${Date.now() - startedAt}ms`);
-        return { runId, status: "success", result };
-      } catch (err) {
-        clearTimeout(timer);
-        lastError = toError(err);
+    try {
+      const result = await Promise.race([wf.run(ctx), rejectOnAbort(controller.signal)]);
+      clearTimeout(timer);
+      store.finishRun(runId, "success", attempt, null, result);
+      logger.info(`✓ succeeded in ${Date.now() - startedAt}ms`);
+      return { runId, status: "success", result };
+    } catch (err) {
+      clearTimeout(timer);
+      lastError = toError(err);
 
-        if (attempt < maxAttempts) {
-          // Exponential backoff with jitter so retries don't synchronise.
-          const delay = Math.round(baseDelay * 2 ** (attempt - 1) * (0.75 + Math.random() * 0.5));
-          logger.warn(
-            `attempt ${attempt}/${maxAttempts} failed: ${lastError.message} — retrying in ${delay}ms`,
-          );
-          await sleep(delay);
-        } else {
-          logger.error(`✗ failed after ${attempt} attempt(s): ${lastError.message}`, {
-            stack: lastError.stack,
-          });
-        }
+      if (attempt < maxAttempts) {
+        // Exponential backoff with jitter so retries don't synchronise.
+        const delay = Math.round(baseDelay * 2 ** (attempt - 1) * (0.75 + Math.random() * 0.5));
+        logger.warn(
+          `attempt ${attempt}/${maxAttempts} failed: ${lastError.message} — retrying in ${delay}ms`,
+        );
+        await sleep(delay);
+      } else {
+        logger.error(`✗ failed after ${attempt} attempt(s): ${lastError.message}`, {
+          stack: lastError.stack,
+        });
       }
     }
-
-    store.finishRun(runId, "failed", maxAttempts, lastError.message, null);
-
-    if (wf.onFailure) {
-      try {
-        await wf.onFailure(ctx, lastError);
-      } catch (err) {
-        logger.error("onFailure handler threw", { error: String(err) });
-      }
-    }
-    await alertFailure(wf.name, runId, lastError);
-
-    return { runId, status: "failed", error: lastError };
-  } finally {
-    active.delete(wf.name);
   }
+
+  store.finishRun(runId, "failed", maxAttempts, lastError.message, null);
+
+  if (wf.onFailure) {
+    try {
+      await wf.onFailure(ctx, lastError);
+    } catch (err) {
+      logger.error("onFailure handler threw", { error: String(err) });
+    }
+  }
+  await alertFailure(wf.name, runId, lastError);
+
+  return { runId, status: "failed", error: lastError };
 }
 
 function buildCtx(

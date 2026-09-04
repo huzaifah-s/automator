@@ -22,7 +22,7 @@ what's left, and enough detail to pick any of it up cold.
 | 4 | Wait / suspend / human-in-the-loop | Open — needs an architecture call |
 | 5 | Provider webhook registration | Open — medium |
 | 6 | Pagination helpers | **Done** — `ctx.http.paginate()` |
-| 7 | Global concurrency cap | Open — small |
+| 7 | Global concurrency cap | **Done** — `MAX_CONCURRENT_RUNS` |
 | 8 | Sub-workflow invocation | Open — small |
 | 9 | Replay a run with its original input | Open — small |
 | 10 | AI tool-loop / agent | Open — medium |
@@ -140,21 +140,6 @@ id, don't blindly create. `PUBLIC_URL` is already the canonical external URL.
 **Verify:** boot twice against a real provider and confirm exactly one
 subscription exists.
 
-## 7. Global concurrency cap
-
-**Problem:** `active` in [src/core/runner.ts](src/core/runner.ts) serialises only
-*within* one workflow name (`onOverlap`). Nothing bounds concurrency *across*
-workflows — 50 webhooks arriving at once means 50 concurrent runs in one Bun
-process. n8n's queue mode had worker pools and limits.
-
-**Sketch:** a counting semaphore in `runner.ts` around `execute()`, with
-`MAX_CONCURRENT_RUNS` (default maybe 10, `0` = unlimited). Queue rather than
-reject — a dropped webhook is worse than a slow one. Make sure a waiting run
-still respects shutdown and doesn't sit past `SHUTDOWN_TIMEOUT_MS`.
-
-**Verify:** fire 50 concurrent webhook requests and confirm the cap holds and
-none are lost.
-
 ## 8. Sub-workflow invocation
 
 **What n8n did:** an Execute Workflow node.
@@ -243,11 +228,10 @@ redaction guarantee at every storage boundary.
 
 ## Suggested order
 
-1. **7 (concurrency cap)** — small, and it's a production risk today.
-2. **3 (OAuth)** — unblocks the most integrations. Settle the encryption question first.
-3. **9 (replay)** — small, makes developing webhooks much less annoying.
-4. **8 (sub-workflows)** then **5 (webhook registration)**.
-5. **4 (wait/suspend)** last, and only after deciding whether a durable execution
+1. **3 (OAuth)** — unblocks the most integrations. Settle the encryption question first.
+2. **9 (replay)** — small, makes developing webhooks much less annoying.
+3. **8 (sub-workflows)** then **5 (webhook registration)**.
+4. **4 (wait/suspend)** last, and only after deciding whether a durable execution
    engine is on the table — that answer changes several items above.
 
 Delete this file when the table at the top has no "Open" rows left.

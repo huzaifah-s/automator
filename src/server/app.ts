@@ -3,7 +3,7 @@ import { basicAuth } from "hono/basic-auth";
 import { logger as httpLogger } from "hono/logger";
 import { store } from "../core/db.ts";
 import { log } from "../core/logger.ts";
-import { runWorkflow } from "../core/runner.ts";
+import { queuedCount, runningCount, runWorkflow } from "../core/runner.ts";
 import { nextRunFor } from "../core/scheduler.ts";
 import type { Registry } from "../core/loader.ts";
 import { indexPage, runPage, workflowPage } from "./views.ts";
@@ -16,7 +16,15 @@ export function createApp(registry: Registry): Hono {
   /* ---------------------------------------------------------- liveness */
 
   app.get("/healthz", (c) =>
-    c.json({ ok: true, workflows: registry.enabled().length, uptime: process.uptime() }),
+    c.json({
+      ok: true,
+      workflows: registry.enabled().length,
+      uptime: process.uptime(),
+      // The concurrency cap is invisible from the outside otherwise: a queue
+      // that never drains looks exactly like a quiet runner.
+      running: runningCount(),
+      queued: queuedCount(),
+    }),
   );
 
   /* ----------------------------------------------------------- webhooks */

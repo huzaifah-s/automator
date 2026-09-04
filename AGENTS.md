@@ -132,6 +132,15 @@ are all misconfigurations, and a partial result that looks complete is the
 worst outcome available. Empty page, no next link, and `maxItems` end quietly;
 nothing else does. Keep it that way if you extend it.
 
+**A run holds a global concurrency slot for its whole lifetime.**
+`MAX_CONCURRENT_RUNS` bounds `execute()` across every workflow; `onOverlap`
+only ever bounded one workflow against itself. Two consequences: a workflow is
+marked `active` *before* it waits for a slot, so `onOverlap: "skip"` still sees
+a queued run as in flight — don't "tidy" that into the post-wait path — and
+anything that makes one run wait on another run (sub-workflow invocation, for
+one) must not acquire a second slot while holding the first, or a full pool
+deadlocks.
+
 **Step names must be stable and unique within a run.** They are the checkpoint
 key. `ctx.step("send email")` inside a loop collides across iterations — use
 `` ctx.step(`send email ${user.id}`) ``.

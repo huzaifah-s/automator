@@ -8,6 +8,40 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### `MAX_CONCURRENT_RUNS` — a ceiling across workflows, not just within one
+
+`onOverlap` bounded a workflow against itself and nothing bounded the process.
+Fifty webhooks arriving together meant fifty runs at once in one Bun process,
+each holding sockets, memory, and a share of the event loop — the failure mode
+being a burst that degrades everything else rather than queueing politely.
+n8n's answer was queue mode with worker pools; ours is a counting semaphore
+around `execute()`, default 10, `0` for the old unbounded behaviour.
+
+**Decided along the way:**
+
+- **Queue, never reject.** A dropped webhook is worse than a slow one, and most
+  providers won't redeliver a 200. Runs past the cap wait their turn.
+- **A queued run counts as active.** `onOverlap: "skip"` is checked against a
+  set the workflow joins *before* it waits for a slot. Marking it after — the
+  obvious placement — would let a burst of the same webhook slip past `skip`
+  entirely while the first one sat in the queue. Verified: with one slot and
+  two concurrent hits of the same workflow, the second is still skipped.
+- **Shutdown skips the queue instead of draining it.** A run that hasn't
+  started when `SIGTERM` arrives gets a `skipped` run record with the reason,
+  so the work is visibly dropped rather than invisibly dropped. The shutdown
+  loop stays alive until each one has recorded itself, which takes as long as
+  the in-flight runs and no longer.
+- **The slot is handed to the next waiter, not released into contention.**
+  FIFO, and no wake-everyone stampede on each completion.
+- **`/healthz` reports `running` and `queued`.** A cap you can't see turns a
+  queue that never drains into a runner that merely looks quiet.
+
+Verified with 50 workflows and 50 concurrent webhook POSTs: max observed
+concurrency exactly 4 under a cap of 4, all 50 runs recorded and successful,
+5.2s wall clock against the 5.0s the cap implies; 50 concurrent under `0`; and
+a `SIGTERM` mid-burst leaving 12 successes, 38 skipped-with-reason, and a
+prompt exit.
+
 ### `ctx.http.paginate()` — the one API quirk we were still hand-rolling
 
 The part of n8n's "400 nodes" that wasn't UI was pre-solved API quirks, and

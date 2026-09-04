@@ -1,6 +1,12 @@
 import { loadWorkflows, Registry } from "./core/loader.ts";
 import { startScheduler, stopScheduler, nextRunFor } from "./core/scheduler.ts";
-import { runWorkflow, beginShutdown, activeCount } from "./core/runner.ts";
+import {
+  runWorkflow,
+  beginShutdown,
+  activeCount,
+  queuedCount,
+  runningCount,
+} from "./core/runner.ts";
 import { createApp } from "./server/app.ts";
 import { store, db } from "./core/db.ts";
 import { log } from "./core/logger.ts";
@@ -99,8 +105,15 @@ async function shutdown(signal: string, code = 0): Promise<never> {
 
   // Give in-flight runs a chance to finish before the process goes away.
   const deadline = Date.now() + Number(process.env.SHUTDOWN_TIMEOUT_MS ?? 20_000);
+  // activeCount() covers queued runs too, so the loop stays alive long enough
+  // for each of them to reach its turn and record itself as skipped.
   while (activeCount() > 0 && Date.now() < deadline) {
-    log.info(`Waiting for ${activeCount()} run(s) to finish…`);
+    const queued = queuedCount();
+    log.info(
+      `Waiting for ${runningCount()} run(s) to finish` +
+        (queued > 0 ? ` — ${queued} queued run(s) will be skipped` : "") +
+        "…",
+    );
     await new Promise((r) => setTimeout(r, 1_000));
   }
   if (activeCount() > 0) log.warn(`${activeCount()} run(s) still going — leaving them behind`);

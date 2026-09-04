@@ -441,7 +441,12 @@ docker compose logs -f automator
 - Run history is pruned nightly (`RUN_RETENTION_DAYS`, default 30). The same
   job sweeps expired `ctx.state` keys, whatever retention is set to.
 - `SIGTERM` stops the scheduler and waits up to `SHUTDOWN_TIMEOUT_MS` (20s) for
-  in-flight runs before exiting.
+  in-flight runs before exiting. A run still queued when that starts is
+  recorded as `skipped`, not silently dropped.
+- At most `MAX_CONCURRENT_RUNS` runs execute at once across every workflow
+  (default 10, `0` = unlimited). Runs past the cap **queue** — a webhook that
+  arrives during a burst is slow, never lost. `/healthz` reports `running` and
+  `queued`, which is the only way to see a queue that isn't draining.
 - Set `ALERT_WEBHOOK_URL` to a Slack or Discord incoming webhook to get a ping
   on every workflow that exhausts its retries. Set `PUBLIC_URL` and the alert
   links straight to the run page.
@@ -463,8 +468,11 @@ Worth knowing before you commit:
   there is no code sandbox to secure and no way to break production from a
   browser.
 - **Single process, no external queue.** Fine for hundreds of runs a day.
-  If you need horizontal scale or work that survives a crash mid-workflow,
-  you want a durable execution engine (Temporal, Inngest), not this.
+  Concurrency is capped in-process (`MAX_CONCURRENT_RUNS`) and the queue lives
+  in memory, so a restart mid-burst loses what hadn't started — those runs are
+  recorded as skipped. If you need horizontal scale or work that survives a
+  crash mid-workflow, you want a durable execution engine (Temporal, Inngest),
+  not this.
 - **Checkpoints are memoised results, not deterministic replay.** Resume skips
   steps that already succeeded; it does not rewind side effects that happened
   *inside* a step before it threw. Keep each step to one logical action and

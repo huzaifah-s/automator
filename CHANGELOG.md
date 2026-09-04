@@ -8,6 +8,49 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### Approval gates, without a Wait node
+
+The last n8n gap anyone was likely to hit: a workflow that stops and waits for a
+person. `workflows/approval-request.ts` and `workflows/approval-resolve.ts` are
+now a runnable pair — one opens an approval in `ctx.state.shared` and hands out
+decision links, the other claims it when someone clicks — and README documents
+the pattern along with what it is not.
+
+**Decided along the way:**
+
+- **The runner does not learn to suspend, and the durable-engine question stays
+  closed.** Holding a run open across a human-paced wait would break graceful
+  shutdown, the concurrency cap, and the `timeoutMs` contract at once, and the
+  alternative — adopting Temporal or Inngest — now means *replacing*
+  `MAX_CONCURRENT_RUNS`, `ctx.run()`, and checkpoint resume rather than filling
+  a hole. Two workflows joined by shared state buy most of the value for the
+  price of an example file. What they do not buy is one run you can watch: the
+  halves have separate run pages, joined only by an id in the result, and the
+  README says so rather than implying otherwise.
+- **`webhook(..., { secret: false })` is a new, explicit opt-out.** A route a
+  person reaches by clicking a link cannot carry `WEBHOOK_SECRET` — the link
+  would paste the runner's shared secret into a Slack channel. The rejected
+  alternative was leaning on `secret: ""` already being falsy, which works by
+  accident and reads like a mistake. Omitting `secret` still falls back to the
+  global one, so a public route can only happen on purpose, and the burden it
+  shifts onto the workflow (an unguessable single-use id, refused once spent)
+  is documented where the flag is.
+- **The claim is checkpointed; the payout is a separate step.** Whether a run
+  won the claim has to travel back inside the step's result — as a closure
+  variable it reads `false` on a retry, and the retry then refuses to finish
+  what it just started. Splitting the payout out means a permanent failure is
+  recoverable by resuming the run, without the resume re-deciding anything.
+- **`onOverlap: "queue"`, not the default `"skip"`.** Skip drops the second of
+  two clicks arriving together — including clicks on two unrelated approvals —
+  and answers that person with a skipped run instead of a decision.
+
+Found by running it: **a resumed run has no `ctx.input`.** Resume passes the
+checkpoint key and nothing else, so the first version looked up
+`approval:undefined` and reported a live approval missing. Anything derived
+from the input has to be derived inside a step; AGENTS.md now carries that as
+an invariant.
+
+
 ### OAuth2 credentials that refresh themselves
 
 Every user-consent integration was blocked: `process.env` is immutable at

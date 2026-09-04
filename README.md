@@ -449,6 +449,79 @@ Values that cannot round-trip are rejected rather than quietly mangled:
 `undefined`, functions, bigints, circular structures, and anything over
 `STATE_MAX_BYTES` all throw with a message naming the key.
 
+## Approval gates
+
+There is no Wait node here, and there is not going to be one. A run is a single
+async function under a `timeoutMs` ceiling; suspending one for a day would mean
+holding the process open for a day, which breaks graceful shutdown, the
+concurrency cap, and the timeout contract in one go. What replaces it is two
+workflows that meet in `ctx.state.shared`:
+
+```
+approval-request  (any trigger)  → writes shared "approval:<random-id>" = { status: "pending", … }
+                                 → posts the decision links
+       …hours or days pass, no run is in flight, the runner can restart freely…
+approval-resolve  (GET webhook)  → claims "approval:<id>", acts on it, records the decision
+```
+
+`workflows/approval-request.ts` and `workflows/approval-resolve.ts` are that
+pair, runnable as they stand:
+
+```bash
+bun run trigger -- approval-request      # prints an approve and a decline link
+curl "http://localhost:3000/hooks/approval?id=<id>&decision=approve"
+```
+
+**What it is not.** No single run sits there pending, so there is nothing to
+watch and no "waited 2h 14m" on any timeline. The two halves get separate run
+pages, joined only by the `openedByRun` id in the resolving run's result. If you
+need one run that genuinely spans the wait, that is a durable execution engine
+(Temporal, Inngest), not a change to this runner.
+
+The pieces that make it correct are worth copying if you write your own:
+
+- **The id is a `crypto.randomUUID()`**, because it is the credential (below).
+- **`ctx.state.shared.update()` claims the decision**, so a second click — or a
+  contradicting one — is refused with `already approved` rather than paying out
+  twice. Whether the claim succeeded travels back *inside* the checkpointed
+  step result; as a closure variable it would read `false` on a retry and the
+  retry would refuse to finish what it had itself just started.
+- **The claim and the payout are separate steps.** A payout that fails for good
+  leaves an approved-but-unpaid approval, and clicking the link again will not
+  fix it — the decision is already made. Resume the failed run from its run
+  page instead: the claim is reused from its checkpoint and only the payout
+  re-runs, so a resume can never flip a decision on its way through.
+- **A TTL is the whole expiry mechanism.** Nothing sweeps abandoned approvals;
+  the row simply stops being readable and the link starts answering
+  `unknown or expired` — the same answer a made-up id gets, so a wrong guess
+  learns nothing.
+- **`onOverlap: "queue"`.** The default is `"skip"`, which would drop the second
+  of two clicks landing at once — including clicks on two *different*
+  approvals — and answer that manager with a skipped run instead of a decision.
+
+### Links a human clicks
+
+A webhook whose caller is a person following a link cannot carry
+`WEBHOOK_SECRET`: putting it in the URL would paste the runner's shared secret
+into a Slack channel. Such a route opts out explicitly, and authenticates the
+caller from its own payload instead:
+
+```ts
+trigger: webhook("approval", { method: "GET", schema: query, secret: false })
+```
+
+`secret: false` is the opt-out; omitting `secret` still falls back to the global
+`WEBHOOK_SECRET`, so this can only happen on purpose. It shifts the whole burden
+onto the workflow: an unguessable single-use id in the query string is what
+stands between a stranger and an approved refund, which is why the id is
+generated with a CSPRNG and why a used one is refused. Do not reach for it on a
+route a machine calls — a provider can hold a secret, and should.
+
+The id does reach the run page in the request run's result. Anyone holding the
+dashboard password can therefore approve their own request — and could already
+trigger any workflow here, so it is not an escalation. It is worth knowing
+before you point `PUBLIC_URL` at something and hand out the password.
+
 ## Seeing the data
 
 Every run page shows what actually happened, n8n-style:
@@ -662,6 +735,9 @@ Worth knowing before you commit:
   steps that already succeeded; it does not rewind side effects that happened
   *inside* a step before it threw. Keep each step to one logical action and
   that distinction stays invisible.
+- **No Wait node.** Nothing suspends a run and picks it up tomorrow. Approvals
+  and other human-paced waits are two workflows joined by shared state — see
+  [Approval gates](#approval-gates) for the pattern and what it costs.
 - **No visual editor.** That's the entire 1.9GB you're not shipping.
 
 ## For AI agents

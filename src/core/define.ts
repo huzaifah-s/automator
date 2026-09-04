@@ -85,3 +85,10 @@ export function manual(): Trigger {
 export { defineSecrets, defineSecretGroup, optionalSecret } from "./secrets.ts";
 export type { Ctx, PollCtx, WorkflowDef } from "./types.ts";
 export type { StateClient, StateStore, StateSetOptions } from "./state.ts";
+export type {
+  HttpOptions,
+  PaginateOptions,
+  Paged,
+  PageInfo,
+  NextPage,
+} from "../integrations/http.ts";

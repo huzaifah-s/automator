@@ -75,6 +75,8 @@ export default defineWorkflow({
 Triggers: `cron(expr, { tz })`, `webhook(path, { method, schema, respond, secret })`,
 `poll(expr, { fetch, id })`, `manual()`. On `ctx`: `http` `slack` `telegram` `discord` `ai` `email` `sql`
 `sheets` `scrape`, plus `log` `step` `state` `signal` `input` `attempt` `runId`.
+Multi-page GETs go through `ctx.http.paginate(url)` rather than a hand-rolled
+loop — see README "Pagination".
 
 ## Rules that will bite you
 
@@ -123,6 +125,12 @@ cross-workflow namespace (`@shared` internally — workflow names can't contain
 `ctx.state.update(key, fn)` for read-modify-write — it completes in one
 synchronous tick, so concurrent runs can't lose an increment the way
 get-then-set does.
+
+**`ctx.http.paginate` throws rather than returning a short answer.** Hitting
+`maxPages`, revisiting a URL, or finding a cursor token with no `param` name
+are all misconfigurations, and a partial result that looks complete is the
+worst outcome available. Empty page, no next link, and `maxItems` end quietly;
+nothing else does. Keep it that way if you extend it.
 
 **Step names must be stable and unique within a run.** They are the checkpoint
 key. `ctx.step("send email")` inside a loop collides across iterations — use

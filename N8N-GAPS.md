@@ -21,7 +21,7 @@ what's left, and enough detail to pick any of it up cold.
 | 3 | OAuth2 with refresh tokens | Open — unblocked, small |
 | 4 | Wait / suspend / human-in-the-loop | Open — needs an architecture call |
 | 5 | Provider webhook registration | Open — medium |
-| 6 | Pagination helpers | Open — small, high daily value |
+| 6 | Pagination helpers | **Done** — `ctx.http.paginate()` |
 | 7 | Global concurrency cap | Open — small |
 | 8 | Sub-workflow invocation | Open — small |
 | 9 | Replay a run with its original input | Open — small |
@@ -140,29 +140,6 @@ id, don't blindly create. `PUBLIC_URL` is already the canonical external URL.
 **Verify:** boot twice against a real provider and confirm exactly one
 subscription exists.
 
-## 6. Pagination helpers
-
-**What n8n did:** each of its 400+ nodes had the service's pagination baked in.
-That's the part of "400 nodes" that isn't UI — pre-solved API quirks.
-
-**Why it matters:** this is the tax we pay daily. `src/integrations/http.ts`
-already handles the biggest slice well (retries, 429 + `Retry-After`, backoff
-with jitter). Pagination is what's left, and it's hand-rolled per API every time.
-
-**Sketch:** `ctx.http.paginate(url, opts)` returning an async iterable, covering
-the three shapes that account for nearly everything:
-
-- cursor/token in the response body (`next_cursor`, `nextPageToken`)
-- RFC 5988 `Link: <…>; rel="next"` headers (GitHub)
-- page/offset counters
-
-Needs a hard page cap to avoid an infinite loop on a misconfigured extractor, and
-must pass `ctx.signal` through. Pairs naturally with `poll()` — see
-[README.md](README.md) "Polling".
-
-**Verify:** run it against GitHub (Link header) and one cursor-based API, and
-confirm a malformed `next` terminates instead of looping.
-
 ## 7. Global concurrency cap
 
 **Problem:** `active` in [src/core/runner.ts](src/core/runner.ts) serialises only
@@ -266,12 +243,11 @@ redaction guarantee at every storage boundary.
 
 ## Suggested order
 
-1. **6 (pagination)** — smallest thing with daily payoff, and it compounds with `poll()`.
-2. **7 (concurrency cap)** — small, and it's a production risk today.
-3. **3 (OAuth)** — unblocks the most integrations. Settle the encryption question first.
-4. **9 (replay)** — small, makes developing webhooks much less annoying.
-5. **8 (sub-workflows)** then **5 (webhook registration)**.
-6. **4 (wait/suspend)** last, and only after deciding whether a durable execution
+1. **7 (concurrency cap)** — small, and it's a production risk today.
+2. **3 (OAuth)** — unblocks the most integrations. Settle the encryption question first.
+3. **9 (replay)** — small, makes developing webhooks much less annoying.
+4. **8 (sub-workflows)** then **5 (webhook registration)**.
+5. **4 (wait/suspend)** last, and only after deciding whether a durable execution
    engine is on the table — that answer changes several items above.
 
 Delete this file when the table at the top has no "Open" rows left.

@@ -8,6 +8,45 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### `ctx.http.paginate()` — the one API quirk we were still hand-rolling
+
+The part of n8n's "400 nodes" that wasn't UI was pre-solved API quirks, and
+`src/integrations/http.ts` already covered the biggest slice — retries, 429 and
+`Retry-After`, backoff with jitter. Pagination was what was left, rewritten by
+hand for every API and got subtly wrong each time.
+
+```ts
+for await (const issue of ctx.http.paginate<Issue>(url, { query: { per_page: 100 } })) …
+const all = await ctx.http.paginate<Issue>(url).all();
+```
+
+Covers the three shapes that account for nearly everything: `Link: rel="next"`
+headers, a cursor token in the body, and page/offset counters. Each page is an
+ordinary request, so retries, `ctx.signal`, and run-page capture all still apply.
+
+**Decided along the way:**
+
+- **It throws instead of returning a short answer.** Hitting the `maxPages`
+  ceiling, revisiting a URL already fetched, or finding a cursor token with no
+  parameter name given are all misconfigurations, and the rejected alternative —
+  return what we have — produces a partial result indistinguishable from a
+  complete one. That is the bug you find weeks later in a report with missing
+  rows. Only the honest endings are quiet: empty page, no next link, `maxItems`.
+- **Auto-detection stops where the response stops being unambiguous.** A `Link`
+  header or a body field holding an actual URL is self-describing. An opaque
+  token is not — nothing in `{"next_cursor":"dXNlcjox"}` says the parameter is
+  called `cursor` — so guessing a name from the field would work on Slack and
+  silently truncate elsewhere. Cursors and counters are configured explicitly.
+- **An `items` path that misses on page one throws; on a later page it doesn't.**
+  A wrong path otherwise yields zero items and reads as an empty collection.
+  Missing on a later page is just how a last page often looks.
+- **Iterator first, `.all()` second.** The iterator holds one page in memory,
+  which is what makes it safe to point at something large; `.all()` and
+  `.pages()` are there because most workflows genuinely want the array.
+
+`workflows/paginate-demo.ts` is a `manual()` example against GitHub's public
+API — no credentials, and its run page shows one recorded HTTP call per page.
+
 ### `poll()` trigger — schedule + dedupe, no empty runs
 
 Closes the second of the two gaps that `ctx.state` unblocked. A large share of

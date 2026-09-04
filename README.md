@@ -111,6 +111,9 @@ plus `log`, `step`, `state`, `signal`, `input`, `attempt`, `runId`.
 All of them except `http` are lazy — a workflow that only makes an HTTP call
 never opens a Postgres pool or reads an unrelated env var.
 
+`ctx.http.paginate(url)` walks a paginated endpoint — see
+[Pagination](#pagination).
+
 `ctx.step(name, fn, { input })` wraps a unit of work. It gets its own timing
 line, its input and output are recorded, and its result becomes a checkpoint.
 
@@ -157,6 +160,60 @@ Also available on the API: `POST /api/runs/:id/resume`.
   will replay the old one. Checkpoints expire after `checkpointTtlHours`
   (24 by default), and `ctx.step(name, fn, { checkpoint: false })` opts a
   single step out permanently.
+
+## Pagination
+
+`ctx.http.paginate(url)` walks a paginated GET endpoint. Every page is an
+ordinary request — same retries, same 429 handling, same `ctx.signal`, and each
+one lands in the run page's HTTP log.
+
+```ts
+// Auto-detected: GitHub sends Link: <…>; rel="next".
+for await (const issue of ctx.http.paginate<Issue>(url, { query: { per_page: 100 } })) {
+  await ctx.step(`triage ${issue.number}`, () => triage(issue));
+}
+
+// Or take the whole thing.
+const all = await ctx.http.paginate<Issue>(url).all();
+```
+
+The iterator holds one page at a time; `.all()` holds everything; `.pages()`
+yields page by page when the boundaries matter.
+
+**Auto-detection covers only what a response says unambiguously:** an RFC 5988
+`Link: rel="next"` header, and a body field (`next`, `next_url`, `links.next`, …)
+holding an actual URL. An opaque cursor token needs the query parameter spelled
+out, because nothing in the response says what to call it:
+
+```ts
+// Cursor token in the body (Slack, Notion, Stripe-style)
+{ next: { cursor: "response_metadata.next_cursor", param: "cursor" } }
+// Page counter                     // Offset counter, advanced by page size
+{ next: { page: "page" } }          { next: { offset: "offset" } }
+// Anything else
+{ next: (info) => info.body.paging?.after && `${url}?after=${info.body.paging.after}` }
+```
+
+Items are found the same way: the body if it's an array, else its one
+array-valued field (`data`, `items`, `results`, …). Point at it with
+`items: "data.records"` or a function when that's ambiguous.
+
+| Option | Default | Notes |
+|---|---|---|
+| `items` | auto | Dotted path or function |
+| `next` | auto | `Link` header, then a URL-valued body field |
+| `maxPages` | `100` | Hard ceiling — **throws** when hit |
+| `maxItems` | — | Stops cleanly |
+| `headers` `query` `timeoutMs` `retries` | | As `get()`; `query` applies to the first page |
+
+**It errs loud, not short.** A walk that hits `maxPages`, revisits a URL it
+already fetched, or finds a cursor token it has no parameter name for *throws*.
+Returning what it has so far would be a partial answer that looks like a
+complete one — the bug you find weeks later in a report with missing rows. The
+quiet endings are the honest ones: an empty page, no next link, `maxItems`.
+
+`workflows/paginate-demo.ts` is a working example against a real API that needs
+no credentials.
 
 ## Polling
 

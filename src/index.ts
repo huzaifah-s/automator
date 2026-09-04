@@ -21,6 +21,12 @@ const registry = new Registry(
   }),
 );
 
+// Declared before the CLI section because shutdown() is called from inside it.
+// Left below, these are still in their temporal dead zone at that point and
+// every `bun run trigger` ends in a ReferenceError instead of its exit code.
+let server: ReturnType<typeof Bun.serve> | undefined;
+let shuttingDown = false;
+
 /* ------------------------------------------------------------------- CLI */
 
 if (args[0] === "--list") {
@@ -51,10 +57,6 @@ if (args[0] === "--run") {
 
 /* ---------------------------------------------------------------- server */
 
-// Declared up front so shutdown() can reach it from the CLI path too, where
-// the server is never started.
-let server: ReturnType<typeof Bun.serve> | undefined;
-
 const orphans = store.markOrphans();
 if (orphans > 0) log.warn(`Marked ${orphans} interrupted run(s) as failed`);
 
@@ -84,8 +86,6 @@ if (registry.enabled().some((w) => w.trigger.kind === "cron")) {
 }
 
 /* -------------------------------------------------- graceful shutdown */
-
-let shuttingDown = false;
 
 async function shutdown(signal: string, code = 0): Promise<never> {
   if (shuttingDown) process.exit(code);

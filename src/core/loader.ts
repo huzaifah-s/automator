@@ -51,6 +51,13 @@ export async function loadWorkflows(dir = "./workflows"): Promise<LoadedWorkflow
     seenNames.set(def.name, rel);
 
     if (def.trigger.kind === "webhook") {
+      // Which one was guarding the route would otherwise be a guess, and the
+      // guess people make is "both".
+      if (def.trigger.verify && def.trigger.secret !== undefined) {
+        errors.push(`${rel}: webhook declares both secret and verify — they are alternatives`);
+        continue;
+      }
+
       const key = `${def.trigger.method ?? "POST"} /${def.trigger.path}`;
       const owner = seenHooks.get(key);
       if (owner) {

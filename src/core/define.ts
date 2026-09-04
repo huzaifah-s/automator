@@ -1,4 +1,10 @@
-import type { PollCtx, Trigger, WebhookRegistration, WorkflowDef } from "./types.ts";
+import type {
+  PollCtx,
+  Trigger,
+  WebhookRegistration,
+  WebhookVerifier,
+  WorkflowDef,
+} from "./types.ts";
 import type { ZodType } from "zod";
 
 /**
@@ -31,6 +37,8 @@ export function webhook(
     respond?: "async" | "sync";
     /** `false` opts out of the secret check — see types.ts. */
     secret?: string | false;
+    /** Authenticates from the raw request instead of a shared secret. */
+    verify?: WebhookVerifier;
     /** Creates and deletes the subscription at the provider — see README. */
     register?: WebhookRegistration;
   } = {},
@@ -86,6 +94,8 @@ export function manual(): Trigger {
 }
 
 export { defineSecrets, defineSecretGroup, optionalSecret } from "./secrets.ts";
+export { hmacSignature, tallySignature } from "./verify.ts";
+export type { WebhookVerifier } from "./types.ts";
 export { defineOAuth } from "../integrations/oauth.ts";
 export type {
   Ctx,

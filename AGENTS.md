@@ -76,7 +76,7 @@ export default defineWorkflow({
 });
 ```
 
-Triggers: `cron(expr, { tz })`, `webhook(path, { method, schema, respond, secret })`,
+Triggers: `cron(expr, { tz })`, `webhook(path, { method, schema, respond, secret, verify })`,
 `poll(expr, { fetch, id })`, `manual()`. On `ctx`: `http` `slack` `telegram` `discord` `ai` `email` `sql`
 `sheets` `scrape`, plus `log` `step` `run` `state` `signal` `input` `attempt` `runId`.
 Multi-page GETs go through `ctx.http.paginate(url)` rather than a hand-rolled
@@ -198,6 +198,13 @@ key. `ctx.step("send email")` inside a loop collides across iterations — use
 
 **Step results must be JSON-serialisable and under 256KB** to be checkpointable.
 Larger or unserialisable results still display but re-run on resume.
+
+**`verify` gets the raw body, and `secret` and `verify` are mutually
+exclusive.** An HMAC recomputed over a parsed and re-serialised payload does
+not match, so `src/server/app.ts` reads the body as text once and both the
+verifier and the schema parse work from that string — don't reintroduce a
+parse-before-verify. Declaring both `secret` and `verify` stops the boot,
+because otherwise which one guards the route is a guess.
 
 **Webhooks default to `respond: "async"`.** Most providers retry on a slow
 reply. Only use `"sync"` when the caller genuinely needs the result.

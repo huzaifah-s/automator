@@ -7,6 +7,7 @@ import { store } from "../core/db.ts";
 import { isTruncated } from "../core/capture.ts";
 import { log } from "../core/logger.ts";
 import { queuedCount, runningCount, runWorkflow } from "../core/runner.ts";
+import { timingSafeEqual } from "../core/verify.ts";
 import { nextRunFor } from "../core/scheduler.ts";
 import type { Registry } from "../core/loader.ts";
 import type { LoadedWorkflow, RunRecord } from "../core/types.ts";
@@ -44,26 +45,57 @@ export function createApp(registry: Registry): Hono {
       return c.json({ error: `No workflow handles ${method} /hooks/${path}` }, 404);
     }
 
-    // `secret: false` is an explicit opt-out, not an absent override: a route
-    // whose caller is a person following a link cannot carry the shared secret,
-    // so that workflow authenticates the caller from its own payload instead.
-    const expected =
-      wf.trigger.secret === false ? undefined : (wf.trigger.secret ?? process.env.WEBHOOK_SECRET);
-    if (expected) {
-      const provided =
-        c.req.header("x-automator-secret") ??
-        c.req.header("authorization")?.replace(/^Bearer\s+/i, "") ??
-        c.req.query("secret") ??
-        "";
-      if (!timingSafeEqual(provided, expected)) {
-        log.warn(`Rejected webhook for ${wf.name}: bad secret`);
+    // Read the body once, as text. A verifier recomputes an HMAC over exactly
+    // the bytes that arrived, so parsing first and re-serialising would never
+    // match; the parse below works from this same string.
+    let raw = "";
+    if (method !== "GET" && method !== "HEAD") {
+      try {
+        raw = await c.req.raw.text();
+      } catch {
+        return c.json({ error: "Could not read request body" }, 400);
+      }
+    }
+
+    if (wf.trigger.verify) {
+      let ok = false;
+      try {
+        ok = await wf.trigger.verify({ body: raw, headers: c.req.raw.headers });
+      } catch (err) {
+        // A verifier that throws is a failed check, not a 500: the caller
+        // gets the same 401 either way, and the reason is ours to read.
+        log.warn(
+          `Verifier for ${wf.name} threw — ${err instanceof Error ? err.message : err}`,
+        );
+      }
+      if (!ok) {
+        log.warn(`Rejected webhook for ${wf.name}: failed verification`);
         return c.json({ error: "Unauthorized" }, 401);
+      }
+    } else {
+      // `secret: false` is an explicit opt-out, not an absent override: a route
+      // whose caller is a person following a link cannot carry the shared secret,
+      // so that workflow authenticates the caller from its own payload instead.
+      const expected =
+        wf.trigger.secret === false
+          ? undefined
+          : (wf.trigger.secret ?? process.env.WEBHOOK_SECRET);
+      if (expected) {
+        const provided =
+          c.req.header("x-automator-secret") ??
+          c.req.header("authorization")?.replace(/^Bearer\s+/i, "") ??
+          c.req.query("secret") ??
+          "";
+        if (!timingSafeEqual(provided, expected)) {
+          log.warn(`Rejected webhook for ${wf.name}: bad secret`);
+          return c.json({ error: "Unauthorized" }, 401);
+        }
       }
     }
 
     let input: unknown;
     try {
-      input = method === "GET" ? c.req.query() : await readBody(c.req.raw);
+      input = method === "GET" ? c.req.query() : await parseBody(raw, c.req.raw);
     } catch {
       return c.json({ error: "Could not parse request body" }, 400);
     }
@@ -324,14 +356,24 @@ function planReplay(registry: Registry, id: string): ReplayPlan {
   }
 }
 
-async function readBody(req: Request): Promise<unknown> {
+/**
+ * Parses the body text the handler already read. Form bodies go back through
+ * a rebuilt Request so multipart parsing stays the runtime's job — which does
+ * mean a binary part is decoded as text on the way in, and webhook payloads
+ * here are documents, not uploads.
+ */
+async function parseBody(text: string, req: Request): Promise<unknown> {
   const type = req.headers.get("content-type") ?? "";
-  if (type.includes("application/json")) return req.json();
+  if (type.includes("application/json")) return JSON.parse(text);
   if (type.includes("form")) {
-    const form = await req.formData();
+    const rebuilt = new Request("http://body.local", {
+      method: "POST",
+      headers: { "content-type": type },
+      body: text,
+    });
+    const form = await rebuilt.formData();
     return Object.fromEntries(form.entries() as Iterable<[string, FormDataEntryValue]>);
   }
-  const text = await req.text();
   if (!text) return {};
   try {
     return JSON.parse(text);
@@ -340,14 +382,4 @@ async function readBody(req: Request): Promise<unknown> {
   }
 }
 
-/** Constant-time compare so a wrong secret can't be recovered byte by byte. */
-function timingSafeEqual(a: string, b: string): boolean {
-  const ba = new TextEncoder().encode(a);
-  const bb = new TextEncoder().encode(b);
-  // Length alone is not secret enough to be worth leaking through an early exit.
-  let diff = ba.length ^ bb.length;
-  for (let i = 0; i < Math.max(ba.length, bb.length); i++) {
-    diff |= (ba[i] ?? 0) ^ (bb[i] ?? 0);
-  }
-  return diff === 0;
-}
+

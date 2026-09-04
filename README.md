@@ -685,10 +685,58 @@ reverting that variable to an older value discards the live chain too.
   constant time. Per-workflow overrides via `webhook(path, { secret })`.
 - Webhook routes are **not** behind basic auth — callers use the secret. That
   separation is deliberate.
+- **A provider that signs instead of echoing a token** gets `verify` — see
+  [Webhooks that sign](#webhooks-that-sign) below.
 - `/healthz` is open for container health checks and carries no useful data.
 - **OAuth refresh tokens** are encrypted at rest with `OAUTH_ENCRYPTION_KEY`
   (32 bytes, base64 or hex). Everything else in `ctx.state` is not — see
   [OAuth2 with refresh tokens](#oauth2-with-refresh-tokens).
+
+### Webhooks that sign
+
+Most providers don't send your secret back. They keep it, HMAC the request
+body with it, and send only the digest in a header — so the shared-secret
+check can never match, and the call is a 401 no matter what you paste where.
+`verify` authenticates those callers from the request itself:
+
+```ts
+trigger: webhook("pblsh/agreement-signed", {
+  method: "POST",
+  schema: payload,
+  verify: tallySignature(secrets.TALLY_SIGNING_SECRET),
+})
+```
+
+Anything else, via the four things providers differ on — which header, which
+hash, base64 or hex, and whether the value carries a prefix:
+
+```ts
+verify: hmacSignature({
+  header: "x-hub-signature-256",        // GitHub
+  secret: secrets.GITHUB_WEBHOOK_SECRET,
+  encoding: "hex",
+  prefix: "sha256=",
+})
+```
+
+Or a function, for a scheme that isn't an HMAC of the body at all:
+
+```ts
+verify: ({ body, headers }) => headers.get("x-tenant") === "acme" && body.length < 65_536,
+```
+
+**The body is the undecoded text.** An HMAC recomputed over a parsed and
+re-serialised object won't match — a reordered key or a dropped space is a
+different digest — so the raw string is what `verify` receives, and the
+schema parse happens afterwards from that same string.
+
+**`verify` runs before a run exists.** A forged call costs a warning in the
+log and a 401; it never reaches the database or your workflow. A verifier that
+throws is treated as a failed check, not a 500, and the reason is logged.
+
+**`secret` and `verify` are alternatives.** Declaring both stops the boot,
+naming the file. Which one was actually guarding the route would otherwise be
+a guess, and the guess people make is "both".
 
 ## Operations
 

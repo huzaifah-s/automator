@@ -6,6 +6,17 @@ import type { Integrations } from "../integrations/index.ts";
 /** "workflow" means another workflow started this run through ctx.run(). */
 export type TriggerKind = "cron" | "webhook" | "manual" | "poll" | "workflow";
 
+/**
+ * Decides whether a webhook call is genuine, from the request as it arrived.
+ *
+ * `body` is the undecoded text: an HMAC recomputed over a re-serialised
+ * object will not match, so the bytes are handed over untouched.
+ */
+export type WebhookVerifier = (req: {
+  body: string;
+  headers: Headers;
+}) => boolean | Promise<boolean>;
+
 export type Trigger =
   | {
       kind: "cron";
@@ -34,6 +45,17 @@ export type Trigger =
        * authenticates the caller itself. See README "Links a human clicks".
        */
       secret?: string | false;
+      /**
+       * Authenticates the caller from the raw request instead of a shared
+       * secret — for a provider that signs the body rather than echoing a
+       * token back. Runs before any run exists, so a forged call leaves no
+       * trace but a warning; returning false is a 401.
+       *
+       * Mutually exclusive with `secret`: declaring both stops the boot,
+       * because which one was actually guarding the route would otherwise be
+       * a guess. See hmacSignature() and tallySignature().
+       */
+      verify?: WebhookVerifier;
       /**
        * Creates and deletes the subscription at the provider, so a webhook is
        * not a URL somebody pasted into a dashboard once and has to remember.

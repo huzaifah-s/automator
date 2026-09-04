@@ -8,6 +8,44 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### `verify`, for the providers that sign instead of echoing
+
+`WEBHOOK_SECRET` assumes the caller sends the secret back. Most providers
+don't: they keep it, HMAC the body with it, and send only the digest in a
+header — so the shared-secret check can never match and every call is a 401,
+however the secret is configured at either end. `webhook(path, { verify })`
+authenticates those callers from the request itself, with `hmacSignature()`
+for the general shape and `tallySignature()` for the one in use here.
+
+**Decided along the way:**
+
+- **The body reaches the verifier as undecoded text.** An HMAC recomputed over
+  a parsed and re-serialised payload does not match — a reordered key or a
+  dropped space is a different digest — so `app.ts` now reads the body once as
+  a string and both the verifier and the schema parse work from it. This is
+  the invariant that breaks if anyone reinstates a parse-before-verify.
+- **`secret` and `verify` are alternatives, enforced at boot.** Declaring both
+  stops the load naming the file, rather than quietly applying one. Which one
+  was guarding the route would otherwise be a guess, and the guess people make
+  is "both".
+- **A verifier is a function, and the built-ins are just functions.** Providers
+  differ on four things — header, hash, encoding, prefix — so `hmacSignature`
+  takes those four and `tallySignature` is one line of it. A scheme that isn't
+  an HMAC of the body writes a closure instead of waiting for a provider
+  helper to be added here.
+- **`hmacSignature` throws when handed no secret**, at import, rather than
+  returning a verifier that rejects everything. An HMAC keyed on nothing is
+  computable by the caller too, and a webhook that 401s forever with a clean
+  boot log is the worse failure.
+- **A verifier that throws is a failed check, not a 500.** The caller gets the
+  same 401 as a bad digest; the reason is logged for us, not returned to them.
+- **Verification precedes the run.** A forged call costs a warning and never
+  reaches the database, so run history stays a record of real events rather
+  than of everyone who probed the endpoint.
+- **`parseBody` rebuilds a Request for form bodies** so multipart parsing
+  stays the runtime's job. The cost is that a binary part is decoded as text;
+  webhook payloads here are documents, not uploads.
+
 ### The dashboard refreshes by fetch, not by re-navigating
 
 `<meta http-equiv="refresh" content="15">` re-ran the whole navigation every

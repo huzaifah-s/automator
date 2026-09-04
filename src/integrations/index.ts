@@ -116,6 +116,9 @@ const INTEGRATION_SECRET_ENV = [
   "WEBHOOK_SECRET",
   "DASHBOARD_PASS",
   "ALERT_WEBHOOK_URL",
+  // Declared through defineSecrets by every defineOAuth() call, so this only
+  // covers the case where the key is set before any credential uses it.
+  "OAUTH_ENCRYPTION_KEY",
 ] as const;
 
 /**

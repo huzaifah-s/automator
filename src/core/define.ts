@@ -85,6 +85,7 @@ export function manual(): Trigger {
 }
 
 export { defineSecrets, defineSecretGroup, optionalSecret } from "./secrets.ts";
+export { defineOAuth } from "../integrations/oauth.ts";
 export type {
   Ctx,
   PollCtx,
@@ -93,6 +94,7 @@ export type {
   WorkflowDef,
 } from "./types.ts";
 export type { StateClient, StateStore, StateSetOptions } from "./state.ts";
+export type { OAuthConfig, OAuthCredential } from "../integrations/oauth.ts";
 export type {
   HttpOptions,
   PaginateOptions,

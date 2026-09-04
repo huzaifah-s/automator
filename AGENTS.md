@@ -141,6 +141,13 @@ anything that makes one run wait on another run (sub-workflow invocation, for
 one) must not acquire a second slot while holding the first, or a full pool
 deadlocks.
 
+**Resume and replay are different operations — keep them apart.** Resume reuses
+the parent's `checkpoint_key` so completed steps are skipped; replay reuses the
+parent's recorded `input` against a *fresh* checkpoint key so everything runs
+again. They have separate lineage columns (`resumed_from`, `replayed_from`) for
+that reason. Folding them into one column would make the run page guess which
+it is looking at.
+
 **Step names must be stable and unique within a run.** They are the checkpoint
 key. `ctx.step("send email")` inside a loop collides across iterations — use
 `` ctx.step(`send email ${user.id}`) ``.

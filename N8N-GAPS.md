@@ -24,7 +24,7 @@ what's left, and enough detail to pick any of it up cold.
 | 6 | Pagination helpers | **Done** — `ctx.http.paginate()` |
 | 7 | Global concurrency cap | **Done** — `MAX_CONCURRENT_RUNS` |
 | 8 | Sub-workflow invocation | Open — small |
-| 9 | Replay a run with its original input | Open — small |
+| 9 | Replay a run with its original input | **Done** — `/runs/:id/replay` |
 | 10 | AI tool-loop / agent | Open — medium |
 | 11 | Users, RBAC, audit | Open — probably won't do |
 | 12 | Template library | Won't do |
@@ -156,24 +156,6 @@ parent's failure semantics propagate (it should — just let it throw).
 **Watch out:** interacts badly with `onOverlap: "skip"` if a workflow calls
 itself or a sibling that's already running. Decide and document.
 
-## 9. Replay a run with its original input
-
-**What n8n did:** pin data, and re-run an execution with its original input.
-
-**Why it matters:** developing a webhook workflow means re-sending the payload by
-hand every time. We have *resume* (which n8n has no equivalent of — keep it),
-but not replay.
-
-**Blocker:** the `runs` table doesn't store the input. See `RunRecord` in
-[src/core/types.ts](src/core/types.ts) — no `input` column.
-
-**Sketch:** add an `input` column (redacted through `capture()` like everything
-else observational, and capped), then `POST /api/runs/:id/replay` plus a button
-on the run page. Follow the existing migration pattern in
-[src/core/db.ts](src/core/db.ts) — the `checkpoint_key` / `resumed_from`
-`ALTER TABLE` block. Replay starts a *fresh* checkpoint key; resume reuses one.
-Don't conflate them.
-
 ## 10. AI tool-loop / agent
 
 **What n8n did:** LangChain nodes — tool-calling agents, chat memory, vector
@@ -229,9 +211,8 @@ redaction guarantee at every storage boundary.
 ## Suggested order
 
 1. **3 (OAuth)** — unblocks the most integrations. Settle the encryption question first.
-2. **9 (replay)** — small, makes developing webhooks much less annoying.
-3. **8 (sub-workflows)** then **5 (webhook registration)**.
-4. **4 (wait/suspend)** last, and only after deciding whether a durable execution
+2. **8 (sub-workflows)** then **5 (webhook registration)**.
+3. **4 (wait/suspend)** last, and only after deciding whether a durable execution
    engine is on the table — that answer changes several items above.
 
 Delete this file when the table at the top has no "Open" rows left.

@@ -8,6 +8,47 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### Replay a run with its original input
+
+Developing a webhook workflow meant re-sending the payload by hand after every
+change, because the `runs` table recorded everything about a run *except* what
+went into it. Runs now store their trigger input, and any run that has one gets
+a *Replay with this input* button plus `POST /api/runs/:id/replay`.
+
+**Decided along the way:**
+
+- **Replay and resume stay separate, including their lineage columns.** Resume
+  reuses the parent's checkpoint key and skips completed steps; replay takes a
+  fresh key and redoes everything. Reusing `resumed_from` for both — one column,
+  distinguishable by whether the checkpoint key matches — would have worked and
+  would have left the run page inferring which operation it was rendering. A
+  `replayed_from` column costs one `ALTER TABLE` and says it outright.
+- **The input obeys capture rules, not checkpoint rules.** Step outputs are
+  stored with `force` because resume is functional and needs them. Input could
+  have been argued the same way, but `CAPTURE_DATA=false` is somebody switching
+  off payload storage on purpose, and quietly storing payloads anyway is not a
+  choice to make on their behalf. Those runs are simply not replayable, and the
+  endpoint says so.
+- **Every refusal names its cause.** No recorded input, an input truncated past
+  `CAPTURE_MAX_BYTES`, a workflow that no longer exists — each returns 409 with
+  the reason. The tempting alternative, replaying with `{}` or with the
+  truncated preview, produces a run that looks like it worked.
+- **The stored input is the redacted copy**, like everything else that reaches
+  disk. A payload carrying a credential replays with `«redacted»` in its place.
+  That is the storage invariant holding, and it is documented rather than
+  worked around — the alternative is credentials in a database column that the
+  dashboard renders.
+
+Migration is the existing `ALTER TABLE` pattern, so old databases pick up the
+columns on boot; runs recorded before today have no input and say so.
+
+Verified on a database created before the change: columns added at boot, a
+webhook run's input recorded and replayed to an identical result with fresh
+checkpoints, the input-less run and the truncated-input run each refused with
+their own message, and a secret planted in the webhook body appearing zero
+times across the API, both run pages, the dashboard, stdout, and the SQLite
+file — while the input itself is stored and shown, redacted.
+
 ### `MAX_CONCURRENT_RUNS` — a ceiling across workflows, not just within one
 
 `onOverlap` bounded a workflow against itself and nothing bounded the process.

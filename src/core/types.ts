@@ -155,6 +155,10 @@ export interface RunRecord {
   result: string | null;
   checkpoint_key: string;
   resumed_from: string | null;
+  /** The run this one replayed, if any. Distinct from resumed_from — see db.ts. */
+  replayed_from: string | null;
+  /** The captured trigger input, redacted and capped like every other payload. */
+  input: string | null;
 }
 
 export interface LogRecord {

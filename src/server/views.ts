@@ -206,6 +206,12 @@ export function runPage(
             steps that already succeeded were reused.</p>`
         : ""}
 
+      ${run.replayed_from
+        ? html`<p class="muted" style="margin:10px 0 0">
+            Replay of <a href="/runs/${run.replayed_from}">${run.replayed_from.slice(0, 8)}</a> —
+            same input, every step re-run from scratch.</p>`
+        : ""}
+
       ${run.status === "failed"
         ? html`<div class="bar">
             <form method="post" action="/runs/${run.id}/resume">
@@ -213,6 +219,19 @@ export function runPage(
             </form>
             <span class="muted">Re-runs the workflow, skipping every step that already succeeded.</span>
           </div>`
+        : ""}
+
+      ${run.input
+        ? html`<div class="bar">
+            <form method="post" action="/runs/${run.id}/replay">
+              <button class="btn" type="submit">Replay with this input</button>
+            </form>
+            <span class="muted">Starts a fresh run with the same input — no steps reused.</span>
+          </div>`
+        : ""}
+
+      ${run.input
+        ? html`<h2>Input</h2><div class="card"><div class="logs" style="padding:12px 14px"><pre style="margin:0;white-space:pre-wrap">${pretty(run.input)}</pre></div></div>`
         : ""}
 
       ${run.error ? html`<h2>Error</h2><div class="err">${run.error}</div>` : ""}

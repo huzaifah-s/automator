@@ -148,6 +148,28 @@ picks up at the one that broke.
 
 Also available on the API: `POST /api/runs/:id/resume`.
 
+### Replay — the other button
+
+A run records the input its trigger handed it, so any run with one gets a
+*Replay with this input* button (and `POST /api/runs/:id/replay`). That is the
+end of re-sending a webhook payload by hand every time you change the workflow.
+
+**Replay is not resume.** Resume reuses the failed run's checkpoint key and
+skips every step that already succeeded. Replay starts a *fresh* checkpoint
+key and does all of it again with the same input. Reach for resume to finish a
+run, replay to develop one.
+
+Three things it will tell you rather than fake:
+
+- **The input is the redacted copy.** It goes through the same secret filter as
+  everything else on disk, so a credential inside a payload comes back as
+  `«redacted»` — that is the invariant working, not a bug, but it does mean a
+  payload that *carries* a secret can't be replayed faithfully.
+- **`CAPTURE_DATA=false` means no stored inputs**, so those runs aren't
+  replayable. Recording them anyway would ignore the setting.
+- **An input over `CAPTURE_MAX_BYTES` was stored as a preview**, and replay
+  refuses rather than handing the workflow a truncated payload.
+
 ### What checkpointing needs from you
 
 - **Stable, unique step names.** `ctx.step("send email")` inside a loop
@@ -438,6 +460,8 @@ docker compose logs -f automator
 ```
 
 - Runs interrupted by a restart are marked failed at boot, not left `running`.
+- Any run with a recorded input can be replayed from its run page — see
+  [Replay](#replay--the-other-button).
 - Run history is pruned nightly (`RUN_RETENTION_DAYS`, default 30). The same
   job sweeps expired `ctx.state` keys, whatever retention is set to.
 - `SIGTERM` stops the scheduler and waits up to `SHUTDOWN_TIMEOUT_MS` (20s) for

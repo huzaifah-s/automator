@@ -94,6 +94,12 @@ export interface RunOptions {
    */
   checkpointKey?: string;
   resumedFrom?: string;
+  /**
+   * Lineage for the Replay action: the run whose input this one is re-using.
+   * A replay gets a *fresh* checkpoint key — it redoes the work rather than
+   * skipping past it — which is the whole difference from a resume.
+   */
+  replayedFrom?: string;
 }
 
 export async function runWorkflow(
@@ -173,13 +179,23 @@ async function executeNow(wf: LoadedWorkflow, opts: RunOptions): Promise<RunOutc
   const timeoutMs = wf.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const baseDelay = wf.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
 
-  store.startRun(runId, wf.name, opts.trigger, checkpointKey, opts.resumedFrom ?? null);
+  store.startRun(runId, wf.name, opts.trigger, {
+    checkpointKey,
+    resumedFrom: opts.resumedFrom,
+    replayedFrom: opts.replayedFrom,
+    // Stored so the run can be replayed later. Observational capture rules
+    // apply: with CAPTURE_DATA=false nothing is kept, and those runs simply
+    // aren't replayable — recording input anyway would ignore the setting.
+    input: capture(opts.input).json,
+  });
   const startedAt = Date.now();
 
   if (opts.resumedFrom) {
     const expired = store.expireCheckpoints(checkpointKey, wf.checkpointTtlHours ?? 24);
     if (expired > 0) logger.warn(`Dropped ${expired} checkpoint(s) past their TTL`);
     logger.info(`▶ resumed from ${opts.resumedFrom.slice(0, 8)}`);
+  } else if (opts.replayedFrom) {
+    logger.info(`▶ replaying ${opts.replayedFrom.slice(0, 8)} with its original input`);
   } else {
     logger.info(`▶ started (${opts.trigger})`);
   }

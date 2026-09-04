@@ -2,10 +2,12 @@ import { Hono } from "hono";
 import { basicAuth } from "hono/basic-auth";
 import { logger as httpLogger } from "hono/logger";
 import { store } from "../core/db.ts";
+import { isTruncated } from "../core/capture.ts";
 import { log } from "../core/logger.ts";
 import { queuedCount, runningCount, runWorkflow } from "../core/runner.ts";
 import { nextRunFor } from "../core/scheduler.ts";
 import type { Registry } from "../core/loader.ts";
+import type { LoadedWorkflow, RunRecord } from "../core/types.ts";
 import { indexPage, runPage, workflowPage } from "./views.ts";
 
 export function createApp(registry: Registry): Hono {
@@ -153,6 +155,20 @@ export function createApp(registry: Registry): Hono {
     return c.redirect(outcome.runId ? `/runs/${outcome.runId}` : `/runs/${run.id}`, 303);
   });
 
+  // Replays a run against its original input, with a *fresh* checkpoint key:
+  // it redoes the work, where resume skips past whatever already succeeded.
+  app.post("/runs/:id/replay", async (c) => {
+    const plan = planReplay(registry, c.req.param("id"));
+    if ("error" in plan) return c.text(plan.error, plan.code);
+
+    const outcome = await runWorkflow(plan.wf, {
+      trigger: "manual",
+      input: plan.input,
+      replayedFrom: plan.run.id,
+    });
+    return c.redirect(outcome.runId ? `/runs/${outcome.runId}` : `/runs/${plan.run.id}`, 303);
+  });
+
   /* ---------------------------------------------------------------- API */
 
   app.get("/api/workflows", (c) =>
@@ -205,6 +221,24 @@ export function createApp(registry: Registry): Hono {
     });
   });
 
+  app.post("/api/runs/:id/replay", async (c) => {
+    const plan = planReplay(registry, c.req.param("id"));
+    if ("error" in plan) return c.json({ error: plan.error }, plan.code);
+
+    const outcome = await runWorkflow(plan.wf, {
+      trigger: "manual",
+      input: plan.input,
+      replayedFrom: plan.run.id,
+    });
+    return c.json({
+      runId: outcome.runId,
+      status: outcome.status,
+      replayedFrom: plan.run.id,
+      result: outcome.result ?? null,
+      error: outcome.error?.message ?? null,
+    });
+  });
+
   app.get("/api/runs", (c) =>
     c.json(store.recentRuns(Number(c.req.query("limit") ?? 50))),
   );
@@ -221,6 +255,46 @@ export function createApp(registry: Registry): Hono {
   });
 
   return app;
+}
+
+type ReplayPlan =
+  | { run: RunRecord; wf: LoadedWorkflow; input: unknown }
+  | { error: string; code: 404 | 409 };
+
+/**
+ * Everything that can stop a replay, decided in one place so the HTML and JSON
+ * routes can't drift. Each refusal names its cause: a replay that quietly
+ * substituted `{}` for a missing input would look like it worked.
+ */
+function planReplay(registry: Registry, id: string): ReplayPlan {
+  const run = store.getRun(id);
+  if (!run) return { error: "Unknown run", code: 404 };
+
+  const wf = registry.get(run.workflow);
+  if (!wf) return { error: `Workflow "${run.workflow}" no longer exists`, code: 409 };
+
+  if (!run.input) {
+    return {
+      error:
+        "This run has no recorded input — it predates the input column, or " +
+        "CAPTURE_DATA was off when it ran.",
+      code: 409,
+    };
+  }
+  if (isTruncated(run.input)) {
+    return {
+      error:
+        "This run's input was too large to record whole (CAPTURE_MAX_BYTES), " +
+        "so replaying it would feed the workflow a truncated payload.",
+      code: 409,
+    };
+  }
+
+  try {
+    return { run, wf, input: JSON.parse(run.input) };
+  } catch {
+    return { error: "This run's recorded input is not readable back", code: 409 };
+  }
 }
 
 async function readBody(req: Request): Promise<unknown> {

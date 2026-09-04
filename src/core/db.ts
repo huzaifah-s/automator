@@ -107,12 +107,25 @@ if (!runColumns.has("checkpoint_key")) {
 if (!runColumns.has("resumed_from")) {
   db.exec("ALTER TABLE runs ADD COLUMN resumed_from TEXT");
 }
+// Migration for databases created before replay existed. `input` is what the
+// trigger handed the run — the thing you otherwise have to re-send by hand to
+// develop a webhook workflow.
+if (!runColumns.has("input")) {
+  db.exec("ALTER TABLE runs ADD COLUMN input TEXT");
+}
+// Kept separate from resumed_from rather than folded into it: a resume reuses
+// the parent's checkpoint key and skips completed steps, a replay starts clean
+// and redoes everything. Two different lineages that happen to share a shape,
+// and one column would make the run page guess which it was looking at.
+if (!runColumns.has("replayed_from")) {
+  db.exec("ALTER TABLE runs ADD COLUMN replayed_from TEXT");
+}
 
 const stmts = {
   insertRun: db.prepare(
     `INSERT INTO runs (id, workflow, status, trigger, attempts, started_at,
-                       checkpoint_key, resumed_from)
-     VALUES (?, ?, 'running', ?, 1, ?, ?, ?)`,
+                       checkpoint_key, resumed_from, replayed_from, input)
+     VALUES (?, ?, 'running', ?, 1, ?, ?, ?, ?, ?)`,
   ),
   finishRun: db.prepare(
     `UPDATE runs SET status = ?, attempts = ?, finished_at = ?,
@@ -196,10 +209,24 @@ export const store = {
     id: string,
     workflow: string,
     trigger: TriggerKind,
-    checkpointKey = id,
-    resumedFrom: string | null = null,
+    opts: {
+      checkpointKey?: string;
+      resumedFrom?: string | null;
+      replayedFrom?: string | null;
+      /** Already through capture() — redacted and capped — or null. */
+      input?: string | null;
+    } = {},
   ): void {
-    stmts.insertRun.run(id, workflow, trigger, Date.now(), checkpointKey, resumedFrom);
+    stmts.insertRun.run(
+      id,
+      workflow,
+      trigger,
+      Date.now(),
+      opts.checkpointKey ?? id,
+      opts.resumedFrom ?? null,
+      opts.replayedFrom ?? null,
+      opts.input ?? null,
+    );
   },
 
   finishRun(

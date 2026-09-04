@@ -7,6 +7,13 @@ export const MAX_CHECKPOINT_BYTES = Number(process.env.CHECKPOINT_MAX_BYTES ?? 2
 
 export const captureEnabled = process.env.CAPTURE_DATA !== "false";
 
+/**
+ * Marks a payload that was stored as a readable prefix rather than whole.
+ * Exported because replay has to refuse a truncated input — feeding the
+ * placeholder back into a workflow would be worse than not replaying.
+ */
+export const TRUNCATED_KEY = "«truncated»";
+
 export interface Captured {
   json: string | null;
   truncated: boolean;
@@ -40,7 +47,7 @@ export function capture(
   // Store a readable prefix rather than invalid JSON: the viewer shows it raw.
   return {
     json: JSON.stringify({
-      "«truncated»": `${json.length} bytes, showing first ${limit}`,
+      [TRUNCATED_KEY]: `${json.length} bytes, showing first ${limit}`,
       preview: json.slice(0, limit),
     }),
     truncated: true,
@@ -61,4 +68,15 @@ function describe(value: unknown): string {
   const type = typeof value;
   if (type !== "object") return type;
   return (value as object).constructor?.name ?? "object";
+}
+
+/** Whether a stored payload is the truncated placeholder rather than the value. */
+export function isTruncated(json: string | null): boolean {
+  if (!json) return false;
+  try {
+    const parsed = JSON.parse(json);
+    return typeof parsed === "object" && parsed !== null && TRUNCATED_KEY in parsed;
+  } catch {
+    return false;
+  }
 }

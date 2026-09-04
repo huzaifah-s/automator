@@ -8,6 +8,54 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### PBLSH: the signed agreement, off n8n
+
+`workflows/pblsh/send-signed-agreement.ts` replaces the n8n graph of the same
+name — Tally posts a Content Buyout Agreement submission, the creator gets the
+signed PDF by email, Huzaifah gets a Telegram summary. Five nodes became four
+steps, and the port fixed things on the way across rather than transcribing
+them.
+
+**Decided along the way:**
+
+- **Fields are read by label, not by index.** The n8n Telegram node read
+  `fields[2]`, `fields[3]`, `fields[7]` … so dragging a question in the Tally
+  editor would have sent the KTP number as the date of birth, silently and
+  forever. Labels are the only stable handle in the payload, so all of it goes
+  through one lookup, and a renamed question now fails the run with the label
+  named in the error instead of delivering a wrong summary.
+- **Every value interpolated into the Telegram HTML is escaped.** A creator
+  named "Tan & Sons" broke the whole message under `parse_mode: HTML`; the n8n
+  version was one apostrophe away from finding that out in production.
+- **The payload is read inside the first step, not at the top of `run()`.**
+  A resumed run has no `ctx.input`, so reading it early makes a resume report
+  the form's own questions missing. This is the second workflow to need that
+  shape, after `approval-resolve`.
+- **The PDF download is deliberately *not* checkpointed.** A few hundred KB of
+  base64 as a step result would be truncated on the way into SQLite and leave
+  the run page holding a useless copy, so the buffer leaves the step through a
+  closure and the result is just its size — which means a checkpoint hit would
+  hand a later step an empty buffer. `checkpoint: false` is the only
+  combination of those two that is correct; re-downloading on a resume is
+  cheap, and it was verified by resuming a run that had failed at the email.
+- **Brevo over HTTP rather than `ctx.email`.** The SMTP client would work, but
+  its credentials are global to the runner while `BREVO_API_KEY` is declared
+  by this file — and the flow needs Brevo's verified sender, reply-to, and
+  base64 attachment exactly as the n8n node had them. One `defineSecrets` key
+  validated at boot beats five shared SMTP variables.
+- **The route keeps `WEBHOOK_SECRET`.** Tally's webhook form has no
+  custom-header field, so the secret travels as `?secret=…` in the URL pasted
+  into Tally. The rejected alternative was `secret: false` plus an unguessable
+  path, which is all the n8n webhook had — not good enough for a payload
+  carrying a KTP number and bank details.
+
+**Known and accepted:** a run page for this workflow holds personal data — the
+captured payload has the KTP number, address, and bank details, and Tally's
+signed `submissionPdfUrl` is a bearer link to the PDF while its token lives.
+That is bounded by the dashboard's basic auth and `RUN_RETENTION_DAYS`, with
+`CAPTURE_DATA=false` as the runner-wide off switch. The file says so at the top
+rather than leaving it to be discovered.
+
 ### Folders in `workflows/`
 
 Projects now group: `workflows/pblsh/…` loads exactly like a top-level file

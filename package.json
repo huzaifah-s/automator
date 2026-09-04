@@ -1,0 +1,29 @@
+{
+  "name": "automator",
+  "version": "0.1.0",
+  "description": "A tiny code-first automation runner. Workflows are TypeScript files, not JSON blobs.",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "check": "tsc --noEmit",
+    "list": "bun src/index.ts --list",
+    "trigger": "bun src/index.ts --run"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.0",
+    "cheerio": "^1.1.2",
+    "croner": "^9.1.0",
+    "hono": "^4.9.10",
+    "nodemailer": "^7.0.9",
+    "openai": "^6.7.0",
+    "postgres": "^3.4.7",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.24",
+    "@types/nodemailer": "^7.0.4",
+    "typescript": "^5.9.3"
+  }
+}

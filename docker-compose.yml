@@ -1,0 +1,29 @@
+services:
+  automator:
+    build: .
+    image: automator:latest
+    container_name: automator
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      # Cron expressions are interpreted in this zone unless a workflow says otherwise.
+      TZ: ${TZ:-UTC}
+    volumes:
+      - automator-data:/data
+      # Live-mount workflows so editing one only needs a restart, not a rebuild.
+      - ./workflows:/app/workflows:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  automator-data:

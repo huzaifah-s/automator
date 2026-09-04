@@ -8,6 +8,32 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### `workflows/` ships only real work
+
+The nine demo workflows are gone; `workflows/pblsh/send-signed-agreement.ts`
+is the only one left. They were written to illustrate the runner's features and
+they did that job in the README, which still documents every pattern they
+showed.
+
+**Decided along the way:**
+
+- **The demos were a deploy hazard, not just clutter.** Every one that declared
+  a secret was a boot-stopping requirement for a credential nobody here needs —
+  `daily-digest` demanded a `GITHUB_TOKEN` to summarise commits on `oven-sh/bun`,
+  a repo we have nothing to do with. Feature illustration is the README's job,
+  where a wrong example costs a reread; in `workflows/` it costs a deploy.
+- **The pattern docs stay, the file pointers go.** Checkpoints, pagination,
+  polling, durable state, and approval gates are still documented in full —
+  only the "here is the runnable example" lines were cut, because a pointer to
+  a deleted file is worse than no pointer. The approval section now reads as
+  the specification it always was.
+- **`APPROVAL_SLACK_CHANNEL` came out of `.env.example`.** Nothing in `src/`
+  ever read it; it was the deleted `approval-request` workflow's own
+  configuration, and left behind it would have looked like a runner setting.
+- **CHANGELOG entries were left alone.** Older entries describe files that no
+  longer exist, which is what history is for — rewriting them to match the
+  current tree would destroy the reasoning they exist to keep.
+
 ### PBLSH: the signed agreement, off n8n
 
 `workflows/pblsh/send-signed-agreement.ts` replaces the n8n graph of the same

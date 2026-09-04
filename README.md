@@ -162,8 +162,6 @@ picks up at the one that broke.
 ✓ succeeded
 ```
 
-`workflows/checkpoint-demo.ts` fails on purpose so you can try it.
-
 Also available on the API: `POST /api/runs/:id/resume`.
 
 ### Replay — the other button
@@ -251,9 +249,6 @@ already fetched, or finds a cursor token it has no parameter name for *throws*.
 Returning what it has so far would be a partial answer that looks like a
 complete one — the bug you find weeks later in a report with missing rows. The
 quiet endings are the honest ones: an empty page, no next link, `maxItems`.
-
-`workflows/paginate-demo.ts` is a working example against a real API that needs
-no credentials.
 
 ## Webhooks that register themselves
 
@@ -406,9 +401,6 @@ survives restarts and redeploys; the `@poll:` prefix is reserved. It widens
 automatically if one page is bigger than `remember`, so a large fetch can't push
 its own items out of the window and re-deliver them forever.
 
-`workflows/poll-demo.ts` is a working example that needs no network or
-credentials — set `enabled: true` to watch it.
-
 ## Durable state
 
 `ctx.state` is a key/value store that outlives the run — and the process, the
@@ -444,9 +436,6 @@ write. Under 100-way concurrency `update` counted 100; get-then-set counted 1.
 await ctx.state.update<number>("processed", (n) => (n ?? 0) + 1);
 ```
 
-`workflows/state-demo.ts` is a runnable cursor example — run it twice and the
-second run finds nothing new.
-
 ### State is deliberately not redacted
 
 Everything else this project writes to SQLite goes through the secret filter,
@@ -481,11 +470,10 @@ approval-request  (any trigger)  → writes shared "approval:<random-id>" = { st
 approval-resolve  (GET webhook)  → claims "approval:<id>", acts on it, records the decision
 ```
 
-`workflows/approval-request.ts` and `workflows/approval-resolve.ts` are that
-pair, runnable as they stand:
+That pair no longer ships as example files, so the pattern below is the whole
+specification. The resolving half answers a `GET` hook:
 
 ```bash
-bun run trigger -- approval-request      # prints an approve and a decline link
 curl "http://localhost:3000/hooks/approval?id=<id>&decision=approve"
 ```
 
@@ -706,7 +694,7 @@ reverting that variable to an older value discards the live chain too.
 
 ```bash
 bun run list                        # every workflow and its trigger
-bun run trigger -- daily-digest         # run one now, exit non-zero on failure
+bun run trigger -- send-signed-agreement   # run one now, exit non-zero on failure
 docker compose logs -f automator
 ```
 

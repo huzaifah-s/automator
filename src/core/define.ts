@@ -1,4 +1,4 @@
-import type { Trigger, WorkflowDef } from "./types.ts";
+import type { PollCtx, Trigger, WorkflowDef } from "./types.ts";
 import type { ZodType } from "zod";
 
 /**
@@ -35,11 +35,53 @@ export function webhook(
   return { kind: "webhook", path: path.replace(/^\/+/, ""), ...opts };
 }
 
+/**
+ * poll("0 * * * *", { fetch, id }) — checks on a schedule and starts a run
+ * only for the items it has never seen. Nothing new means no run at all.
+ *
+ *   trigger: poll("0 * * * *", {
+ *     fetch: (ctx) => ctx.http.get("https://api.example.com/issues"),
+ *     id: (issue) => issue.id,
+ *   })
+ *
+ * ctx.input is the array of new items. Annotate the workflow to type it:
+ * defineWorkflow<Issue[]>({ ... }).
+ */
+export function poll<T>(
+  expression: string,
+  opts: {
+    fetch(ctx: PollCtx): Promise<T[]>;
+    /** Stable identity per item. Defaults to a hash of the whole item. */
+    id?(item: T): string | number;
+    tz?: string;
+    /** How many recent ids to remember. Default 500. */
+    remember?: number;
+    /** First ever poll: "skip" (default) baselines without running. */
+    firstRun?: "skip" | "emit";
+    /** Ceiling on fetch() itself. Default 60_000. */
+    timeoutMs?: number;
+  },
+): Trigger {
+  if (typeof opts?.fetch !== "function") {
+    throw new Error("poll() needs a fetch function returning an array of items");
+  }
+  return {
+    kind: "poll",
+    expression,
+    tz: opts.tz ?? process.env.TZ,
+    fetch: opts.fetch as (ctx: PollCtx) => Promise<unknown[]>,
+    id: opts.id as ((item: any) => string | number) | undefined,
+    remember: opts.remember,
+    firstRun: opts.firstRun,
+    timeoutMs: opts.timeoutMs,
+  };
+}
+
 /** Only ever runs when you press the button or use the CLI. */
 export function manual(): Trigger {
   return { kind: "manual" };
 }
 
 export { defineSecrets, defineSecretGroup, optionalSecret } from "./secrets.ts";
-export type { Ctx, WorkflowDef } from "./types.ts";
+export type { Ctx, PollCtx, WorkflowDef } from "./types.ts";
 export type { StateClient, StateStore, StateSetOptions } from "./state.ts";

@@ -84,9 +84,11 @@ const statusPill = (s: string) => html`<span class="pill ${s}">${s}</span>`;
 const triggerLabel = (wf: LoadedWorkflow) =>
   wf.trigger.kind === "cron"
     ? `cron · ${wf.trigger.expression}`
-    : wf.trigger.kind === "webhook"
-      ? `${wf.trigger.method ?? "POST"} /hooks/${wf.trigger.path}`
-      : "manual";
+    : wf.trigger.kind === "poll"
+      ? `poll · ${wf.trigger.expression}`
+      : wf.trigger.kind === "webhook"
+        ? `${wf.trigger.method ?? "POST"} /hooks/${wf.trigger.path}`
+        : "manual";
 
 /* ------------------------------------------------------------------ index */
 

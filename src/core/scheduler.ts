@@ -1,33 +1,41 @@
 import { Cron } from "croner";
 import { log } from "./logger.ts";
 import { runWorkflow } from "./runner.ts";
+import { pollOnce } from "./poll.ts";
 import { store } from "./db.ts";
 import type { Registry } from "./loader.ts";
 
 const jobs: Cron[] = [];
 
-/** Wires every cron-triggered workflow to croner and starts a nightly prune. */
+/** Wires every scheduled workflow to croner and starts a nightly prune. */
 export function startScheduler(registry: Registry): void {
   for (const wf of registry.enabled()) {
-    if (wf.trigger.kind !== "cron") continue;
+    const trigger = wf.trigger;
+    // cron and poll are both "run me on this expression"; they differ only in
+    // what happens when the expression fires.
+    if (trigger.kind !== "cron" && trigger.kind !== "poll") continue;
 
     try {
       const job = new Cron(
-        wf.trigger.expression,
-        { timezone: wf.trigger.tz, name: wf.name, protect: true },
-        () => {
-          void runWorkflow(wf, { trigger: "cron" });
-        },
+        trigger.expression,
+        { timezone: trigger.tz, name: wf.name, protect: true },
+        trigger.kind === "poll"
+          ? () => {
+              void pollOnce(wf);
+            }
+          : () => {
+              void runWorkflow(wf, { trigger: "cron" });
+            },
       );
       jobs.push(job);
       log.info(
-        `Scheduled ${wf.name}: ${wf.trigger.expression}` +
-          `${wf.trigger.tz ? ` (${wf.trigger.tz})` : ""} — next ${job.nextRun()?.toISOString() ?? "never"}`,
+        `Scheduled ${wf.name}: ${trigger.kind === "poll" ? "poll " : ""}${trigger.expression}` +
+          `${trigger.tz ? ` (${trigger.tz})` : ""} — next ${job.nextRun()?.toISOString() ?? "never"}`,
       );
     } catch (err) {
       // A bad expression should be loud but must not take the other jobs down.
       log.error(
-        `Invalid cron expression for ${wf.name}: "${wf.trigger.expression}" — ${
+        `Invalid cron expression for ${wf.name}: "${trigger.expression}" — ${
           err instanceof Error ? err.message : err
         }`,
       );

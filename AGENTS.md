@@ -26,7 +26,7 @@ There is no test suite. Verify by running the thing (see **Verifying** below).
 ## Layout
 
 ```
-src/core/          define · loader · runner · scheduler · db · secrets
+src/core/          define · loader · runner · scheduler · poll · db · secrets
                    redact · capture · state · logger · alerts · types
 src/integrations/  index (barrel + lazy ctx clients) · http · messaging
                    ai · email · sql · sheets · scrape
@@ -73,7 +73,7 @@ export default defineWorkflow({
 ```
 
 Triggers: `cron(expr, { tz })`, `webhook(path, { method, schema, respond, secret })`,
-`manual()`. On `ctx`: `http` `slack` `telegram` `discord` `ai` `email` `sql`
+`poll(expr, { fetch, id })`, `manual()`. On `ctx`: `http` `slack` `telegram` `discord` `ai` `email` `sql`
 `sheets` `scrape`, plus `log` `step` `state` `signal` `input` `attempt` `runId`.
 
 ## Rules that will bite you
@@ -97,6 +97,16 @@ new column that holds workflow-controlled data, redact it.
 **New integration env vars go in `INTEGRATION_SECRET_ENV`**
 (`src/integrations/index.ts`). Integrations read their own credentials from the
 environment, so the redactor only learns about them from that list.
+
+**A poll's `fetch` runs outside a run.** There is no runId, so its HTTP calls
+are not captured and `PollCtx` has no `ctx.step`. Keep `fetch` to "return the
+current list" and put the actual work in `run()`, where it is observable,
+retried, and checkpointed.
+
+**Poll items are marked seen only after the run succeeds.** Do not "optimise"
+this into marking them up front — a failed run would then silently drop its
+items. The seen-set lives in the workflow's own state namespace under the
+reserved `@poll:` prefix.
 
 **`ctx.state` is the one thing not redacted on the way to disk, and it must
 stay invisible.** Every other write to SQLite is observational, so scrubbing it
@@ -156,6 +166,8 @@ These were decided deliberately. Raise a trade-off before changing any of them:
 - **Checkpoints are memoised step results**, not deterministic replay.
 - **`ctx.state` is durable and never displayed.** It survives run pruning on
   purpose; it is not part of run history.
+- **Polling is at-least-once.** Items are marked seen after a successful run,
+  never before, and a quiet poll creates no run record at all.
 - **Secrets come from the environment.** No credential store in the database
   unless someone explicitly asks for UI-managed credentials.
 

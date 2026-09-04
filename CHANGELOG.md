@@ -8,6 +8,52 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### `poll()` trigger — schedule + dedupe, no empty runs
+
+Closes the second of the two gaps that `ctx.state` unblocked. A large share of
+real automation is "check this source on a schedule and act only on what's new",
+and the only way to express it before was a `cron()` that re-ran a run every
+interval and filtered by hand — with nowhere to keep the cursor.
+
+```ts
+trigger: poll("*/5 * * * *", {
+  fetch: (ctx) => ctx.http.get("https://api.example.com/issues"),
+  id: (issue) => issue.id,
+})
+```
+
+`ctx.input` is the array of items never seen before. `poll` and `cron` share the
+scheduler loop; they differ only in what firing does.
+
+**Decided along the way:**
+
+- **A quiet tick creates no run record.** The alternative — a run that returns
+  `{ new: 0 }` — buries the dashboard under 288 empty runs a day on a
+  five-minute poll, which makes run history useless for spotting real activity.
+  The cost is that "did it poll?" is a log line, not a run; a `fetch` that
+  *throws* still gets a failed run so failures are never silent.
+- **Marked seen only after the run succeeds.** Marking up front is simpler and
+  wrong: a failed run would drop its items permanently. At-least-once means a
+  persistently failing workflow re-delivers every tick, which is noisy but
+  recoverable, and `ALERT_WEBHOOK_URL` already covers the noise.
+- **First poll baselines instead of firing.** Pointing a new workflow at a feed
+  of 500 open issues should not send 500 messages. `firstRun: "emit"` opts out.
+- **The remember-window widens to fit one page.** A fetch returning more items
+  than `remember` would otherwise push its own items out of the set and
+  re-deliver them forever — a silent infinite loop. The window never drops below
+  one page, and the cap is warned about rather than enforced destructively.
+- **`fetch` gets no `ctx.step`.** It runs outside a run, so there is nothing to
+  attach steps or captured HTTP calls to. Keeping `fetch` to "return the current
+  list" and the work in `run()` is what keeps the work observable.
+- **One run per batch, not per item.** Per-item runs would collide with the
+  default `onOverlap: "skip"` and need serialising. Looping in `run()` with
+  `ctx.step(\`item ${id}\`)` already gives per-item checkpointing, which is the
+  documented idiom here.
+
+Rejected: auto-registering webhooks with providers (Stripe/GitHub push
+subscriptions). Different problem, much larger surface, and polling covers the
+sources that have no push at all.
+
 ### `ctx.state` — durable key/value store
 
 Workflows had nowhere to remember anything between runs. The database held only

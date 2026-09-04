@@ -73,14 +73,16 @@ export default defineWorkflow({
 });
 ```
 
-Three worked examples ship in `workflows/`: a cron + AI + Slack digest, a
-schema-validated Stripe webhook, and a minimal uptime check.
+Worked examples ship in `workflows/`: a cron + AI + Slack digest, a
+schema-validated Stripe webhook, a minimal uptime check, and demos for
+checkpoint resume, `ctx.state`, and polling.
 
 ### Triggers
 
 ```ts
 cron("0 9 * * *", { tz: "Asia/Kuala_Lumpur" })   // 5- or 6-field, DST-aware
 webhook("stripe", { schema, respond: "async" })   // → POST /hooks/stripe
+poll("*/5 * * * *", { fetch, id })                // runs only when there's something new
 manual()                                          // dashboard button / CLI only
 ```
 
@@ -155,6 +157,65 @@ Also available on the API: `POST /api/runs/:id/resume`.
   will replay the old one. Checkpoints expire after `checkpointTtlHours`
   (24 by default), and `ctx.step(name, fn, { checkpoint: false })` opts a
   single step out permanently.
+
+## Polling
+
+`poll()` is a cron that only starts a run when the source has something new.
+
+```ts
+export default defineWorkflow<Issue[]>({
+  name: "new-issues",
+  trigger: poll("*/5 * * * *", {
+    fetch: (ctx) => ctx.http.get("https://api.github.com/repos/you/repo/issues"),
+    id: (issue) => issue.id,
+  }),
+
+  async run(ctx) {
+    // ctx.input is only the issues this workflow has never seen.
+    for (const issue of ctx.input) {
+      await ctx.step(`notify ${issue.id}`, () => ctx.slack.send("#dev", issue.title));
+    }
+    return { notified: ctx.input.length };
+  },
+});
+```
+
+**Nothing new means no run at all** — not a run that returns zero. A five-minute
+poll would otherwise bury the dashboard under 288 empty runs a day.
+
+| Option | Default | Notes |
+|---|---|---|
+| `fetch` | — | Gets every client a run has: `http`, `sql`, `state`, … |
+| `id` | hash of the whole item | What "seen before" is decided on |
+| `remember` | `500` | How many recent ids to keep |
+| `firstRun` | `"skip"` | Baseline instead of firing for everything already there |
+| `timeoutMs` | `60_000` | Ceiling on `fetch`, separate from the run's own timeout |
+| `tz` | `TZ` | Same as `cron()` |
+
+Four behaviours worth knowing before you rely on it:
+
+**The first poll doesn't run.** It records what is already there and stops, so
+pointing a workflow at a feed of 500 open issues doesn't send 500 messages.
+Use `firstRun: "emit"` if you want the opposite.
+
+**Items are marked seen only after the run succeeds.** A failed run gets the
+same items again on the next tick rather than dropping them — at-least-once,
+because silent loss is the worse failure. A workflow that fails forever will
+retry forever; that is what `ALERT_WEBHOOK_URL` is for.
+
+**Give it an `id`.** Without one the whole item is hashed, so an item whose
+title or timestamp changed reads as new.
+
+**A `fetch` that throws becomes a failed run** with the error on its run page,
+and alerts like any other failure. Polling never stops silently.
+
+The seen-set lives in [`ctx.state`](#durable-state) under `@poll:seen`, so it
+survives restarts and redeploys; the `@poll:` prefix is reserved. It widens
+automatically if one page is bigger than `remember`, so a large fetch can't push
+its own items out of the window and re-deliver them forever.
+
+`workflows/poll-demo.ts` is a working example that needs no network or
+credentials — set `enabled: true` to watch it.
 
 ## Durable state
 

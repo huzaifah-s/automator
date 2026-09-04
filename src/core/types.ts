@@ -3,7 +3,7 @@ import type { Logger } from "./logger.ts";
 import type { StateClient } from "./state.ts";
 import type { Integrations } from "../integrations/index.ts";
 
-export type TriggerKind = "cron" | "webhook" | "manual";
+export type TriggerKind = "cron" | "webhook" | "manual" | "poll";
 
 export type Trigger =
   | {
@@ -29,7 +29,48 @@ export type Trigger =
       /** Overrides the global WEBHOOK_SECRET for this route. */
       secret?: string;
     }
+  | {
+      kind: "poll";
+      /** How often to check. Same 5- or 6-field cron expression as cron(). */
+      expression: string;
+      /** IANA zone, e.g. "Asia/Kuala_Lumpur". Defaults to the TZ env var. */
+      tz?: string;
+      /**
+       * Returns everything the source currently has. Only the items this
+       * workflow has never seen reach run(), as ctx.input — and when there are
+       * none, no run happens at all.
+       */
+      fetch(ctx: PollCtx): Promise<unknown[]>;
+      /**
+       * Stable identity for one item, which is what "seen before" is decided
+       * on. Defaults to a hash of the whole item, so an item whose fields
+       * change looks new. Give an id whenever the source has one.
+       */
+      id?(item: any): string | number;
+      /** How many recent ids to remember. Default 500. */
+      remember?: number;
+      /**
+       * What the very first poll does. "skip" (default) records what is
+       * already there and runs nothing, so turning a workflow on doesn't fire
+       * once per pre-existing item. "emit" treats everything as new.
+       */
+      firstRun?: "skip" | "emit";
+      /** Ceiling on fetch() itself, separate from the run. Default 60_000. */
+      timeoutMs?: number;
+    }
   | { kind: "manual" };
+
+/**
+ * What a poll trigger's fetch() gets. Every client a run has, minus the things
+ * that only make sense inside one — there is no run yet, and there may never
+ * be one if nothing new turns up.
+ */
+export interface PollCtx extends Integrations {
+  workflow: string;
+  log: Logger;
+  signal: AbortSignal;
+  state: StateClient;
+}
 
 /** What the runner hands to `run()`. */
 export interface Ctx<Input = unknown> extends Integrations {

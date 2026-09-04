@@ -34,9 +34,11 @@ if (args[0] === "--list") {
     const trigger =
       w.trigger.kind === "cron"
         ? `cron ${w.trigger.expression}`
-        : w.trigger.kind === "webhook"
-          ? `${w.trigger.method ?? "POST"} /hooks/${w.trigger.path}`
-          : "manual";
+        : w.trigger.kind === "poll"
+          ? `poll ${w.trigger.expression}`
+          : w.trigger.kind === "webhook"
+            ? `${w.trigger.method ?? "POST"} /hooks/${w.trigger.path}`
+            : "manual";
     console.log(
       `${w.enabled === false ? "○" : "●"} ${w.name.padEnd(28)} ${trigger.padEnd(34)} ${w.file}`,
     );

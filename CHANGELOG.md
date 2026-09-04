@@ -8,6 +8,24 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### PBLSH authenticates Tally by its signature
+
+`workflows/pblsh/send-signed-agreement.ts` now verifies Tally's
+`tally-signature` instead of expecting `WEBHOOK_SECRET` in the request. Tally
+has no field for a custom header, so the only alternative was `?secret=` in
+the webhook URL — and that puts the secret in every access log between Tally
+and here, ours included.
+
+**Decided along the way:**
+
+- **`TALLY_SIGNING_SECRET` is boot-stopping**, declared with `defineSecrets`
+  like `BREVO_API_KEY`. A signing secret that is absent is a webhook with no
+  authentication, and the deploy should fail rather than accept anything that
+  reaches the path.
+- **The old `?secret=` URL stops working.** `verify` replaces the shared-secret
+  check rather than adding to it, so the query parameter is no longer read for
+  this route. The webhook URL in Tally goes back to being just the URL.
+
 ### `verify`, for the providers that sign instead of echoing
 
 `WEBHOOK_SECRET` assumes the caller sends the secret back. Most providers

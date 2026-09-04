@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { defineSecrets, defineWorkflow, webhook } from "../../src/core/define.ts";
+import { defineSecrets, defineWorkflow, tallySignature, webhook } from "../../src/core/define.ts";
 
 /**
  * PBLSH — Content Buyout Agreement.
@@ -29,6 +29,10 @@ const secrets = defineSecrets({
   // one. Only checked for length: which key types Brevo issues is their call,
   // and a boot that fails on a valid key is worse than one that doesn't.
   BREVO_API_KEY: z.string().min(20),
+  // Tally's signing secret. It signs the body with this and sends only the
+  // digest, so the shared WEBHOOK_SECRET could never match — see the verify
+  // option on the trigger below.
+  TALLY_SIGNING_SECRET: z.string().min(10),
 });
 
 /* ------------------------------------------------------------------ payload */
@@ -140,7 +144,14 @@ const copyEmail = (name: string) => `<div style="font-family:-apple-system,Blink
 export default defineWorkflow<z.infer<typeof payload>>({
   name: "pblsh-send-signed-agreement",
   description: "Emails a Tally signer their agreement PDF and pings Telegram",
-  trigger: webhook("pblsh/agreement-signed", { method: "POST", schema: payload }),
+  trigger: webhook("pblsh/agreement-signed", {
+    method: "POST",
+    schema: payload,
+    // Authenticates Tally by its signature rather than a token in the URL:
+    // Tally has nowhere to put a custom header, and a secret in the query
+    // string is a secret in every access log between here and them.
+    verify: tallySignature(secrets.TALLY_SIGNING_SECRET),
+  }),
   // A signed agreement must not be dropped, so two submissions landing
   // together queue rather than the second being skipped.
   onOverlap: "queue",

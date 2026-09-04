@@ -244,7 +244,7 @@ export default defineWorkflow<z.infer<typeof payload>>({
           // Configuration, not a secret: declaring the chat id would blank it
           // out of every run page. Unset, the integration's TELEGRAM_CHAT_ID
           // is used.
-          chatId: process.env.PBLSH_TELEGRAM_CHAT_ID,
+          chatId: process.env.TELEGRAM_CHAT_ID_HUZAIFAH,
           parseMode: "HTML",
         },
       ),

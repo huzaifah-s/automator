@@ -123,8 +123,11 @@ the two halves have separate run pages. Document that honestly if you build it.
 shutdown, overlap control, and the timeout contract at once.
 
 **Decide first:** is a durable execution engine on the table at all? If yes, this
-item is "adopt Inngest/Temporal", not "extend the runner", and items 7 and 8
-change shape too. That's the user's call, not ours.
+item is "adopt Inngest/Temporal", not "extend the runner" — and note that items
+7 (`MAX_CONCURRENT_RUNS`) and 8 (`ctx.run()`) are now *built*, so adopting an
+engine means replacing working code, not designing around a gap. That raises
+the cost of saying yes, which is worth knowing before saying it. Still the
+user's call, not ours.
 
 ## 10. AI tool-loop / agent
 

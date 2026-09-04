@@ -2,6 +2,7 @@ import { z } from "zod";
 import { defineSecrets } from "../core/secrets.ts";
 import { registerSecret } from "../core/redact.ts";
 import { createState } from "../core/state.ts";
+import { createCipher, decodeKey } from "../core/crypto.ts";
 import { log } from "../core/logger.ts";
 
 /**
@@ -380,65 +381,20 @@ async function save(cred: Resolved, token: Token): Promise<void> {
  *
  * Losing OAUTH_ENCRYPTION_KEY costs the stored tokens, not access: the seeds
  * in the environment still work, and load() falls back to them.
+ *
+ * The wire format lives in core/crypto.ts, shared with the secret store. It is
+ * unchanged from when this file owned it — base64(iv ‖ ciphertext) — because
+ * databases in the field already hold tokens written that way.
  */
 
-let cachedKey: Promise<CryptoKey> | undefined;
-let cachedFrom: string | undefined;
-
-function masterKey(): Promise<CryptoKey> {
-  const raw = process.env[KEY_ENV] ?? "";
-  if (cachedKey && cachedFrom === raw) return cachedKey;
-
-  const bytes = decodeKey(raw);
-  if (!bytes) {
-    throw new Error(
-      `${KEY_ENV} must be 32 bytes, base64 or hex — generate with: openssl rand -base64 32`,
-    );
-  }
-  cachedFrom = raw;
-  cachedKey = crypto.subtle.importKey("raw", detach(bytes), "AES-GCM", false, [
-    "encrypt",
-    "decrypt",
-  ]);
-  return cachedKey;
-}
+const cipher = createCipher([KEY_ENV]);
 
 async function encrypt(token: Token): Promise<Envelope> {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ciphertext = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv },
-    await masterKey(),
-    new TextEncoder().encode(JSON.stringify(token)),
-  );
-  return { v: 1, data: Buffer.concat([iv, new Uint8Array(ciphertext)]).toString("base64") };
+  return { v: 1, data: await cipher.encrypt(JSON.stringify(token)) };
 }
 
 async function decrypt(envelope: Envelope): Promise<Token> {
-  const bytes = Buffer.from(envelope.data, "base64");
-  const plaintext = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: detach(bytes.subarray(0, 12)) },
-    await masterKey(),
-    detach(bytes.subarray(12)),
-  );
-  return JSON.parse(new TextDecoder().decode(plaintext)) as Token;
-}
-
-/**
- * WebCrypto's types insist on a view over a plain ArrayBuffer, which a Buffer
- * (a view into a pooled one) is not. Copying is cheaper than fighting it.
- */
-function detach(view: Uint8Array): ArrayBuffer {
-  const out = new ArrayBuffer(view.byteLength);
-  new Uint8Array(out).set(view);
-  return out;
-}
-
-/** Accepts the two encodings people actually paste. */
-function decodeKey(raw: string): Uint8Array | undefined {
-  const value = raw.trim();
-  if (/^[0-9a-fA-F]{64}$/.test(value)) return new Uint8Array(Buffer.from(value, "hex"));
-  const decoded = Buffer.from(value, "base64");
-  return decoded.length === 32 ? new Uint8Array(decoded) : undefined;
+  return JSON.parse(await cipher.decrypt(envelope.data)) as Token;
 }
 
 /** Identifies which env seed a stored chain grew from, without storing it twice. */

@@ -27,8 +27,13 @@ export type Trigger =
        * "sync" waits for the workflow and returns its result.
        */
       respond?: "async" | "sync";
-      /** Overrides the global WEBHOOK_SECRET for this route. */
-      secret?: string;
+      /**
+       * Overrides the global WEBHOOK_SECRET for this route. `false` opts the
+       * route out of the secret check altogether — for a URL a person clicks,
+       * where a shared secret cannot travel in the link and the workflow
+       * authenticates the caller itself. See README "Links a human clicks".
+       */
+      secret?: string | false;
       /**
        * Creates and deletes the subscription at the provider, so a webhook is
        * not a URL somebody pasted into a dashboard once and has to remember.

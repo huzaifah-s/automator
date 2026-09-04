@@ -42,7 +42,11 @@ export function createApp(registry: Registry): Hono {
       return c.json({ error: `No workflow handles ${method} /hooks/${path}` }, 404);
     }
 
-    const expected = wf.trigger.secret ?? process.env.WEBHOOK_SECRET;
+    // `secret: false` is an explicit opt-out, not an absent override: a route
+    // whose caller is a person following a link cannot carry the shared secret,
+    // so that workflow authenticates the caller from its own payload instead.
+    const expected =
+      wf.trigger.secret === false ? undefined : (wf.trigger.secret ?? process.env.WEBHOOK_SECRET);
     if (expected) {
       const provided =
         c.req.header("x-automator-secret") ??

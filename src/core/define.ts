@@ -29,7 +29,8 @@ export function webhook(
     method?: "GET" | "POST";
     schema?: ZodType;
     respond?: "async" | "sync";
-    secret?: string;
+    /** `false` opts out of the secret check — see types.ts. */
+    secret?: string | false;
     /** Creates and deletes the subscription at the provider — see README. */
     register?: WebhookRegistration;
   } = {},

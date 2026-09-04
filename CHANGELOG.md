@@ -8,6 +8,61 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### OAuth2 credentials that refresh themselves
+
+Every user-consent integration was blocked: `process.env` is immutable at
+runtime and a refresh token *rotates*, so there was nowhere to put the new one.
+`ctx.state` removed that obstacle, and `defineOAuth(name, { tokenUrl })` now
+sits beside `defineSecrets` — the provider's details in the file, its
+credentials in the environment, the rotating half in encrypted state.
+
+**Decided along the way:**
+
+- **OAuth rows are encrypted; the rest of `ctx.state` is not.** This was the
+  open question the item was parked on, and the answer is neither of the
+  extremes. Encrypting everything costs the documented "open the database file"
+  escape hatch for debugging cursors, and buys nothing for a polling cursor.
+  Encrypting nothing was defensible when state held cursors, and stops being
+  defensible the moment one file holds live tokens for a dozen services. So:
+  AES-256-GCM under `OAUTH_ENCRYPTION_KEY` for `@oauth:` keys, WebCrypto, no
+  new dependency. Losing the key costs the stored tokens, not access — the next
+  call falls back to the seed in the environment, warns once, and carries on.
+- **No consent flow, deliberately.** You run the authorization-code flow by
+  hand once and paste the refresh token in. The alternative is a callback
+  route, session storage, and parked half-finished consent, all for an action
+  performed once per credential in the lifetime of an integration.
+- **The in-process refresh lock is not optional.** `ctx.state.update()` is
+  synchronous by design and cannot wrap an async token refresh, so two
+  concurrent runs would both refresh — and most providers kill the old refresh
+  token on use, so the second write stores a credential the provider has
+  already invalidated. A `Map<name, Promise<Token>>` is sufficient because we
+  are single-process by design. Each lock holder re-reads state before spending
+  a token, so a caller that queued behind a refresh uses its result rather than
+  the token it rotated away. Verified: 20 concurrent callers, one refresh, one
+  distinct token, and exactly one live refresh token at the provider.
+- **The redactor has to be told about a token it reads back from disk, not
+  just one it fetched.** Registering only inside the token exchange looked
+  complete and passed the first run. The second run — a fresh process, token
+  decrypted from state, no exchange — wrote it unredacted onto the run page.
+  Caught by running it, which is the whole reason that rule exists.
+- **The refresh window is clamped to half the token's life.** A flat 60s of
+  skew means a provider issuing 30-second tokens gets refreshed on every single
+  call, which against a rotating provider spends a credential per API request.
+- **The environment stays the source of truth for which chain is legitimate.**
+  Each stored chain records a hash of the env refresh token it grew from; when
+  that stops matching, the operator has deliberately pasted a new one and the
+  stored chain is abandoned rather than preferred. Without it, recovering from
+  a revoked token would mean hand-editing SQLite.
+
+Verified against a stand-in provider that rotates and invalidates on every use
+(no credentials for a real one): cold start under 20-way concurrency, reuse
+across a restart with zero refreshes, refresh after expiry using the rotated
+token, a hand-pasted replacement seed, both client-authentication styles, a
+forced refresh, a lost master key falling back to the environment, boot
+refusing to start on a missing or malformed key, and a grep of the database
+file for every token, seed, client secret, and the master key itself — zero
+hits.
+
 ### Webhooks that register themselves with the provider
 
 A webhook was a URL somebody pasted into Stripe or GitHub once and had to

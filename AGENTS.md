@@ -29,7 +29,7 @@ There is no test suite. Verify by running the thing (see **Verifying** below).
 src/core/          define · loader · runner · scheduler · poll · db · secrets
                    redact · capture · state · logger · alerts · types
 src/integrations/  index (barrel + lazy ctx clients) · http · messaging
-                   ai · email · sql · sheets · scrape
+                   ai · email · sql · sheets · scrape · oauth
 src/server/        app (webhooks + REST + dashboard routes) · views (HTML)
 workflows/         user workflows — the only directory most changes touch
 ```
@@ -96,6 +96,14 @@ recorded HTTP URLs and bodies — goes through `redact()` or `capture()` first.
 The invariant is: *no raw credential ever reaches disk or stdout.* If you add a
 new column that holds workflow-controlled data, redact it.
 
+**A credential read back from storage is unknown to the redactor.**
+`registerSecret` builds a per-process set, from `defineSecrets` at import and
+from live values as they are obtained. An OAuth token is registered when it is
+exchanged **and again every time it is decrypted out of state**, because the
+process reading it may never have done an exchange. Dropping that second
+registration puts a live token on the run page after every restart — this is
+not hypothetical, it was caught by running it, not by reading it.
+
 **New integration env vars go in `INTEGRATION_SECRET_ENV`**
 (`src/integrations/index.ts`). Integrations read their own credentials from the
 environment, so the redactor only learns about them from that list.
@@ -117,6 +125,14 @@ needs the same bytes back — so redacting on write would destroy the value. Wha
 keeps the invariant true is that nothing renders state: no dashboard view, no
 API route, no log line. Do not add one. If you need to inspect it, open the
 database file.
+
+**OAuth credentials are the one encrypted thing in the database.**
+`@oauth:` keys in the shared namespace hold AES-256-GCM values under
+`OAUTH_ENCRYPTION_KEY`; every other state value is stored as given, so
+`sqlite3` stays useful for debugging a cursor. Don't extend encryption to the
+rest of state without deciding that trade again, and don't add a code path that
+writes a token anywhere else. A decrypt failure must stay recoverable: it falls
+back to the seed in the environment rather than throwing.
 
 **State keys are namespaced per workflow**, with `ctx.state.shared` as the
 cross-workflow namespace (`@shared` internally — workflow names can't contain
@@ -208,7 +224,14 @@ These were decided deliberately. Raise a trade-off before changing any of them:
 - **Polling is at-least-once.** Items are marked seen after a successful run,
   never before, and a quiet poll creates no run record at all.
 - **Secrets come from the environment.** No credential store in the database
-  unless someone explicitly asks for UI-managed credentials.
+  unless someone explicitly asks for UI-managed credentials. The one thing the
+  database holds is the *rotated* half of an OAuth credential, which by
+  definition cannot live in an immutable env var — encrypted, and seeded from
+  the environment.
+- **No OAuth consent flow.** A refresh token is obtained by hand, once, and
+  pasted into the environment. Building a browser redirect flow means sessions,
+  a callback route, and parked half-finished consent — for a once-per-credential
+  action.
 
 ## Verifying before you finish
 

@@ -436,7 +436,9 @@ Everything else this project writes to SQLite goes through the secret filter,
 because that data is observational — nobody reads a log line back and acts on
 it. State is the exception, on purpose: it is operational. Store a rotating
 OAuth refresh token and you need the same bytes back, so scrubbing on write
-would destroy the value rather than protect it.
+would destroy the value rather than protect it. (Tokens written by
+[`defineOAuth`](#oauth2-with-refresh-tokens) are encrypted instead, which
+protects the bytes without losing them.)
 
 What holds the guarantee is that **state is never displayed** — no dashboard
 view, no API route, no log line renders it. It goes in from a workflow and comes
@@ -532,9 +534,69 @@ to add is a SQLite table with AES-256-GCM values and a master key from the
 environment. Deliberately not built yet — env vars are the right answer until
 they aren't.
 
-Credentials a workflow *rotates* rather than reads — an OAuth refresh token —
-belong in [`ctx.state`](#durable-state) instead. Those are stored as given, not
-encrypted, on the same footing as anything else in the database file.
+### OAuth2 with refresh tokens
+
+Some providers won't take a static key at all: Notion, HubSpot, Salesforce,
+Xero, Google-as-a-person all issue an access token that dies in an hour and
+expect you to refresh it. `defineOAuth` owns that lifecycle.
+
+```ts
+const notion = defineOAuth("notion", {
+  tokenUrl: "https://api.notion.com/v1/oauth/token",
+  auth: "basic",          // "body" (the default) puts the client id/secret in the form
+});
+
+// inside run() — refreshes first if this token is close to expiring
+await ctx.http.get("https://api.notion.com/v1/users", {
+  headers: { authorization: `Bearer ${await notion.accessToken()}` },
+});
+```
+
+The provider's details live in the file; its credentials live in the
+environment, named after the credential:
+
+```bash
+OAUTH_NOTION_CLIENT_ID=…
+OAUTH_NOTION_CLIENT_SECRET=…
+OAUTH_NOTION_REFRESH_TOKEN=…      # obtained once, by hand — see below
+OAUTH_ENCRYPTION_KEY=…            # openssl rand -base64 32
+```
+
+All four are validated at boot like any other secret, so a missing one stops
+the deploy. Two workflows may declare the same credential — they share one
+stored token — but declaring one name against two different token URLs throws.
+
+| Method | Notes |
+|---|---|
+| `accessToken()` | A usable token, refreshing first if it's within a minute of expiry (or half its life, whichever is sooner) |
+| `refresh()` | Forces one, for the provider that 401s a token it said was good. Retry the call once; don't loop |
+
+**There is no "Connect account" button, and there isn't meant to be one.** The
+authorization-code flow needs a browser, a redirect URL, and a place to park
+half-finished consent — all of it to be done once per credential, ever. You run
+that flow yourself, out of band, and paste the refresh token into the
+environment. Everything after that point is what this owns:
+
+- refreshing before expiry, on the way into every call;
+- keeping the **rotated** refresh token, since most providers kill the old one
+  the moment it is used;
+- one refresh per credential at a time. Twenty concurrent runs finding an
+  expired token produce one refresh and share its result, because two refreshes
+  would mean the second stores a token the provider has already invalidated.
+
+**These rows are encrypted; the rest of `ctx.state` is not.** A cursor in the
+clear is fine and keeps `sqlite3` useful for debugging. A dozen services' live
+refresh tokens in a backup is not. Values under `@oauth:` are AES-256-GCM with
+a key from `OAUTH_ENCRYPTION_KEY`; everything else in state is stored as given.
+Losing that key costs the stored tokens, not access — the next call falls back
+to the refresh token in the environment, with a warning.
+
+**When a refresh token finally dies** — revoked, or spent by something else —
+the provider says `invalid_grant` and the run fails naming the variable to
+replace. Paste a new one into `OAUTH_<NAME>_REFRESH_TOKEN`: the stored chain is
+recognised as stale (it was grown from a different seed) and abandoned on the
+next call. The corollary is that the environment stays the source of truth —
+reverting that variable to an older value discards the live chain too.
 
 ## Security
 
@@ -546,6 +608,9 @@ encrypted, on the same footing as anything else in the database file.
 - Webhook routes are **not** behind basic auth — callers use the secret. That
   separation is deliberate.
 - `/healthz` is open for container health checks and carries no useful data.
+- **OAuth refresh tokens** are encrypted at rest with `OAUTH_ENCRYPTION_KEY`
+  (32 bytes, base64 or hex). Everything else in `ctx.state` is not — see
+  [OAuth2 with refresh tokens](#oauth2-with-refresh-tokens).
 
 ## Operations
 

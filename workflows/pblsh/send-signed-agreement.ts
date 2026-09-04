@@ -150,7 +150,7 @@ export default defineWorkflow<z.infer<typeof payload>>({
     // Authenticates Tally by its signature rather than a token in the URL:
     // Tally has nowhere to put a custom header, and a secret in the query
     // string is a secret in every access log between here and them.
-    verify: tallySignature(secrets.TALLY_SIGNING_SECRET),
+    verify: tallySignature(() => secrets.TALLY_SIGNING_SECRET),
   }),
   // A signed agreement must not be dropped, so two submissions landing
   // together queue rather than the second being skipped.

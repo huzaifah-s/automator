@@ -46,15 +46,21 @@ async function hmac(
  *
  *   verify: hmacSignature({
  *     header: "x-hub-signature-256",   // GitHub
- *     secret: secrets.GITHUB_WEBHOOK_SECRET,
+ *     secret: () => secrets.GITHUB_WEBHOOK_SECRET,
  *     encoding: "hex",
  *     prefix: "sha256=",
  *   })
+ *
+ * A trigger is built once, at import — so `secret: secrets.X` captures the
+ * value that existed at boot and rotating it in the secret store would not
+ * reach this verifier. Passing a getter defers the read to each request, which
+ * is why it is the documented form.
  */
 export function hmacSignature(opts: {
   /** Header carrying the digest. Matched case-insensitively. */
   header: string;
-  secret: string;
+  /** A getter is re-read per request; a bare string is fixed at import. */
+  secret: string | (() => string);
   /** Default SHA-256. */
   algorithm?: Algorithm;
   /** How the digest is encoded in the header. Default base64. */
@@ -63,20 +69,27 @@ export function hmacSignature(opts: {
   prefix?: string;
 }): WebhookVerifier {
   const { header, secret, algorithm = "SHA-256", encoding = "base64", prefix } = opts;
+  const resolve = typeof secret === "function" ? secret : () => secret;
 
-  // Thrown at import, so a deploy missing the key stops rather than starting
+  // Checked at import, so a deploy missing the key stops rather than starting
   // up with a check that anyone can satisfy: an HMAC keyed on nothing is
   // computable by the caller too.
-  if (!secret) {
+  if (!resolve()) {
     throw new Error(`hmacSignature for "${header}" was given no secret`);
   }
 
   return async ({ body, headers }) => {
     const provided = headers.get(header);
     if (!provided) return false;
+
+    // Re-read per request rather than closed over, so a rotated credential
+    // reaches the route without a restart. An emptied one fails closed.
+    const key = resolve();
+    if (!key) return false;
+
     const digest =
       prefix && provided.startsWith(prefix) ? provided.slice(prefix.length) : provided;
-    return timingSafeEqual(digest, await hmac(algorithm, secret, body, encoding));
+    return timingSafeEqual(digest, await hmac(algorithm, key, body, encoding));
   };
 }
 
@@ -85,6 +98,6 @@ export function hmacSignature(opts: {
  * `tally-signature`. Tally never sends the secret itself, which is why the
  * shared-secret check can't be made to match it.
  */
-export function tallySignature(secret: string): WebhookVerifier {
+export function tallySignature(secret: string | (() => string)): WebhookVerifier {
   return hmacSignature({ header: "tally-signature", secret });
 }

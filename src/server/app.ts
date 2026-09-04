@@ -134,6 +134,7 @@ export function createApp(registry: Registry): Hono {
         store.logsForRun(run.id),
         store.stepsForKey(run.checkpoint_key ?? run.id),
         store.callsForRun(run.id),
+        store.childRuns(run.id),
       ) as any,
     );
   });
@@ -251,6 +252,7 @@ export function createApp(registry: Registry): Hono {
       logs: store.logsForRun(run.id),
       steps: store.stepsForKey(run.checkpoint_key ?? run.id),
       calls: store.callsForRun(run.id),
+      children: store.childRuns(run.id),
     });
   });
 

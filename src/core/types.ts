@@ -3,7 +3,8 @@ import type { Logger } from "./logger.ts";
 import type { StateClient } from "./state.ts";
 import type { Integrations } from "../integrations/index.ts";
 
-export type TriggerKind = "cron" | "webhook" | "manual" | "poll";
+/** "workflow" means another workflow started this run through ctx.run(). */
+export type TriggerKind = "cron" | "webhook" | "manual" | "poll" | "workflow";
 
 export type Trigger =
   | {
@@ -104,6 +105,21 @@ export interface Ctx<Input = unknown> extends Integrations {
       checkpoint?: boolean;
     },
   ): Promise<R>;
+  /**
+   * Runs another workflow and returns its result — the composition primitive,
+   * in place of importing its function (which loses the run record) or POSTing
+   * your own webhook (which means dealing with the secret).
+   *
+   * The child gets its own run page, its own retries, and its own checkpoints,
+   * and it inherits this run's concurrency slot rather than taking a second
+   * one. A child that fails throws here, so the parent fails too unless you
+   * catch it. Wrap the call in `ctx.step` if a parent resume should skip it.
+   *
+   * Throws before starting anything if the call would loop back into a
+   * workflow already in this chain, or if the child was skipped because a run
+   * of it was already in flight.
+   */
+  run<R = unknown>(name: string, input?: unknown): Promise<R>;
 }
 
 export interface WorkflowDef<Input = unknown> {
@@ -157,6 +173,8 @@ export interface RunRecord {
   resumed_from: string | null;
   /** The run this one replayed, if any. Distinct from resumed_from — see db.ts. */
   replayed_from: string | null;
+  /** The run that called this one through ctx.run(), if any. */
+  parent_run: string | null;
   /** The captured trigger input, redacted and capped like every other payload. */
   input: string | null;
 }

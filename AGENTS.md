@@ -74,7 +74,7 @@ export default defineWorkflow({
 
 Triggers: `cron(expr, { tz })`, `webhook(path, { method, schema, respond, secret })`,
 `poll(expr, { fetch, id })`, `manual()`. On `ctx`: `http` `slack` `telegram` `discord` `ai` `email` `sql`
-`sheets` `scrape`, plus `log` `step` `state` `signal` `input` `attempt` `runId`.
+`sheets` `scrape`, plus `log` `step` `run` `state` `signal` `input` `attempt` `runId`.
 Multi-page GETs go through `ctx.http.paginate(url)` rather than a hand-rolled
 loop — see README "Pagination".
 
@@ -140,6 +140,14 @@ a queued run as in flight — don't "tidy" that into the post-wait path — and
 anything that makes one run wait on another run (sub-workflow invocation, for
 one) must not acquire a second slot while holding the first, or a full pool
 deadlocks.
+
+**`ctx.run()` never takes a second concurrency slot.** A nested run inherits
+its caller's, because the caller is blocked awaiting it and a slot per level
+deadlocks a full pool. Cycles are refused up front from the ancestry chain
+carried in `RunOptions.parent`; note that this catches loops *within* one
+chain, not two separate chains that call into each other under
+`onOverlap: "queue"` — that one can still deadlock, and is the reason the depth
+limit exists as a backstop.
 
 **Resume and replay are different operations — keep them apart.** Resume reuses
 the parent's `checkpoint_key` so completed steps are skipped; replay reuses the

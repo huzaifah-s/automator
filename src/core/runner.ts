@@ -5,6 +5,7 @@ import { buildIntegrations } from "../integrations/index.ts";
 import { capture, MAX_CHECKPOINT_BYTES } from "./capture.ts";
 import { createState } from "./state.ts";
 import type { Ctx, LoadedWorkflow, RunStatus, TriggerKind } from "./types.ts";
+import type { Registry } from "./loader.ts";
 
 export interface RunOutcome {
   runId: string;
@@ -12,6 +13,9 @@ export interface RunOutcome {
   result?: unknown;
   error?: Error;
 }
+
+/** How deep a chain of ctx.run() calls may go before it is treated as runaway. */
+const MAX_WORKFLOW_DEPTH = 8;
 
 const DEFAULT_TIMEOUT_MS = 300_000;
 const DEFAULT_RETRIES = 2;
@@ -23,6 +27,16 @@ const active = new Set<string>();
 const tail = new Map<string, Promise<unknown>>();
 
 let shuttingDown = false;
+
+/**
+ * Set once at boot. `ctx.run()` resolves workflow names through this, and the
+ * registry is only built after this module has been imported.
+ */
+let registry: Registry | undefined;
+
+export function setRegistry(r: Registry): void {
+  registry = r;
+}
 
 export function beginShutdown(): void {
   shuttingDown = true;
@@ -100,6 +114,14 @@ export interface RunOptions {
    * skipping past it — which is the whole difference from a resume.
    */
   replayedFrom?: string;
+  /** Set when another run started this one through ctx.run(). */
+  parent?: {
+    runId: string;
+    /** Workflow names from the root of the chain down to the caller. */
+    ancestry: string[];
+    /** The caller's signal, so a parent timeout takes its children with it. */
+    signal: AbortSignal;
+  };
 }
 
 export async function runWorkflow(
@@ -145,6 +167,12 @@ export async function runWorkflow(
 async function execute(wf: LoadedWorkflow, opts: RunOptions): Promise<RunOutcome> {
   active.add(wf.name);
   try {
+    // A nested run inherits its caller's slot instead of taking a second one.
+    // The caller is blocked awaiting it, so the process is not doing more work
+    // at once — and a chain that took a slot per level would deadlock the pool
+    // the moment every slot was held by a parent waiting on a child.
+    if (opts.parent) return await executeNow(wf, opts);
+
     if (MAX_CONCURRENT_RUNS > 0 && running >= MAX_CONCURRENT_RUNS) {
       createLogger(wf.name).info(
         `waiting for a run slot — ${running} running, ${waiting.length} queued`,
@@ -183,6 +211,7 @@ async function executeNow(wf: LoadedWorkflow, opts: RunOptions): Promise<RunOutc
     checkpointKey,
     resumedFrom: opts.resumedFrom,
     replayedFrom: opts.replayedFrom,
+    parentRun: opts.parent?.runId,
     // Stored so the run can be replayed later. Observational capture rules
     // apply: with CAPTURE_DATA=false nothing is kept, and those runs simply
     // aren't replayable — recording input anyway would ignore the setting.
@@ -196,6 +225,8 @@ async function executeNow(wf: LoadedWorkflow, opts: RunOptions): Promise<RunOutc
     logger.info(`▶ resumed from ${opts.resumedFrom.slice(0, 8)}`);
   } else if (opts.replayedFrom) {
     logger.info(`▶ replaying ${opts.replayedFrom.slice(0, 8)} with its original input`);
+  } else if (opts.parent) {
+    logger.info(`▶ started by ${opts.parent.ancestry.at(-1)} (${opts.parent.runId.slice(0, 8)})`);
   } else {
     logger.info(`▶ started (${opts.trigger})`);
   }
@@ -209,10 +240,15 @@ async function executeNow(wf: LoadedWorkflow, opts: RunOptions): Promise<RunOutc
       () => controller.abort(new Error(`Timed out after ${timeoutMs}ms`)),
       timeoutMs,
     );
-    ctx = buildCtx(wf, runId, checkpointKey, attempt, opts, logger, controller.signal);
+    // A child aborts when its parent does, so a parent timeout doesn't leave
+    // orphans running past it.
+    const signal = opts.parent
+      ? AbortSignal.any([controller.signal, opts.parent.signal])
+      : controller.signal;
+    ctx = buildCtx(wf, runId, checkpointKey, attempt, opts, logger, signal);
 
     try {
-      const result = await Promise.race([wf.run(ctx), rejectOnAbort(controller.signal)]);
+      const result = await Promise.race([wf.run(ctx), rejectOnAbort(signal)]);
       clearTimeout(timer);
       store.finishRun(runId, "success", attempt, null, result);
       logger.info(`✓ succeeded in ${Date.now() - startedAt}ms`);
@@ -268,6 +304,10 @@ function buildCtx(
     log: logger,
     signal,
     state: createState(wf.name),
+    run<R = unknown>(name: string, input?: unknown): Promise<R> {
+      return runChild(wf.name, runId, opts.parent?.ancestry ?? [], signal, logger, name, input) as
+        Promise<R>;
+    },
     async step<R>(
       name: string,
       fn: () => Promise<R>,
@@ -338,6 +378,65 @@ function buildCtx(
     base,
     Object.getOwnPropertyDescriptors(buildIntegrations(signal, runId)),
   ) as Ctx<unknown>;
+}
+
+/**
+ * ctx.run(): start another workflow and hand back its result.
+ *
+ * Everything that can go wrong is decided before anything starts, and every
+ * one of them throws. A sub-workflow call is the caller asking for a value —
+ * returning undefined because the child was skipped, or silently going around
+ * a loop eight times, are both worse than failing the parent.
+ */
+async function runChild(
+  callerName: string,
+  callerRunId: string,
+  callerAncestry: string[],
+  callerSignal: AbortSignal,
+  logger: ReturnType<typeof createLogger>,
+  name: string,
+  input: unknown,
+): Promise<unknown> {
+  if (!registry) {
+    throw new Error("ctx.run() has no workflow registry — setRegistry was never called");
+  }
+
+  const chain = [...callerAncestry, callerName];
+  // Checked before resolving the name so the error names the cycle, not the
+  // symptom. Covers a workflow calling itself, which would otherwise deadlock
+  // outright under onOverlap: "queue" — the child would wait for its own parent.
+  if (chain.includes(name)) {
+    throw new Error(`ctx.run("${name}") would loop: ${[...chain, name].join(" → ")}`);
+  }
+  if (chain.length >= MAX_WORKFLOW_DEPTH) {
+    throw new Error(
+      `ctx.run("${name}") is ${chain.length + 1} workflows deep, past the limit of ` +
+        `${MAX_WORKFLOW_DEPTH}: ${chain.join(" → ")}`,
+    );
+  }
+
+  const child = registry.get(name);
+  if (!child) throw new Error(`ctx.run("${name}"): no workflow by that name`);
+  if (child.enabled === false) throw new Error(`ctx.run("${name}"): that workflow is disabled`);
+
+  logger.info(`→ ${name}`);
+  const outcome = await runWorkflow(child, {
+    trigger: "workflow",
+    input,
+    parent: { runId: callerRunId, ancestry: chain, signal: callerSignal },
+  });
+
+  if (outcome.status === "success") {
+    logger.info(`← ${name} ok (${outcome.runId.slice(0, 8)})`);
+    return outcome.result;
+  }
+  if (outcome.status === "skipped") {
+    throw new Error(
+      `ctx.run("${name}") was skipped — a run of it was already in flight, and its ` +
+        `onOverlap is "skip". Give it onOverlap: "queue" if it should wait its turn.`,
+    );
+  }
+  throw outcome.error ?? new Error(`ctx.run("${name}") failed`);
 }
 
 /**

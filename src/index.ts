@@ -6,6 +6,7 @@ import {
   activeCount,
   queuedCount,
   runningCount,
+  setRegistry,
 } from "./core/runner.ts";
 import { createApp } from "./server/app.ts";
 import { store, db } from "./core/db.ts";
@@ -26,6 +27,10 @@ const registry = new Registry(
     process.exit(1);
   }),
 );
+
+// ctx.run() resolves workflow names through this. Set before the CLI section
+// runs, so `bun run trigger` can drive a workflow that calls another one.
+setRegistry(registry);
 
 // Declared before the CLI section because shutdown() is called from inside it.
 // Left below, these are still in their temporal dead zone at that point and

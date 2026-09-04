@@ -185,6 +185,7 @@ export function runPage(
   logs: LogRecord[],
   steps: StepRecord[],
   calls: CallRecord[],
+  children: RunRecord[] = [],
 ) {
   return layout(
     `run ${run.id.slice(0, 8)}`,
@@ -210,6 +211,26 @@ export function runPage(
         ? html`<p class="muted" style="margin:10px 0 0">
             Replay of <a href="/runs/${run.replayed_from}">${run.replayed_from.slice(0, 8)}</a> —
             same input, every step re-run from scratch.</p>`
+        : ""}
+
+      ${run.parent_run
+        ? html`<p class="muted" style="margin:10px 0 0">
+            Started by <a href="/runs/${run.parent_run}">${run.parent_run.slice(0, 8)}</a>
+            through <span class="mono">ctx.run()</span>.</p>`
+        : ""}
+
+      ${children.length
+        ? html`<h2>Workflows it ran</h2>
+            <div class="card"><table><tbody>
+              ${children.map(
+                (c) => html`<tr>
+                  <td>${statusPill(c.status)}</td>
+                  <td><a href="/runs/${c.id}">${c.workflow}</a></td>
+                  <td class="mono muted">${dur(c.duration_ms)}</td>
+                  <td class="mono muted">${c.id.slice(0, 8)}</td>
+                </tr>`,
+              )}
+            </tbody></table></div>`
         : ""}
 
       ${run.status === "failed"

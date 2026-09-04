@@ -106,13 +106,14 @@ result.
 ### What's on `ctx`
 
 `http` `slack` `telegram` `discord` `ai` `email` `sql` `sheets` `scrape`,
-plus `log`, `step`, `state`, `signal`, `input`, `attempt`, `runId`.
+plus `log`, `step`, `run`, `state`, `signal`, `input`, `attempt`, `runId`.
 
 All of them except `http` are lazy — a workflow that only makes an HTTP call
 never opens a Postgres pool or reads an unrelated env var.
 
 `ctx.http.paginate(url)` walks a paginated endpoint — see
-[Pagination](#pagination).
+[Pagination](#pagination). `ctx.run(name, input)` runs another workflow — see
+[Calling one workflow from another](#calling-one-workflow-from-another).
 
 `ctx.step(name, fn, { input })` wraps a unit of work. It gets its own timing
 line, its input and output are recorded, and its result becomes a checkpoint.
@@ -236,6 +237,44 @@ quiet endings are the honest ones: an empty page, no next link, `maxItems`.
 
 `workflows/paginate-demo.ts` is a working example against a real API that needs
 no credentials.
+
+## Calling one workflow from another
+
+`ctx.run(name, input)` runs another workflow and returns its result. The child
+gets its own run page, its own retries, and its own checkpoints — which is what
+you lose by importing the other workflow's function directly, and what you pay
+for in webhook secrets by POSTing your own hook.
+
+```ts
+const enriched = await ctx.run<Customer[]>("enrich-customers", { ids });
+await ctx.step("deliver", () => ctx.slack.send("#ops", `${enriched.length} ready`));
+```
+
+Both run pages show the relationship: the parent lists *Workflows it ran*, the
+child says who started it, and its trigger reads `workflow`.
+
+**A failing child fails the parent** — `ctx.run` throws, so wrap it in
+`try`/`catch` if that isn't what you want. It also throws, before starting
+anything, when:
+
+- the call would **loop** back into a workflow already in the chain
+  (`a → b → a`, or a workflow calling itself), or go deeper than 8 workflows;
+- the child is **already running** and its `onOverlap` is `"skip"`. Give a
+  workflow that gets called by others `onOverlap: "queue"` and the parent waits
+  its turn instead;
+- the name is unknown or the workflow is disabled.
+
+Two things worth knowing:
+
+- **A child inherits the parent's concurrency slot** rather than taking a
+  second one. The parent is blocked waiting for it, so nothing more is running
+  at once — and taking a slot per level would deadlock as soon as every slot
+  held a parent waiting on a child.
+- **A parent timeout aborts its children.** `ctx.signal` is chained down, so a
+  child doesn't outlive the run that asked for it.
+
+To make a parent's resume skip a child that already succeeded, wrap the call:
+`ctx.step("enrich", () => ctx.run("enrich-customers", { ids }))`.
 
 ## Polling
 

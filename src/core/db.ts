@@ -120,12 +120,21 @@ if (!runColumns.has("input")) {
 if (!runColumns.has("replayed_from")) {
   db.exec("ALTER TABLE runs ADD COLUMN replayed_from TEXT");
 }
+// Migration for databases created before ctx.run() existed. A third lineage
+// column, because it is a third relation: resumed_from and replayed_from are
+// both "this run derives from that one", parent_run is "that run called this
+// one" — composition, not derivation.
+if (!runColumns.has("parent_run")) {
+  db.exec("ALTER TABLE runs ADD COLUMN parent_run TEXT");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_runs_parent ON runs(parent_run)");
+}
 
 const stmts = {
   insertRun: db.prepare(
     `INSERT INTO runs (id, workflow, status, trigger, attempts, started_at,
-                       checkpoint_key, resumed_from, replayed_from, input)
-     VALUES (?, ?, 'running', ?, 1, ?, ?, ?, ?, ?)`,
+                       checkpoint_key, resumed_from, replayed_from, input,
+                       parent_run)
+     VALUES (?, ?, 'running', ?, 1, ?, ?, ?, ?, ?, ?)`,
   ),
   finishRun: db.prepare(
     `UPDATE runs SET status = ?, attempts = ?, finished_at = ?,
@@ -136,6 +145,7 @@ const stmts = {
     `INSERT INTO logs (run_id, ts, level, msg, data) VALUES (?, ?, ?, ?, ?)`,
   ),
   getRun: db.prepare(`SELECT * FROM runs WHERE id = ?`),
+  childRuns: db.prepare(`SELECT * FROM runs WHERE parent_run = ? ORDER BY started_at`),
   logsForRun: db.prepare(`SELECT * FROM logs WHERE run_id = ? ORDER BY id`),
   recentRuns: db.prepare(`SELECT * FROM runs ORDER BY started_at DESC LIMIT ?`),
   runsForWorkflow: db.prepare(
@@ -213,6 +223,7 @@ export const store = {
       checkpointKey?: string;
       resumedFrom?: string | null;
       replayedFrom?: string | null;
+      parentRun?: string | null;
       /** Already through capture() — redacted and capped — or null. */
       input?: string | null;
     } = {},
@@ -226,6 +237,7 @@ export const store = {
       opts.resumedFrom ?? null,
       opts.replayedFrom ?? null,
       opts.input ?? null,
+      opts.parentRun ?? null,
     );
   },
 
@@ -262,6 +274,7 @@ export const store = {
   },
 
   getRun: (id: string) => stmts.getRun.get(id) as RunRecord | null,
+  childRuns: (id: string) => stmts.childRuns.all(id) as RunRecord[],
   logsForRun: (id: string) => stmts.logsForRun.all(id) as LogRecord[],
   recentRuns: (limit = 50) => stmts.recentRuns.all(limit) as RunRecord[],
   runsForWorkflow: (name: string, limit = 20) =>

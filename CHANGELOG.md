@@ -8,6 +8,47 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### `ctx.run()` — one workflow calling another
+
+Composition had two bad options: import the other workflow's `run` function
+directly and lose its run record, retries, and checkpoints, or POST your own
+webhook and deal with the secret. `ctx.run(name, input)` resolves through the
+registry, gives the child its own run page, and returns its result.
+
+**Decided along the way:**
+
+- **Everything that can go wrong throws, and is checked before anything
+  starts.** A sub-workflow call is the caller asking for a value; returning
+  `undefined` because the child was skipped is the kind of silence that shows
+  up as a downstream `TypeError` an hour later. Cycles, depth, unknown names,
+  disabled workflows, and a busy `onOverlap: "skip"` child all fail loudly, and
+  the skip message names the fix (`onOverlap: "queue"`).
+- **A child inherits its parent's concurrency slot.** Taking a second one reads
+  as more correct and deadlocks the moment every slot holds a parent waiting on
+  a child. The parent is blocked anyway, so the process is not doing more work
+  at once. Verified with `MAX_CONCURRENT_RUNS=1`, where a nested call would
+  otherwise hang forever.
+- **Cycle detection is an ancestry chain, not a depth counter alone.** The
+  error names the loop (`a → b → a`) instead of reporting a limit, which is the
+  difference between a two-second fix and a bisect. A depth limit of 8 stays as
+  the backstop for the case ancestry can't see: two separate chains calling
+  into each other under `onOverlap: "queue"`.
+- **A self-call is refused rather than allowed to queue.** Under
+  `onOverlap: "queue"` it deadlocks outright — the child waits for the parent
+  that is waiting for the child.
+- **`parent_run` is a third lineage column.** `resumed_from` and
+  `replayed_from` both mean "this run derives from that one"; this one means
+  "that run called this one". Composition, not derivation.
+- **The parent's signal is chained into the child**, so a parent timeout
+  doesn't leave orphans running past it. Verified: an 800ms parent cut off a
+  child that would have slept 10s, at 803ms.
+
+Verified across 30 generated workflows: result passing, failure propagation and
+catching, self-cycle, indirect cycle, the depth limit, unknown and disabled
+targets, a busy skip-child, a busy queue-child (parent waited 1.4s for its
+turn), nested calls under a cap of 1, timeout propagation, both run pages, and
+the same path through `bun run trigger`.
+
 ### Replay a run with its original input
 
 Developing a webhook workflow meant re-sending the payload by hand after every

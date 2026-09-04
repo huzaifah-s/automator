@@ -18,12 +18,12 @@ what's left, and enough detail to pick any of it up cold.
 |---|---|---|
 | 1 | No durable state between runs | **Done** — `ctx.state` |
 | 2 | No polling trigger | **Done** — `poll()` |
-| 3 | OAuth2 with refresh tokens | Open — unblocked, small |
+| 3 | OAuth2 with refresh tokens | Open — deferred, see below |
 | 4 | Wait / suspend / human-in-the-loop | Open — needs an architecture call |
 | 5 | Provider webhook registration | Open — medium |
 | 6 | Pagination helpers | **Done** — `ctx.http.paginate()` |
 | 7 | Global concurrency cap | **Done** — `MAX_CONCURRENT_RUNS` |
-| 8 | Sub-workflow invocation | Open — small |
+| 8 | Sub-workflow invocation | **Done** — `ctx.run()` |
 | 9 | Replay a run with its original input | **Done** — `/runs/:id/replay` |
 | 10 | AI tool-loop / agent | Open — medium |
 | 11 | Users, RBAC, audit | Open — probably won't do |
@@ -85,6 +85,13 @@ write it down.
 confirm one refresh happens under 20 concurrent runs and the stored refresh
 token still works afterwards.
 
+**Deferred, deliberately (2026-09-05).** The encryption question above was put
+to the owner with four options — encrypt credentials only, encrypt all of
+`ctx.state`, don't encrypt and document the DB as `.env`-sensitive, or skip.
+The call was **skip for now**: revisit when a specific integration actually
+needs user-consent OAuth, and settle the storage question then rather than
+build the machinery speculatively. Nothing here is blocked; it is unstarted.
+
 ## 4. Wait / suspend / human-in-the-loop
 
 **What n8n did:** a Wait node suspended a workflow for days, or until a webhook
@@ -140,22 +147,6 @@ id, don't blindly create. `PUBLIC_URL` is already the canonical external URL.
 **Verify:** boot twice against a real provider and confirm exactly one
 subscription exists.
 
-## 8. Sub-workflow invocation
-
-**What n8n did:** an Execute Workflow node.
-
-**Why it matters:** today you either import the other workflow's function
-directly — losing its run record, retries, and checkpoints — or POST your own
-webhook and deal with the secret.
-
-**Sketch:** `ctx.run(name, input)` on the Ctx, resolving through the `Registry`.
-Needs cycle detection (a depth counter or an ancestry set on the run) and a
-decision on whether the child gets its own run page (it should) and whether the
-parent's failure semantics propagate (it should — just let it throw).
-
-**Watch out:** interacts badly with `onOverlap: "skip"` if a workflow calls
-itself or a sibling that's already running. Decide and document.
-
 ## 10. AI tool-loop / agent
 
 **What n8n did:** LangChain nodes — tool-calling agents, chat memory, vector
@@ -210,9 +201,8 @@ redaction guarantee at every storage boundary.
 
 ## Suggested order
 
-1. **3 (OAuth)** — unblocks the most integrations. Settle the encryption question first.
-2. **8 (sub-workflows)** then **5 (webhook registration)**.
-3. **4 (wait/suspend)** last, and only after deciding whether a durable execution
+1. **5 (webhook registration)**.
+2. **4 (wait/suspend)** last, and only after deciding whether a durable execution
    engine is on the table — that answer changes several items above.
 
 Delete this file when the table at the top has no "Open" rows left.

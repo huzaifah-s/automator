@@ -179,6 +179,15 @@ again. They have separate lineage columns (`resumed_from`, `replayed_from`) for
 that reason. Folding them into one column would make the run page guess which
 it is looking at.
 
+**A resumed run has no `ctx.input`.** Resume passes the checkpoint key and
+nothing else, so `ctx.input` is `{}` the second time through — only replay
+carries the payload. Anything derived from the input must therefore be derived
+*inside* a step, where a resume gets the recorded answer back instead of
+re-deriving it from an empty object. `workflows/approval-resolve.ts` reads its
+approval id in the first step for exactly that reason: read at the top of
+`run()`, a resumed approval looked up `approval:undefined` and reported itself
+missing. This has already caused one bug.
+
 **Step names must be stable and unique within a run.** They are the checkpoint
 key. `ctx.step("send email")` inside a loop collides across iterations — use
 `` ctx.step(`send email ${user.id}`) ``.

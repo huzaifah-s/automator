@@ -9,7 +9,8 @@
     "start": "bun src/index.ts",
     "check": "tsc --noEmit",
     "list": "bun src/index.ts --list",
-    "trigger": "bun src/index.ts --run"
+    "trigger": "bun src/index.ts --run",
+    "secret": "bun src/index.ts --secret"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.0",

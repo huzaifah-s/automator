@@ -9,6 +9,13 @@ import { log } from "../core/logger.ts";
 import { queuedCount, runningCount, runWorkflow } from "../core/runner.ts";
 import { timingSafeEqual } from "../core/verify.ts";
 import { nextRunFor } from "../core/scheduler.ts";
+import {
+  deleteSecret,
+  secretStoreReady,
+  secretValue,
+  setSecret,
+  storedSecretKeys,
+} from "../core/secret-store.ts";
 import type { Registry } from "../core/loader.ts";
 import type { LoadedWorkflow, RunRecord } from "../core/types.ts";
 import { indexPage, runPage, unauthorizedPage, workflowPage } from "./views.ts";
@@ -295,6 +302,64 @@ export function createApp(registry: Registry): Hono {
       result: outcome.result ?? null,
       error: outcome.error?.message ?? null,
     });
+  });
+
+  /* ------------------------------------------------------------ secrets */
+
+  /*
+   * Write access to credentials, and the only write surface in the whole app
+   * that isn't "start a run". It lives on /api and not on the dashboard on
+   * purpose: the dashboard stays read-only, which is the thing that keeps a
+   * browser from being able to break production.
+   *
+   * A write here lands in the running process, so it is live on the next run
+   * with no restart at all. The CLI writes to the database instead and is
+   * picked up by the refresh tick — same result, a few seconds later.
+   *
+   * No route returns a value. Reading a credential back over HTTP is not a
+   * thing this needs to do, and not offering it is cheaper than guarding it.
+   */
+
+  app.get("/api/secrets", (c) => {
+    const stored = new Set(storedSecretKeys());
+    const rows = store
+      .secretRows()
+      .map((r) => ({ key: r.key, source: "store" as const, updatedAt: r.updated_at }));
+
+    // Rows the store holds but this process could not decrypt still exist and
+    // should be visible — otherwise a wrong master key looks like a missing key.
+    return c.json({
+      encryptionReady: secretStoreReady(),
+      secrets: rows.map((r) => ({ ...r, readable: stored.has(r.key) })),
+    });
+  });
+
+  app.put("/api/secrets/:key", async (c) => {
+    const key = c.req.param("key");
+    const body = await c.req.json().catch(() => null);
+    const value = (body as { value?: unknown } | null)?.value;
+
+    if (typeof value !== "string") {
+      return c.json({ error: "Body must be {\"value\": \"…\"}" }, 400);
+    }
+
+    try {
+      await setSecret(key, value);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+
+    // The name only. The value is the one thing that must not come back out.
+    log.info(`Secret ${key} was set over the API`);
+    return c.json({ key, ok: true });
+  });
+
+  app.delete("/api/secrets/:key", (c) => {
+    const key = c.req.param("key");
+    if (!deleteSecret(key)) return c.json({ error: "Not in the store" }, 404);
+
+    log.info(`Secret ${key} was deleted over the API`);
+    return c.json({ key, ok: true, fallsBackToEnv: secretValue(key) !== undefined });
   });
 
   app.get("/api/runs", (c) =>

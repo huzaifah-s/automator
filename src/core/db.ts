@@ -94,6 +94,15 @@ db.exec(`
   ) WITHOUT ROWID;
   CREATE INDEX IF NOT EXISTS idx_state_expires
     ON state(expires_at) WHERE expires_at IS NOT NULL;
+
+  -- Credentials that outlive the process, so changing one is not a redeploy.
+  -- The value column is always ciphertext — base64(iv + AES-256-GCM), never a
+  -- readable string, which is what makes this table different from state above.
+  CREATE TABLE IF NOT EXISTS secrets (
+    key        TEXT    PRIMARY KEY,
+    value      TEXT    NOT NULL,
+    updated_at INTEGER NOT NULL
+  ) WITHOUT ROWID;
 `);
 
 // Migration for databases created before checkpointing existed.
@@ -205,6 +214,16 @@ const stmts = {
   ),
   pruneState: db.prepare(
     `DELETE FROM state WHERE expires_at IS NOT NULL AND expires_at <= ?`,
+  ),
+
+  allSecrets: db.prepare(`SELECT key, value, updated_at FROM secrets ORDER BY key`),
+  setSecret: db.prepare(
+    `INSERT INTO secrets (key, value, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+  ),
+  deleteSecret: db.prepare(`DELETE FROM secrets WHERE key = ?`),
+  secretWatermark: db.prepare(
+    `SELECT COUNT(*) AS count, COALESCE(MAX(updated_at), 0) AS latest FROM secrets`,
   ),
 
   markOrphans: db.prepare(
@@ -408,6 +427,34 @@ export const store = {
   pruneExpiredState(): number {
     return stmts.pruneState.run(Date.now()).changes;
   },
+
+  /* ----------------------------------------------------------- secrets */
+
+  /*
+   * Like `state`, and for the same reason, nothing here is redacted on the way
+   * in — a credential you can't read back is not a credential. Unlike `state`,
+   * every value is encrypted before it arrives, so `sqlite3` on this table
+   * shows ciphertext. src/core/secret-store.ts is the only caller.
+   */
+
+  secretRows: () =>
+    stmts.allSecrets.all() as { key: string; value: string; updated_at: number }[],
+
+  secretPut(key: string, ciphertext: string): void {
+    stmts.setSecret.run(key, ciphertext, Date.now());
+  },
+
+  secretDrop(key: string): boolean {
+    return stmts.deleteSecret.run(key).changes > 0;
+  },
+
+  /**
+   * Cheap "has anything changed" probe, so the running server can pick up a
+   * write made by the CLI in another process without re-reading every row.
+   * Count as well as timestamp: a delete moves one and not the other.
+   */
+  secretWatermark: () =>
+    stmts.secretWatermark.get() as { count: number; latest: number },
 };
 
 /** A prefix is user data, so its LIKE wildcards have to be literal. */

@@ -27,7 +27,9 @@ There is no test suite. Verify by running the thing (see **Verifying** below).
 
 ```
 src/core/          define · loader · runner · scheduler · poll · db · secrets
-                   redact · capture · state · logger · alerts · types
+                   secret-store · crypto · redact · capture · state · logger
+                   alerts · types
+src/cli/           secrets — the write side of the store, run before the loader
 src/integrations/  index (barrel + lazy ctx clients) · http · messaging
                    ai · email · sql · sheets · scrape · oauth
 src/server/        app (webhooks + REST + dashboard routes) · views (HTML)
@@ -212,6 +214,44 @@ reply. Only use `"sync"` when the caller genuinely needs the result.
 **Pass `ctx.signal` into `fetch` and other cancellable calls.** The runner can
 stop *waiting* on work that ignores it, but it cannot *cancel* it.
 
+**`defineSecrets` returns a live proxy, not a snapshot.** Every property read
+resolves the current value through the secret store, which is what makes a
+rotated credential reach a running workflow. Two consequences. A value captured
+at *module* scope — `const key = secrets.X`, or `tallySignature(secrets.X)` in
+a trigger — is frozen in a closure at import and this cannot reach it; pass a
+getter (`() => secrets.X`) for anything evaluated at import. And a value that
+stops matching its schema does not throw: the proxy warns once and keeps the
+last good one, because breaking a run over an operator's typo is worse than
+running on the previous credential.
+
+**Stored secrets are mirrored into `process.env`.** Integrations read their own
+credentials from `process.env` inside their factories, so the store would only
+cover workflow-declared keys otherwise. `loadSecretStore()` therefore has to
+run in `src/index.ts` **before the loader imports a single workflow** — move it
+after and a key that lives only in the store fails boot validation for a
+credential that is actually present.
+
+**The secret CLI runs before the loader, on purpose.** Setting a credential for
+a workflow you have not deployed yet is the main thing the store buys you, and
+`loadWorkflows()` would abort on that workflow's missing key first. It pays for
+this by having no schemas — those are registered by `defineSecrets` at import —
+so it does a tolerant import pass of its own that swallows every failure. Don't
+"fix" that into the real loader.
+
+**A credential is never returned by an HTTP route.** `GET /api/secrets` lists
+names and timestamps; there is no read-the-value route, and adding one is not a
+small convenience. `secret get` in the CLI masks by default and needs
+`--reveal`.
+
+**The encryption wire format in `src/core/crypto.ts` is load-bearing.** It is
+base64(iv ‖ ciphertext) with a 12-byte iv, and OAuth tokens already in the
+field were written that way before the file existed. Changing it needs a
+version byte and a migration, not an edit.
+
+**Losing the master key must not stop the boot.** Both the store and OAuth warn
+and fall back to the environment on an undecryptable value. A deployment that
+rotated its key and now cannot start is worse than one running on env vars.
+
 **Workflow names must match `/^[a-z0-9][a-z0-9-]*$/`** — they appear in URLs.
 
 ## Adding an integration
@@ -243,11 +283,18 @@ These were decided deliberately. Raise a trade-off before changing any of them:
   purpose; it is not part of run history.
 - **Polling is at-least-once.** Items are marked seen after a successful run,
   never before, and a quiet poll creates no run record at all.
-- **Secrets come from the environment.** No credential store in the database
-  unless someone explicitly asks for UI-managed credentials. The one thing the
-  database holds is the *rotated* half of an OAuth credential, which by
-  definition cannot live in an immutable env var — encrypted, and seeded from
-  the environment.
+- **Secrets come from the environment, with the store layered over it.** The
+  environment is still the base and still the only place the master key can
+  live; `src/core/secret-store.ts` is an encrypted table that overrides it, so
+  rotating a credential is a write rather than a deploy. A stored value beats
+  an env value deliberately — the other order would make every rotation a
+  redeploy again. The database also holds the *rotated* half of an OAuth
+  credential, which by definition cannot live in an immutable env var.
+- **The store's write surface is the CLI and `/api`, never the dashboard.**
+  `bun run secret` and `PUT /api/secrets/:key` both exist; a form in the
+  browser does not. The dashboard staying read-only is what keeps a browser
+  from being able to break production, and a credential editor is exactly the
+  thing that would end that.
 - **No OAuth consent flow.** A refresh token is obtained by hand, once, and
   pasted into the environment. Building a browser redirect flow means sessions,
   a callback route, and parked half-finished consent — for a once-per-credential
@@ -261,7 +308,9 @@ These were decided deliberately. Raise a trade-off before changing any of them:
 3. Start the server and exercise the actual path — trigger the workflow, POST
    the webhook, open `/runs/<id>` and confirm steps and HTTP calls rendered.
 4. If you touched anything storage-related, grep the API output and stdout for a
-   known secret value and confirm zero occurrences.
+   known secret value and confirm zero occurrences. For the secret store that
+   means `strings data/automator.db | grep <value>` as well — the table holds
+   ciphertext, and a plaintext hit there is the whole failure.
 5. If you touched the Dockerfile, `docker build` and run the container.
 
 Report what you actually ran. Do not claim a behaviour works because the types

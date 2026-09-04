@@ -8,6 +8,75 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### Credentials in the database, so rotating one is not a redeploy
+
+Env vars are read once at process start, so changing a credential meant a
+Coolify redeploy — an image rebuild for a one-line change, plus the restart.
+`src/core/secret-store.ts` adds an encrypted table that overrides the
+environment, `bun run secret -- set KEY` writes to it, and the value is live on
+the next run.
+
+The README named this shape a while ago and left it unbuilt on the grounds that
+"env vars are the right answer until they aren't". The rebuild-per-rotation is
+where they stopped being.
+
+**Decided along the way:**
+
+- **A stored value beats an env value.** The other order is the obvious one and
+  it is wrong: a credential a deploy had already set could then only be changed
+  by another deploy, which is the entire thing this removes. Deleting a stored
+  value restores the environment's, so the fallback is never lost.
+- **`defineSecrets` returns a proxy, not a snapshot.** This is what let the
+  change land without editing a single workflow: the type is identical and
+  `secrets.API_KEY` still reads like a property, but each access resolves the
+  current value. A snapshot would have made the store a boot-time-only feature
+  and bought nothing over an env var.
+  - The cost is that a read at *module* scope is still frozen — a closure holds
+    the string from import. `hmacSignature` now takes `string | (() => string)`
+    for exactly this reason, and `tallySignature(() => secrets.X)` is the
+    documented form. Rejected making every workflow read secrets inside `run()`
+    instead; a getter at the one import-time call site is a smaller tax.
+  - A live value that fails its schema warns once and keeps the last good one
+    rather than throwing. An operator's typo should not take down a workflow
+    that was working a second ago.
+- **Stored values are mirrored into `process.env`.** Integrations read their own
+  credentials from the environment inside their factories, so without the
+  mirror the store would have covered `defineSecrets` keys and silently not
+  covered `SLACK_BOT_TOKEN`. That in turn forces `loadSecretStore()` to run
+  before the loader imports anything.
+- **The CLI runs before the loader, and therefore without schemas.** Setting a
+  credential for a workflow you have not deployed yet is the main win — it
+  breaks the lockstep where a workflow and its secrets had to ship in the same
+  deploy — and `loadWorkflows()` would abort on that workflow's missing key
+  first. So `set` does a tolerant import pass purely to collect zod schemas,
+  swallowing every failure, and warns when it could not validate. Rejected
+  validating only in the API: the CLI is the path an operator reaches for, and
+  an unvalidated write there is how you find out at 3am.
+- **Writes go to the CLI and `/api`, not the dashboard.** A credential form in
+  the browser is precisely the read-only-dashboard rule being given up, and the
+  rule is what means a browser cannot break production. `GET /api/secrets`
+  returns names and timestamps; no route returns a value, and `secret get`
+  masks unless you pass `--reveal`.
+- **The CLI writes to the database, not to the running server**, so it needs no
+  URL and no auth. The server picks the write up on a `SECRET_REFRESH_MS` tick
+  (default 10s) that probes one aggregate over a table with tens of rows. An
+  API write skips the wait and applies in-process. Rejected making the CLI an
+  HTTP client — it would stop working exactly when you need it, on a server
+  that will not boot.
+- **`SECRETS_ENCRYPTION_KEY` falls back to `OAUTH_ENCRYPTION_KEY`**, so an
+  existing deployment needs no new variable, and setting both separates the two
+  concerns for anyone who wants that. Encryption moved to `src/core/crypto.ts`
+  and both callers share it; the wire format is byte-identical to what OAuth
+  wrote before, because tokens in the field are already encoded that way.
+- **An unreadable value warns and falls through to the environment.** Same
+  recovery OAuth already took. A deployment that rotated its master key and can
+  no longer start is worse than one running on env vars, and a boot that dies
+  on an undecryptable row would be exactly that.
+- **What did not change:** a missing credential still stops the boot. The store
+  does not soften that into per-workflow quarantine, and does not need to —
+  setting the secret on the running instance *before* pushing the workflow is
+  now possible, which is what the lockstep actually cost.
+
 ### PBLSH authenticates Tally by its signature
 
 `workflows/pblsh/send-signed-agreement.ts` now verifies Tally's

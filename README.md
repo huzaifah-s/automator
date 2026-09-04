@@ -607,10 +607,68 @@ Two things this buys you:
    and outputs, recorded HTTP URLs and bodies, workflow return values, and error
    messages. Request *headers* are never captured at all.
 
-If you later want to add credentials from a UI without redeploying, the shape
-to add is a SQLite table with AES-256-GCM values and a master key from the
-environment. Deliberately not built yet — env vars are the right answer until
-they aren't.
+### The secret store — changing a credential without a redeploy
+
+Env vars are read once, at process start, so changing one is a restart at best
+and an image rebuild at worst. The store is the layer above them: credentials
+in the database, encrypted, editable while the server runs.
+
+```bash
+bun run secret -- list                      # names and when they changed
+bun run secret -- set BREVO_API_KEY         # then paste the value, then Ctrl-D
+bun run secret -- get BREVO_API_KEY         # masked; --reveal to see it
+bun run secret -- rm  OLD_API_KEY
+```
+
+Set `SECRETS_ENCRYPTION_KEY` (`openssl rand -base64 32`) and nothing else
+changes: no workflow file is edited, and `defineSecrets` keeps working exactly
+as above.
+
+**A stored value wins over the same name in the environment.** If it were the
+other way round, changing a credential a deploy had already set would need
+another deploy — which is the thing this exists to avoid. Deleting a stored
+value puts the environment's back.
+
+**A change is live on the next run, with no restart.** `defineSecrets` returns
+an object that reads through to the store on every property access, so:
+
+```ts
+run: () => ctx.http.get(url, { headers: { key: secrets.API_KEY } })   // live
+```
+
+The one place that doesn't reach is a value captured at module scope, outside
+`run()` — a closure holds the string from boot and nothing can update it.
+Where a helper needs one at import time, pass a getter instead:
+
+```ts
+trigger: webhook("tally", { verify: tallySignature(() => secrets.SIGNING_SECRET) }),
+```
+
+**Deploy order stops being lockstep.** A workflow whose credentials aren't set
+still stops the boot — but you can now set them on the running instance
+*before* pushing the workflow, so the deploy that introduces it just works.
+That is why `bun run secret` runs before the loader rather than after it.
+
+**Values are AES-256-GCM encrypted with the same scheme as OAuth tokens**, so
+`sqlite3` on the `secrets` table shows ciphertext and a `/data` backup isn't a
+pile of live credentials. Losing the key costs the stored values, not access:
+the store warns and falls through to the environment rather than failing the
+boot.
+
+| Where you write | When it takes effect |
+| --- | --- |
+| `PUT /api/secrets/:key` | immediately — the write lands in the running process |
+| `bun run secret -- set` | within `SECRET_REFRESH_MS` (default 10s) |
+| The environment | next process start |
+
+The write API sits on `/api` behind the dashboard's basic auth, and the
+dashboard itself stays read-only — there is no form to edit a credential in a
+browser. `GET /api/secrets` lists names and timestamps; no route ever returns
+a value.
+
+**Writes are validated against the schema the workflow declared**, so
+`secret set BREVO_API_KEY=oops` is rejected at the point you make the mistake
+rather than at 3am. A key nothing declares is accepted with a warning.
 
 ### OAuth2 with refresh tokens
 
@@ -818,11 +876,17 @@ WEBHOOK_SECRET=…                  # openssl rand -hex 32
 PUBLIC_URL=https://automator.example.com
 ```
 
-Plus every key your workflows declare with `defineSecrets` — a missing one
-stops the boot rather than failing at 3am. `enabled: false` does not exempt a
-workflow from that: `defineSecrets` runs when the file is imported, before the
-loader looks at `enabled`. A workflow whose credentials you don't have yet has
-to come out of `workflows/` altogether.
+Plus `SECRETS_ENCRYPTION_KEY` if you want the [secret
+store](#the-secret-store--changing-a-credential-without-a-redeploy) — with it,
+every other credential can go in the store instead of here, and changing one
+stops being a Coolify redeploy.
+
+Whichever you use, every key your workflows declare with `defineSecrets` has to
+resolve — a missing one stops the boot rather than failing at 3am.
+`enabled: false` does not exempt a workflow from that: `defineSecrets` runs when
+the file is imported, before the loader looks at `enabled`. A workflow whose
+credentials you don't have yet has to come out of `workflows/` altogether, or
+have its credentials put in the store first.
 
 Don't set `PORT` or `DATABASE_PATH` — the Dockerfile already has both right.
 
@@ -834,9 +898,15 @@ image declares one regardless.
 
 Worth knowing before you commit:
 
-- **Workflows live in the repo.** Changing one means a redeploy. In exchange
-  there is no code sandbox to secure and no way to break production from a
-  browser.
+- **Workflows live in the repo.** Changing one means a redeploy, and on a
+  single-process SQLite app that means a restart — two overlapping processes
+  would double-fire every cron and both write the same database, so a
+  zero-downtime rolling deploy is not available here. Use the Docker Compose
+  build pack, which bind-mounts `workflows/` and turns a workflow change into a
+  restart rather than an image rebuild. In exchange for all of it there is no
+  code sandbox to secure and no way to break production from a browser.
+  Credentials are the exception and no longer need any of this — see the
+  [secret store](#the-secret-store--changing-a-credential-without-a-redeploy).
 - **Single process, no external queue.** Fine for hundreds of runs a day.
   Concurrency is capped in-process (`MAX_CONCURRENT_RUNS`) and the queue lives
   in memory, so a restart mid-burst loses what hadn't started — those runs are

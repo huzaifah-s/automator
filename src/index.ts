@@ -13,8 +13,24 @@ import { reconcileWebhooks } from "./core/webhooks.ts";
 import { store, db } from "./core/db.ts";
 import { log } from "./core/logger.ts";
 import { closeSql, registerIntegrationSecrets } from "./integrations/index.ts";
+import { loadSecretStore, startSecretRefresh, stopSecretRefresh } from "./core/secret-store.ts";
+import { runSecretCli } from "./cli/secrets.ts";
 
 const args = process.argv.slice(2);
+
+// The secret CLI runs before workflows are imported, and that ordering is the
+// point of it: setting a credential for a workflow you have not deployed yet
+// is exactly the case loadWorkflows() would abort on.
+if (args[0] === "--secret") {
+  process.exit(await runSecretCli(args.slice(1)));
+}
+
+// Before anything reads the environment: fold the stored credentials into it,
+// so defineSecrets validates against what is actually available and the
+// integrations — which read process.env inside their own factories — see the
+// same values. A key present only in the store must satisfy boot validation.
+const storedSecrets = await loadSecretStore();
+if (storedSecrets > 0) log.info(`Loaded ${storedSecrets} secret(s) from the store`);
 
 // Before anything can log: make the redactor aware of the credentials the
 // built-in integrations read for themselves, not just workflow-declared ones.
@@ -74,6 +90,10 @@ if (args[0] === "--run") {
 const orphans = store.markOrphans();
 if (orphans > 0) log.warn(`Marked ${orphans} interrupted run(s) as failed`);
 
+// A `bun run secret set` writes to the database from another process; this is
+// how the long-lived server hears about it without being restarted.
+startSecretRefresh();
+
 startScheduler(registry);
 
 const port = Number(process.env.PORT ?? 3000);
@@ -115,6 +135,7 @@ async function shutdown(signal: string, code = 0): Promise<never> {
   log.info(`${signal} received — shutting down`);
   beginShutdown();
   stopScheduler();
+  stopSecretRefresh();
 
   // Give in-flight runs a chance to finish before the process goes away.
   const deadline = Date.now() + Number(process.env.SHUTDOWN_TIMEOUT_MS ?? 20_000);

@@ -1,4 +1,4 @@
-import type { PollCtx, Trigger, WorkflowDef } from "./types.ts";
+import type { PollCtx, Trigger, WebhookRegistration, WorkflowDef } from "./types.ts";
 import type { ZodType } from "zod";
 
 /**
@@ -30,6 +30,8 @@ export function webhook(
     schema?: ZodType;
     respond?: "async" | "sync";
     secret?: string;
+    /** Creates and deletes the subscription at the provider — see README. */
+    register?: WebhookRegistration;
   } = {},
 ): Trigger {
   return { kind: "webhook", path: path.replace(/^\/+/, ""), ...opts };
@@ -83,7 +85,13 @@ export function manual(): Trigger {
 }
 
 export { defineSecrets, defineSecretGroup, optionalSecret } from "./secrets.ts";
-export type { Ctx, PollCtx, WorkflowDef } from "./types.ts";
+export type {
+  Ctx,
+  PollCtx,
+  RegisterCtx,
+  WebhookRegistration,
+  WorkflowDef,
+} from "./types.ts";
 export type { StateClient, StateStore, StateSetOptions } from "./state.ts";
 export type {
   HttpOptions,

@@ -238,6 +238,63 @@ quiet endings are the honest ones: an empty page, no next link, `maxItems`.
 `workflows/paginate-demo.ts` is a working example against a real API that needs
 no credentials.
 
+## Webhooks that register themselves
+
+A webhook is normally a URL you paste into a provider's dashboard once and then
+have to remember. Fine at five, bad at thirty — nothing tells you when somebody
+deletes one provider-side. Give the trigger a `register` block and the runner
+keeps the subscription in step with the workflow:
+
+```ts
+trigger: webhook("github-push", {
+  register: {
+    async create(ctx) {
+      const hook = await ctx.http.post(`https://api.github.com/repos/${repo}/hooks`, {
+        config: { url: ctx.url, content_type: "json", secret: process.env.WEBHOOK_SECRET },
+        events: ["push"],
+      }, { headers: { authorization: `Bearer ${secrets.GITHUB_TOKEN}` } });
+      return String(hook.id);            // the provider's id, kept in ctx.state
+    },
+    async remove(ctx, id) {
+      const res = await ctx.http.raw(`https://api.github.com/repos/${repo}/hooks/${id}`, {
+        method: "DELETE", headers: { authorization: `Bearer ${secrets.GITHUB_TOKEN}` },
+      });
+      if (!res.ok && res.status !== 404) throw new Error(`GitHub said ${res.status}`);
+    },
+  },
+})
+```
+
+`ctx.url` is this workflow's own hook, externally: `${PUBLIC_URL}/hooks/<path>`.
+Set `PUBLIC_URL` or nothing registers.
+
+**It reconciles at boot; it does not register at boot.** Once the server is
+listening, each `register` block is compared against the id stored in state:
+
+| On disk | In state | What happens |
+|---|---|---|
+| enabled | same URL | nothing — this is the redeploy case |
+| enabled | different URL | old subscription deleted, new one created |
+| enabled | none | created |
+| `enabled: false` | any | deleted |
+| file deleted | any | **warned about, every boot** — see below |
+
+**Nothing here can fail a boot.** A provider that is down is logged and left
+exactly as it was, so the next start tries the same thing again. The server
+comes up and serves either way.
+
+**Subscriptions are not deleted on shutdown**, deliberately. A redeploy is a
+process restart: deleting on the way down would drop the subscription on every
+deploy and race to recreate it, losing events in the window — and `SIGKILL`
+never runs the cleanup anyway, so it could never be relied on. Boot-time
+reconciliation gets the same result without the hole.
+
+**Deleting the workflow file strands its subscription.** The code that knows
+how to call the provider went with the file, so the runner can only tell you
+about it — which it does, on every boot, naming the id. To clean up properly,
+put the file back with `enabled: false` for one boot; the subscription is then
+deleted and the warning stops.
+
 ## Calling one workflow from another
 
 `ctx.run(name, input)` runs another workflow and returns its result. The child

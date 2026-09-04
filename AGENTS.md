@@ -141,6 +141,13 @@ anything that makes one run wait on another run (sub-workflow invocation, for
 one) must not acquire a second slot while holding the first, or a full pool
 deadlocks.
 
+**Webhook registration reconciles at boot and never unregisters on shutdown.**
+`src/core/webhooks.ts` compares each `register` block against the id in state
+and does the minimum — an unchanged URL means no provider call at all, which is
+what stops a redeploy creating a duplicate. Deleting on shutdown looks tidier
+and is wrong: every deploy would drop and recreate the subscription, and
+`SIGKILL` skips the cleanup regardless. Nothing in there may throw out to boot.
+
 **`ctx.run()` never takes a second concurrency slot.** A nested run inherits
 its caller's, because the caller is blocked awaiting it and a slot per level
 deadlocks a full pool. Cycles are refused up front from the ancestry chain

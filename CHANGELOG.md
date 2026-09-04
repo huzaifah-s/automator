@@ -8,6 +8,45 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### Webhooks that register themselves with the provider
+
+A webhook was a URL somebody pasted into Stripe or GitHub once and had to
+remember. Nothing reconciled a subscription deleted provider-side, and nothing
+told you a workflow's hook had stopped existing. A webhook trigger can now
+carry a `register` block with `create` and `remove`, and the runner keeps the
+subscription in step with what is on disk.
+
+**Decided along the way:**
+
+- **Reconcile at boot; never unregister on shutdown.** The handoff note
+  suggested registering at boot and unregistering at shutdown, and that is
+  wrong here: a redeploy is a process restart, so every deploy would delete the
+  subscription and race to recreate it, losing events in the window — and
+  `SIGKILL` skips the cleanup anyway, so the tidy path could never be trusted.
+  Comparing against the stored id at boot gets the same outcome with no hole,
+  and an unchanged URL costs zero provider calls.
+- **Boot never fails on a provider.** Reconciliation runs after the server is
+  listening (so a provider that pings its new subscription finds the route
+  answering), is never awaited, and leaves state untouched on failure so the
+  next start retries. Verified by taking the provider down mid-migration: the
+  error was logged, the dashboard came up, the route served, and the next boot
+  completed the migration.
+- **A deleted workflow file strands its subscription, and we say so.** The
+  `remove` function lived in the file, so there is nothing left to call. A
+  directory of registered names in shared state makes the orphan visible, and
+  it is warned about on every boot with its id — the honest option, where the
+  alternative is a provider quietly posting to a 404 forever. Restoring the
+  file with `enabled: false` for one boot cleans it up, and that advice is
+  verified, not assumed.
+- **The stale subscription is removed before its replacement is created**, so a
+  changed `PUBLIC_URL` can't leave the provider posting to both.
+
+Verified across eleven real boots against a stand-in provider (no credentials
+for a real one): create, redeploy with no change and no provider call, URL
+migration, disable, re-enable, provider down, provider back, file deleted,
+`PUBLIC_URL` unset, the documented orphan cleanup, and a clean directory
+afterwards — exactly one subscription at the provider at every step.
+
 ### `ctx.run()` — one workflow calling another
 
 Composition had two bad options: import the other workflow's `run` function

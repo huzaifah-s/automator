@@ -9,6 +9,7 @@ import {
   setRegistry,
 } from "./core/runner.ts";
 import { createApp } from "./server/app.ts";
+import { reconcileWebhooks } from "./core/webhooks.ts";
 import { store, db } from "./core/db.ts";
 import { log } from "./core/logger.ts";
 import { closeSql, registerIntegrationSecrets } from "./integrations/index.ts";
@@ -89,6 +90,13 @@ for (const w of registry.enabled()) {
     log.info(`Webhook ${w.trigger.method ?? "POST"} /hooks/${w.trigger.path} → ${w.name}`);
   }
 }
+// After the server is listening, and never awaited: a provider that pings its
+// new subscription straight away should find the route answering, and one that
+// is down must not hold up or fail a boot.
+void reconcileWebhooks(registry).catch((err) =>
+  log.error(`Webhook reconciliation failed: ${err instanceof Error ? err.message : err}`),
+);
+
 if (registry.enabled().some((w) => w.trigger.kind === "cron")) {
   const soonest = registry
     .enabled()

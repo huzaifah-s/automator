@@ -29,6 +29,16 @@ export type Trigger =
       respond?: "async" | "sync";
       /** Overrides the global WEBHOOK_SECRET for this route. */
       secret?: string;
+      /**
+       * Creates and deletes the subscription at the provider, so a webhook is
+       * not a URL somebody pasted into a dashboard once and has to remember.
+       * Reconciled at boot against the id kept in state: an existing
+       * subscription at the same URL is left alone, a changed `PUBLIC_URL` is
+       * migrated, and a disabled workflow's subscription is deleted.
+       *
+       * Never called during a run, and a provider being down never fails boot.
+       */
+      register?: WebhookRegistration;
     }
   | {
       kind: "poll";
@@ -60,6 +70,32 @@ export type Trigger =
       timeoutMs?: number;
     }
   | { kind: "manual" };
+
+export interface WebhookRegistration {
+  /** Creates the subscription and returns the provider's id for it. */
+  create(ctx: RegisterCtx): Promise<string>;
+  /**
+   * Deletes the subscription the provider gave back. Called when the workflow
+   * is disabled, or when its public URL changed and is being migrated.
+   * A subscription the provider already dropped should be treated as removed,
+   * not as an error.
+   */
+  remove(ctx: RegisterCtx, subscriptionId: string): Promise<void>;
+}
+
+/**
+ * What a webhook registration hook gets: the same clients a run has, minus
+ * everything that only means something inside a run — this happens once at
+ * boot, with no runId to attach steps or captured calls to.
+ */
+export interface RegisterCtx extends Integrations {
+  workflow: string;
+  /** This workflow's own hook, externally: `${PUBLIC_URL}/hooks/${path}`. */
+  url: string;
+  log: Logger;
+  signal: AbortSignal;
+  state: StateClient;
+}
 
 /**
  * What a poll trigger's fetch() gets. Every client a run has, minus the things

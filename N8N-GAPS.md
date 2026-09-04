@@ -20,7 +20,7 @@ what's left, and enough detail to pick any of it up cold.
 | 2 | No polling trigger | **Done** — `poll()` |
 | 3 | OAuth2 with refresh tokens | Open — deferred, see below |
 | 4 | Wait / suspend / human-in-the-loop | Open — needs an architecture call |
-| 5 | Provider webhook registration | Open — medium |
+| 5 | Provider webhook registration | **Done** — `register` on `webhook()` |
 | 6 | Pagination helpers | **Done** — `ctx.http.paginate()` |
 | 7 | Global concurrency cap | **Done** — `MAX_CONCURRENT_RUNS` |
 | 8 | Sub-workflow invocation | **Done** — `ctx.run()` |
@@ -126,27 +126,6 @@ shutdown, overlap control, and the timeout contract at once.
 item is "adopt Inngest/Temporal", not "extend the runner", and items 7 and 8
 change shape too. That's the user's call, not ours.
 
-## 5. Provider webhook registration
-
-**What n8n did:** on activating a workflow it called the provider's API to
-*create* the webhook subscription, and deleted it on deactivation.
-
-**Why it matters:** we mount the route in Hono, then a human pastes the URL into
-Stripe/GitHub/etc. and remembers it exists. Fine at 5 webhooks, bad at 30 —
-nothing reconciles a subscription that was deleted provider-side.
-
-**Blocker:** there is no lifecycle to hang it on. `src/core/loader.ts` imports
-and validates workflows at boot; there is no enable/disable event. You'd add an
-`onRegister`/`onUnregister` pair to the webhook trigger, called at boot and
-shutdown, with subscription ids kept in `ctx.state`.
-
-**Watch out:** boot must not fail because a provider API is down, and a
-redeploy must not create a duplicate subscription — reconcile against the stored
-id, don't blindly create. `PUBLIC_URL` is already the canonical external URL.
-
-**Verify:** boot twice against a real provider and confirm exactly one
-subscription exists.
-
 ## 10. AI tool-loop / agent
 
 **What n8n did:** LangChain nodes — tool-calling agents, chat memory, vector
@@ -201,8 +180,10 @@ redaction guarantee at every storage boundary.
 
 ## Suggested order
 
-1. **5 (webhook registration)**.
-2. **4 (wait/suspend)** last, and only after deciding whether a durable execution
+1. **4 (wait/suspend)**, and only after deciding whether a durable execution
    engine is on the table — that answer changes several items above.
+2. **3 (OAuth)** whenever an integration actually needs it, settling the
+   storage question then.
+3. **10 (AI agent loop)** when something concrete wants it.
 
 Delete this file when the table at the top has no "Open" rows left.

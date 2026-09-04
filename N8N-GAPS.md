@@ -19,7 +19,7 @@ what's left, and enough detail to pick any of it up cold.
 | 1 | No durable state between runs | **Done** — `ctx.state` |
 | 2 | No polling trigger | **Done** — `poll()` |
 | 3 | OAuth2 with refresh tokens | **Done** — `defineOAuth()` |
-| 4 | Wait / suspend / human-in-the-loop | Open — needs an architecture call |
+| 4 | Wait / suspend / human-in-the-loop | **Done** — two workflows + `ctx.state.shared` |
 | 5 | Provider webhook registration | **Done** — `register` on `webhook()` |
 | 6 | Pagination helpers | **Done** — `ctx.http.paginate()` |
 | 7 | Global concurrency cap | **Done** — `MAX_CONCURRENT_RUNS` |
@@ -45,42 +45,42 @@ most of what follows. Raise a trade-off before breaking one.
 
 ---
 
-## 4. Wait / suspend / human-in-the-loop
+## 4. Wait / suspend / human-in-the-loop — done, within limits
 
 **What n8n did:** a Wait node suspended a workflow for days, or until a webhook
-resumed it. "Send and wait for approval" posted a Slack button and blocked on the
-click.
+resumed it. "Send and wait for approval" posted a Slack button and blocked on
+the click.
 
-**Why it matters:** approval gates, "wait 24h then follow up", anything
-human-paced.
+**What we built instead:** the two-workflow pattern this section used to
+prescribe. `workflows/approval-request.ts` opens an approval in
+`ctx.state.shared` and hands out decision links;
+`workflows/approval-resolve.ts` is a GET webhook that claims it when someone
+clicks. README "Approval gates" has the pattern, the correctness details worth
+copying, and an honest paragraph on what it is not.
 
-**Why it's hard here:** a run is one in-process async function with a
-`timeoutMs` ceiling (5 min default). Suspending means the run has to survive the
-process going away, which is a different execution model. README already points
-at Temporal/Inngest for the real version — that assessment stands.
+**The runner did not learn to suspend, and will not.** Holding a run open
+across a human-paced wait breaks graceful shutdown, the concurrency cap, and
+the `timeoutMs` contract at once. That was the standing advice here and it
+still is.
 
-**The cheap 80% you should do first:** split into two workflows joined by a
-webhook, correlated through `ctx.state.shared`.
+**The durable-engine question is settled as "no", for now.** Adopting
+Temporal or Inngest would mean replacing `MAX_CONCURRENT_RUNS`, `ctx.run()`,
+and checkpoint resume — all working code — rather than filling a hole. Reopen
+it only with a concrete need that the two-workflow pattern genuinely cannot
+serve, and price it as a replacement, not an addition.
 
-```
-approval-request  (cron/manual) → writes shared "approval:<id>" = { status: "pending", … }
-                                → posts a Slack button linking to /hooks/approve?id=<id>
-approval-resolve  (webhook)     → reads shared "approval:<id>", acts, marks resolved
-```
+**What you still don't get**, in case someone asks for it later:
 
-This works today and needs no new machinery — `ctx.state.shared` was built
-partly for it. It is not a Wait node: there is no single run you can watch, and
-the two halves have separate run pages. Document that honestly if you build it.
+- No single run spans the wait. Two run pages, joined only by the
+  `openedByRun` id in the resolving run's result.
+- No "waited 2h 14m" anywhere on a timeline, because nothing was waiting.
+- No timer-based resume. A pending approval expires by TTL and answers
+  `unknown or expired`; nothing fires when it does. "Wait 24h then follow up"
+  is a cron workflow that reads the shared namespace, not a feature of this.
 
-**Do not** try to make `run()` suspend by holding the process. It breaks
-shutdown, overlap control, and the timeout contract at once.
-
-**Decide first:** is a durable execution engine on the table at all? If yes, this
-item is "adopt Inngest/Temporal", not "extend the runner" — and note that items
-7 (`MAX_CONCURRENT_RUNS`) and 8 (`ctx.run()`) are now *built*, so adopting an
-engine means replacing working code, not designing around a gap. That raises
-the cost of saying yes, which is worth knowing before saying it. Still the
-user's call, not ours.
+One thing it needed from the core: `webhook(..., { secret: false })`, for a
+route a person reaches by clicking a link and so cannot carry `WEBHOOK_SECRET`
+into. See CHANGELOG for why that is an explicit flag rather than a convention.
 
 ## 10. AI tool-loop / agent
 
@@ -136,9 +136,8 @@ redaction guarantee at every storage boundary.
 
 ## Suggested order
 
-1. **4 (wait/suspend)**, and only after deciding whether a durable execution
-   engine is on the table — that answer changes several items above.
-2. **10 (AI agent loop)** when something concrete wants it.
+1. **10 (AI agent loop)** when something concrete wants it. It is the only
+   open row with any work in it; 11 is a flag, not a task.
 
 Item 3 settled the credential-encryption question on the way past: `@oauth:`
 keys are encrypted, the rest of `ctx.state` is not. Anything else that wants to

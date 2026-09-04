@@ -1,29 +1,46 @@
 services:
   automator:
     build: .
-    image: automator:latest
-    container_name: automator
     restart: unless-stopped
-    ports:
-      - "3000:3000"
+
+    # Reachable on the compose network, not published on the host. Coolify's
+    # proxy terminates TLS and routes to it; publishing 3000 as well would make
+    # the dashboard answerable over plain HTTP around that proxy, on basic auth
+    # alone. docker-compose.override.yml publishes it for local use.
+    expose:
+      - "3000"
+
     env_file:
-      - .env
+      # Optional on purpose. The repo has no .env — it is gitignored — and
+      # Coolify injects the environment itself, so a required one would fail
+      # the deploy on a file that is never meant to be committed.
+      - path: .env
+        required: false
+
     environment:
       # Cron expressions are interpreted in this zone unless a workflow says otherwise.
       TZ: ${TZ:-UTC}
+
     volumes:
       - automator-data:/data
-      # Live-mount workflows so editing one only needs a restart, not a rebuild.
+      # The point of deploying this way: workflows are read from the checkout
+      # rather than baked in, so changing one is a restart and not an image
+      # build. Read-only — nothing in the container should write to it.
       - ./workflows:/app/workflows:ro
+
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
+
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
+
+# No container_name and no fixed image tag: Coolify derives both per deployment,
+# and pinning them makes two deployments on one host collide.
 
 volumes:
   automator-data:

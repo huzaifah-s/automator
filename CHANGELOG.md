@@ -8,6 +8,41 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### Compose is the deploy path, so a workflow change is a restart
+
+The Dockerfile build pack bakes `workflows/` into the image, so editing one
+line of a workflow meant rebuilding and redeploying the whole thing. The
+compose file already bind-mounted the directory; it just wasn't what Coolify
+was pointed at, and it had three things in it that a Coolify deployment trips
+over.
+
+Measured after the change: `docker compose up -d --build` against a modified
+workflow completes in about two seconds, because the layer cache makes the
+build a no-op and the bind mount means the file is already in place.
+
+**Decided along the way:**
+
+- **`expose`, not `ports`.** Publishing 3000 on the host makes the dashboard
+  answerable over plain HTTP alongside the proxy's HTTPS, on basic auth alone.
+  Local use needs the published port though, so it moved to
+  `docker-compose.override.yml` — Compose auto-loads that for a bare
+  `docker compose up` and ignores it under `-f`, which is how Coolify invokes
+  compose. Verified both ways with `docker compose config` rather than assumed.
+- **`env_file` is optional.** `.env` is gitignored, so a required one fails the
+  deploy on a file that is never meant to be committed, and Coolify injects the
+  environment itself.
+- **No `container_name`, no fixed `image` tag.** Coolify derives both per
+  deployment; pinning them makes two deployments on one host collide.
+- **Zero-downtime was considered and rejected as unavailable.** Two overlapping
+  processes would share one SQLite file and each run their own in-process
+  scheduler, so every cron fires twice across the swap. Single-process is the
+  settled architecture; the restart is the price, and it is now seconds rather
+  than minutes.
+- **The build packs use different volumes.** Switching drops you on an empty
+  database — run history, state, OAuth tokens, and the secret store. The README
+  carries the backup and volume-copy steps; this is the one part of the switch
+  that can lose data.
+
 ### Credentials in the database, so rotating one is not a redeploy
 
 Env vars are read once at process start, so changing a credential meant a

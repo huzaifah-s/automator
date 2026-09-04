@@ -830,8 +830,17 @@ is the whole of your run history, durable state, and OAuth refresh tokens.
 ### Docker Compose
 
 `docker-compose.yml` is the whole deployment — see [Quick start](#quick-start).
-`workflows/` is bind-mounted read-only from the host here, so editing a
-workflow needs a restart, not a rebuild.
+`workflows/` is bind-mounted read-only from the host, so editing a workflow is
+a restart and not an image build.
+
+The port is published by `docker-compose.override.yml`, which Compose loads
+automatically for a bare `docker compose up` and ignores when a file is named
+with `-f`. That is the split: published on your machine, proxied on a server.
+
+```bash
+docker compose up -d --build       # localhost:3000
+HOST_PORT=3100 docker compose up -d
+```
 
 ### Coolify
 
@@ -839,32 +848,49 @@ Point a new resource at this repo:
 
 | Field | Value |
 | --- | --- |
-| Build pack | **Dockerfile** |
-| Dockerfile location | `/Dockerfile` |
+| Build pack | **Docker Compose** |
+| Compose file location | `/docker-compose.yml` |
 | Base directory | `/` |
-| Port | `3000` |
 
 Not Railpack or Nixpacks. Both autodetect Bun and will boot something, but
 they ignore what the Dockerfile sets up — the non-root user, tini, and
-`DATABASE_PATH=/data/automator.db`, which is the path the volume below mounts
-at. Coolify's Docker Compose build pack is the other option, and the only one
-that keeps the live `workflows/` mount.
+`DATABASE_PATH=/data/automator.db`.
 
-**Persistent storage.** Add one volume mount, or every redeploy starts on an
-empty database:
+**Why Compose over the Dockerfile build pack.** Both work. Compose is the one
+that bind-mounts `workflows/` from the checkout, so a workflow change is a
+container restart rather than an image build — seconds instead of minutes. The
+Dockerfile pack bakes workflows into the image and has no way to do that.
 
-| Field | Value |
-| --- | --- |
-| Name | `automator-data` |
-| Source Path | *leave empty* |
-| Destination Path | `/data` |
+The compose file is written for this: no `container_name` and no fixed image
+tag, both of which Coolify assigns per deployment and which collide if pinned;
+`env_file` is marked optional, because the repo has no committed `.env` and
+Coolify injects the environment itself; and the service uses `expose` rather
+than `ports`, so the dashboard is reachable through Coolify's proxy and not
+also on plain HTTP at `server-ip:3000`.
 
-Leave *Source Path* blank — the `/root` in that field is placeholder text, not
-a default. Blank gives you a Docker-managed named volume, which inherits
-`/data`'s ownership from the image and so is writable by the non-root user the
-container runs as. Filling it in makes a bind mount to that host path instead,
-and a fresh host directory is owned by root — the container can't write to it
-and the boot dies opening the database.
+Assign the domain in Coolify's UI and point its health check at `/healthz`.
+
+**Persistent storage.** The compose file declares the `automator-data` volume
+itself, so there is nothing to add in the UI. Everything lives there: run
+history, `ctx.state`, OAuth refresh tokens, and the secret store.
+
+> **Switching from the Dockerfile build pack? Back up first.** The two build
+> packs use different volumes, so the new deployment starts on an empty
+> database — including an empty secret store. Copy the file out before you
+> switch:
+>
+> ```bash
+> docker cp $(docker ps -qf name=automator):/data/automator.db ./automator-backup.db
+> ```
+>
+> Then deploy once on Compose, stop it, and copy the old volume across:
+>
+> ```bash
+> docker run --rm -v OLD_VOLUME:/from -v NEW_VOLUME:/to alpine sh -c "cp -a /from/. /to/"
+> ```
+>
+> `docker volume ls` names both. Re-entering the secrets by hand is the other
+> option, and for a small deployment it is often the faster one.
 
 **Environment.** Before the first deploy:
 
@@ -890,9 +916,10 @@ have its credentials put in the store first.
 
 Don't set `PORT` or `DATABASE_PATH` — the Dockerfile already has both right.
 
-**Workflows are baked into the image** on this path, so changing one is a push
-and a redeploy. Point Coolify's health check at `/healthz` if it asks; the
-image declares one regardless.
+**Changing a workflow** is a push and a redeploy, but on this path the redeploy
+is a restart: Docker's layer cache makes the build a no-op and the bind mount
+means the new file is already there. Measured at roughly two seconds for
+`docker compose up -d --build` against a changed workflow.
 
 ## Trade-offs
 

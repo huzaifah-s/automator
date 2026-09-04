@@ -104,7 +104,7 @@ result.
 ### What's on `ctx`
 
 `http` `slack` `telegram` `discord` `ai` `email` `sql` `sheets` `scrape`,
-plus `log`, `step`, `signal`, `input`, `attempt`, `runId`.
+plus `log`, `step`, `state`, `signal`, `input`, `attempt`, `runId`.
 
 All of them except `http` are lazy — a workflow that only makes an HTTP call
 never opens a Postgres pool or reads an unrelated env var.
@@ -155,6 +155,61 @@ Also available on the API: `POST /api/runs/:id/resume`.
   will replay the old one. Checkpoints expire after `checkpointTtlHours`
   (24 by default), and `ctx.step(name, fn, { checkpoint: false })` opts a
   single step out permanently.
+
+## Durable state
+
+`ctx.state` is a key/value store that outlives the run — and the process, the
+redeploy, and run-history pruning. It is for what a run needs to remember about
+the last one.
+
+```ts
+// Polling: only handle what you haven't seen before.
+const since = (await ctx.state.get<number>("cursor")) ?? 0;
+const items = await ctx.http.get(`https://api.example.com/items?since=${since}`);
+if (items.length) await ctx.state.set("cursor", items.at(-1).id);
+```
+
+| Method | Notes |
+|---|---|
+| `get<T>(key)` | `undefined` when absent or expired |
+| `set(key, value, { ttlSeconds })` | JSON-serialisable, under `STATE_MAX_BYTES` (256KB) |
+| `update<T>(key, fn, opts)` | Read-modify-write in one tick — see below |
+| `delete(key)` | `true` if a key was actually removed |
+| `keys(prefix?)` | Live keys, sorted |
+
+Keys are namespaced per workflow, so two workflows can both keep a `"cursor"`.
+`ctx.state.shared` reaches a namespace every workflow can see, for handing data
+between them — a webhook resolving an approval that a cron workflow created.
+Those keys are global, so prefix them.
+
+**Use `update` for anything you increment.** `get` then `set` is two awaits with
+a gap in between, and concurrent runs interleave in that gap. `update` runs the
+whole read-modify-write synchronously before it yields, so it cannot lose a
+write. Under 100-way concurrency `update` counted 100; get-then-set counted 1.
+
+```ts
+await ctx.state.update<number>("processed", (n) => (n ?? 0) + 1);
+```
+
+`workflows/state-demo.ts` is a runnable cursor example — run it twice and the
+second run finds nothing new.
+
+### State is deliberately not redacted
+
+Everything else this project writes to SQLite goes through the secret filter,
+because that data is observational — nobody reads a log line back and acts on
+it. State is the exception, on purpose: it is operational. Store a rotating
+OAuth refresh token and you need the same bytes back, so scrubbing on write
+would destroy the value rather than protect it.
+
+What holds the guarantee is that **state is never displayed** — no dashboard
+view, no API route, no log line renders it. It goes in from a workflow and comes
+back out to that workflow alone. Adding a state viewer would put credentials on
+a web page; don't.
+
+Values that cannot round-trip are rejected rather than quietly mangled:
+`undefined`, functions, bigints, circular structures, and anything over
+`STATE_MAX_BYTES` all throw with a message naming the key.
 
 ## Seeing the data
 
@@ -241,6 +296,10 @@ to add is a SQLite table with AES-256-GCM values and a master key from the
 environment. Deliberately not built yet — env vars are the right answer until
 they aren't.
 
+Credentials a workflow *rotates* rather than reads — an OAuth refresh token —
+belong in [`ctx.state`](#durable-state) instead. Those are stored as given, not
+encrypted, on the same footing as anything else in the database file.
+
 ## Security
 
 - **Dashboard**: set `DASHBOARD_USER` / `DASHBOARD_PASS`. Without them it's
@@ -261,7 +320,8 @@ docker compose logs -f automator
 ```
 
 - Runs interrupted by a restart are marked failed at boot, not left `running`.
-- Run history is pruned nightly (`RUN_RETENTION_DAYS`, default 30).
+- Run history is pruned nightly (`RUN_RETENTION_DAYS`, default 30). The same
+  job sweeps expired `ctx.state` keys, whatever retention is set to.
 - `SIGTERM` stops the scheduler and waits up to `SHUTDOWN_TIMEOUT_MS` (20s) for
   in-flight runs before exiting.
 - Set `ALERT_WEBHOOK_URL` to a Slack or Discord incoming webhook to get a ping

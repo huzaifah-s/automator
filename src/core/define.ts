@@ -42,3 +42,4 @@ export function manual(): Trigger {
 
 export { defineSecrets, defineSecretGroup, optionalSecret } from "./secrets.ts";
 export type { Ctx, WorkflowDef } from "./types.ts";
+export type { StateClient, StateStore, StateSetOptions } from "./state.ts";

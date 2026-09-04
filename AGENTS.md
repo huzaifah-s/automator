@@ -27,7 +27,7 @@ There is no test suite. Verify by running the thing (see **Verifying** below).
 
 ```
 src/core/          define · loader · runner · scheduler · db · secrets
-                   redact · capture · logger · alerts · types
+                   redact · capture · state · logger · alerts · types
 src/integrations/  index (barrel + lazy ctx clients) · http · messaging
                    ai · email · sql · sheets · scrape
 src/server/        app (webhooks + REST + dashboard routes) · views (HTML)
@@ -74,7 +74,7 @@ export default defineWorkflow({
 
 Triggers: `cron(expr, { tz })`, `webhook(path, { method, schema, respond, secret })`,
 `manual()`. On `ctx`: `http` `slack` `telegram` `discord` `ai` `email` `sql`
-`sheets` `scrape`, plus `log` `step` `signal` `input` `attempt` `runId`.
+`sheets` `scrape`, plus `log` `step` `state` `signal` `input` `attempt` `runId`.
 
 ## Rules that will bite you
 
@@ -97,6 +97,22 @@ new column that holds workflow-controlled data, redact it.
 **New integration env vars go in `INTEGRATION_SECRET_ENV`**
 (`src/integrations/index.ts`). Integrations read their own credentials from the
 environment, so the redactor only learns about them from that list.
+
+**`ctx.state` is the one thing not redacted on the way to disk, and it must
+stay invisible.** Every other write to SQLite is observational, so scrubbing it
+is free. State is operational — a workflow stores a rotating OAuth token and
+needs the same bytes back — so redacting on write would destroy the value. What
+keeps the invariant true is that nothing renders state: no dashboard view, no
+API route, no log line. Do not add one. If you need to inspect it, open the
+database file.
+
+**State keys are namespaced per workflow**, with `ctx.state.shared` as the
+cross-workflow namespace (`@shared` internally — workflow names can't contain
+`@`, so it can't collide). Values must be JSON-serialisable and under
+`STATE_MAX_BYTES`; `set` throws rather than storing a mangled value. Use
+`ctx.state.update(key, fn)` for read-modify-write — it completes in one
+synchronous tick, so concurrent runs can't lose an increment the way
+get-then-set does.
 
 **Step names must be stable and unique within a run.** They are the checkpoint
 key. `ctx.step("send email")` inside a loop collides across iterations — use
@@ -138,6 +154,8 @@ These were decided deliberately. Raise a trade-off before changing any of them:
   the weight we left n8n to avoid.
 - **Single process, SQLite only.** No Redis, no external queue, no worker pool.
 - **Checkpoints are memoised step results**, not deterministic replay.
+- **`ctx.state` is durable and never displayed.** It survives run pruning on
+  purpose; it is not part of run history.
 - **Secrets come from the environment.** No credential store in the database
   unless someone explicitly asks for UI-managed credentials.
 

@@ -79,6 +79,21 @@ db.exec(`
     response    TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_calls_run ON calls(run_id, id);
+
+  -- Durable key/value state — the one table here that deliberately outlives
+  -- run history: polling cursors, rotating OAuth tokens, cross-run handoffs.
+  -- Namespaced per workflow; "@shared" is the cross-workflow namespace, which
+  -- workflow names can never collide with (no "@" in the allowed charset).
+  CREATE TABLE IF NOT EXISTS state (
+    namespace  TEXT    NOT NULL,
+    key        TEXT    NOT NULL,
+    value      TEXT    NOT NULL,
+    updated_at INTEGER NOT NULL,
+    expires_at INTEGER,
+    PRIMARY KEY (namespace, key)
+  ) WITHOUT ROWID;
+  CREATE INDEX IF NOT EXISTS idx_state_expires
+    ON state(expires_at) WHERE expires_at IS NOT NULL;
 `);
 
 // Migration for databases created before checkpointing existed.
@@ -147,6 +162,28 @@ const stmts = {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ),
   callsForRun: db.prepare(`SELECT * FROM calls WHERE run_id = ? ORDER BY id`),
+  getState: db.prepare(
+    `SELECT value FROM state
+     WHERE namespace = ? AND key = ? AND (expires_at IS NULL OR expires_at > ?)`,
+  ),
+  setState: db.prepare(
+    `INSERT INTO state (namespace, key, value, updated_at, expires_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(namespace, key) DO UPDATE SET
+       value = excluded.value, updated_at = excluded.updated_at,
+       expires_at = excluded.expires_at`,
+  ),
+  deleteState: db.prepare(`DELETE FROM state WHERE namespace = ? AND key = ?`),
+  stateKeys: db.prepare(
+    `SELECT key FROM state
+     WHERE namespace = ? AND key LIKE ? ESCAPE '\\'
+       AND (expires_at IS NULL OR expires_at > ?)
+     ORDER BY key`,
+  ),
+  pruneState: db.prepare(
+    `DELETE FROM state WHERE expires_at IS NOT NULL AND expires_at <= ?`,
+  ),
+
   markOrphans: db.prepare(
     `UPDATE runs SET status = 'failed', error = 'Interrupted by restart',
        finished_at = ?, duration_ms = ? - started_at
@@ -290,7 +327,53 @@ export const store = {
   },
 
   callsForRun: (runId: string) => stmts.callsForRun.all(runId) as CallRecord[],
+
+  /* ------------------------------------------------------------- state */
+
+  /*
+   * State is deliberately NOT redacted, and it is the only thing in this file
+   * that isn't. Redaction is right everywhere else because that data is
+   * observational — nobody reads a log line back and acts on it. State is
+   * operational: a workflow stores a rotating OAuth refresh token and needs
+   * the same bytes back, so scrubbing on write would destroy the value rather
+   * than protect it.
+   *
+   * What holds the invariant is that state is never displayed. There is no
+   * dashboard view, no API route, and no log line that renders it — it goes in
+   * from a workflow and comes back out to that workflow alone. Keep it that
+   * way: adding a state viewer would put credentials on a web page.
+   */
+
+  stateGet(namespace: string, key: string): string | null {
+    const row = stmts.getState.get(namespace, key, Date.now()) as { value: string } | null;
+    return row?.value ?? null;
+  },
+
+  stateSet(namespace: string, key: string, value: string, expiresAt: number | null): void {
+    stmts.setState.run(namespace, key, value, Date.now(), expiresAt);
+  },
+
+  stateDelete(namespace: string, key: string): boolean {
+    return stmts.deleteState.run(namespace, key).changes > 0;
+  },
+
+  stateKeys(namespace: string, prefix = ""): string[] {
+    const rows = stmts.stateKeys.all(namespace, `${likeEscape(prefix)}%`, Date.now()) as {
+      key: string;
+    }[];
+    return rows.map((r) => r.key);
+  },
+
+  /** Expired keys are already invisible to reads; this reclaims their disk. */
+  pruneExpiredState(): number {
+    return stmts.pruneState.run(Date.now()).changes;
+  },
 };
+
+/** A prefix is user data, so its LIKE wildcards have to be literal. */
+function likeEscape(prefix: string): string {
+  return prefix.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
 
 function safeJson(value: unknown): string {
   try {

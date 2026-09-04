@@ -35,14 +35,18 @@ export function startScheduler(registry: Registry): void {
   }
 
   const retentionDays = Number(process.env.RUN_RETENTION_DAYS ?? 30);
-  if (retentionDays > 0) {
-    jobs.push(
-      new Cron("0 4 * * *", { name: "prune-runs" }, () => {
+  jobs.push(
+    new Cron("0 4 * * *", { name: "prune" }, () => {
+      if (retentionDays > 0) {
         const removed = store.pruneOlderThan(retentionDays);
         if (removed > 0) log.info(`Pruned ${removed} run(s) older than ${retentionDays}d`);
-      }),
-    );
-  }
+      }
+      // Expired state is already invisible to reads, so this is only about
+      // reclaiming disk — it runs even when run pruning is switched off.
+      const stale = store.pruneExpiredState();
+      if (stale > 0) log.info(`Pruned ${stale} expired state key(s)`);
+    }),
+  );
 }
 
 export function nextRunFor(name: string): Date | null {

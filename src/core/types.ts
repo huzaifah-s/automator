@@ -1,5 +1,6 @@
 import type { ZodType } from "zod";
 import type { Logger } from "./logger.ts";
+import type { StateClient } from "./state.ts";
 import type { Integrations } from "../integrations/index.ts";
 
 export type TriggerKind = "cron" | "webhook" | "manual";
@@ -41,6 +42,13 @@ export interface Ctx<Input = unknown> extends Integrations {
   log: Logger;
   /** Aborts on timeout or shutdown. Pass it to fetch and long operations. */
   signal: AbortSignal;
+  /**
+   * Durable key/value store, scoped to this workflow and surviving restarts,
+   * redeploys, and run-history pruning. For the things a run needs to remember
+   * about the last one: polling cursors, rotating OAuth tokens, dedupe marks.
+   * `state.shared` is a namespace every workflow can reach.
+   */
+  state: StateClient;
   /**
    * Wraps a unit of work so it shows up in the run log with its own timing.
    * Purely observational — a failing step fails the run.

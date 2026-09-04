@@ -3,6 +3,7 @@ import { createLogger } from "./logger.ts";
 import { alertFailure } from "./alerts.ts";
 import { buildIntegrations } from "../integrations/index.ts";
 import { capture, MAX_CHECKPOINT_BYTES } from "./capture.ts";
+import { createState } from "./state.ts";
 import type { Ctx, LoadedWorkflow, RunStatus, TriggerKind } from "./types.ts";
 
 export interface RunOutcome {
@@ -167,6 +168,7 @@ function buildCtx(
     triggeredBy: opts.trigger,
     log: logger,
     signal,
+    state: createState(wf.name),
     async step<R>(
       name: string,
       fn: () => Promise<R>,

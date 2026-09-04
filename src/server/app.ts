@@ -1,5 +1,7 @@
 import { Hono } from "hono";
+import type { MiddlewareHandler } from "hono";
 import { basicAuth } from "hono/basic-auth";
+import { HTTPException } from "hono/http-exception";
 import { logger as httpLogger } from "hono/logger";
 import { store } from "../core/db.ts";
 import { isTruncated } from "../core/capture.ts";
@@ -8,7 +10,7 @@ import { queuedCount, runningCount, runWorkflow } from "../core/runner.ts";
 import { nextRunFor } from "../core/scheduler.ts";
 import type { Registry } from "../core/loader.ts";
 import type { LoadedWorkflow, RunRecord } from "../core/types.ts";
-import { indexPage, runPage, workflowPage } from "./views.ts";
+import { indexPage, runPage, unauthorizedPage, workflowPage } from "./views.ts";
 
 export function createApp(registry: Registry): Hono {
   const app = new Hono();
@@ -97,7 +99,26 @@ export function createApp(registry: Registry): Hono {
   const user = process.env.DASHBOARD_USER;
   const pass = process.env.DASHBOARD_PASS;
   if (user && pass) {
-    const auth = basicAuth({ username: user, password: pass });
+    const credentials = basicAuth({ username: user, password: pass });
+
+    // basicAuth throws its own 401 with an octet-stream body, which a browser
+    // cannot render for a top-level navigation — a dismissed prompt then looks
+    // like the site is unreachable. Re-dress it as HTML, keeping the
+    // WWW-Authenticate header that is what makes the prompt appear at all.
+    const auth: MiddlewareHandler = async (c, next) => {
+      try {
+        return await credentials(c, next);
+      } catch (err) {
+        if (!(err instanceof HTTPException) || err.status !== 401) throw err;
+        const challenge = err.getResponse().headers.get("www-authenticate");
+        return c.html(
+          unauthorizedPage() as any,
+          401,
+          challenge ? { "WWW-Authenticate": challenge } : undefined,
+        );
+      }
+    };
+
     for (const p of ["/", "/runs/*", "/workflows/*", "/api/*"]) app.use(p, auth);
   } else {
     log.warn("DASHBOARD_USER / DASHBOARD_PASS are not set — the dashboard is public");

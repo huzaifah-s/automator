@@ -8,6 +8,28 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### A 401 a browser can render
+
+`basicAuth` answers with its own response, and that response is an
+`application/octet-stream` body reading `Unauthorized`. A browser handed a
+binary content type for a top-level navigation cannot display it, so
+dismissing the credential prompt showed Chrome's *this site can't be reached*
+rather than a 401 — the dashboard looked down when it was only locked. The
+middleware is now wrapped, and the 401 is the styled page in `views.ts`.
+
+**Decided along the way:**
+
+- **Wrapped rather than configured.** `basicAuth`'s `invalidUserMessage` builds
+  the same `new Response(string)` with no content type, so it cannot fix this;
+  a string stays octet-stream and an object becomes JSON. Catching the
+  `HTTPException` is the only seam that gets to set the header.
+- **The `WWW-Authenticate` header is copied off the original response**, not
+  rebuilt from the realm. It is the entire reason a prompt appears, and
+  re-deriving it would have been one more thing to keep in step with Hono.
+- **The page says which two env vars to set.** Whoever hits this is either
+  deploying it or has forgotten the password, and both are served by naming
+  `DASHBOARD_USER` and `DASHBOARD_PASS` instead of the word "Unauthorized".
+
 ### `workflows/` ships only real work
 
 The nine demo workflows are gone; `workflows/pblsh/send-signed-agreement.ts`

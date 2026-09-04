@@ -76,6 +76,23 @@ ${body}
 </div></body></html>`;
 }
 
+/**
+ * The 401 body. Hono's basicAuth answers with `application/octet-stream`,
+ * which a browser cannot render for a top-level navigation — dismissing the
+ * prompt reads as a failed request rather than a refused one.
+ */
+export function unauthorizedPage() {
+  return layout(
+    "unauthorized",
+    null,
+    html`<div class="card">
+      <p>These pages need the credentials in <code>DASHBOARD_USER</code> and
+      <code>DASHBOARD_PASS</code>.</p>
+      <p class="muted">Reload to be asked again.</p>
+    </div>`,
+  );
+}
+
 const fmt = (ts: number | null) =>
   ts ? new Date(ts).toISOString().replace("T", " ").slice(0, 19) : "—";
 

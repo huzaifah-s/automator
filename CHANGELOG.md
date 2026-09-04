@@ -34,6 +34,33 @@ showed.
   longer exist, which is what history is for — rewriting them to match the
   current tree would destroy the reasoning they exist to keep.
 
+### Coolify deploys build the Dockerfile, not a build pack
+
+README gained a Coolify section, because the settings that path needs are not
+guessable from the repo and two of them fail quietly.
+
+**Decided along the way:**
+
+- **Build pack is Dockerfile, not Railpack.** Railpack autodetects Bun and
+  boots, which is the trap — it ignores the non-root user, tini (so `SIGTERM`
+  never reaches the process and `SHUTDOWN_TIMEOUT_MS` stops meaning anything),
+  and `DATABASE_PATH=/data/automator.db`. A working dashboard on a database
+  nothing persists looks like a successful deploy.
+- **The `/data` mount leaves Source Path empty.** Blank is a named volume,
+  which inherits `/data`'s bun:bun ownership from the image. A bind mount to a
+  fresh host directory is root-owned, and the container — non-root by
+  construction — cannot open the database there. The UI's placeholder in that
+  field reads like a default and is not one.
+- **The Compose path and the Coolify path differ on `workflows/`**, and the
+  README now says so per-path instead of claiming the read-only host mount
+  everywhere. Compose bind-mounts it, so a workflow edit is a restart; a
+  Dockerfile build bakes it in, so it is a push and a redeploy.
+- **Boot-stopping secrets are a deploy-time concern**, so the README says so
+  where you set the environment. `enabled: false` does not exempt a workflow
+  from its `defineSecrets` — that runs at import, before the loader reads
+  `enabled` — and the asymmetry is worth one sentence there rather than a bug
+  report.
+
 ### PBLSH: the signed agreement, off n8n
 
 `workflows/pblsh/send-signed-agreement.ts` replaces the n8n graph of the same

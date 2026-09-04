@@ -716,12 +716,71 @@ docker compose logs -f automator
 
 ## Deploying
 
-Any Docker host. With Coolify or similar, point it at the repo — the
-`docker-compose.yml` is the whole deployment. Persist the `/data` volume to
-keep run history across deploys.
+Any Docker host. The `Dockerfile` runs as a non-root user, reaps zombies
+through tini so `SIGTERM` reaches the process, and health-checks itself on
+`/healthz`. Whatever you deploy to, **persist `/data`** — that one SQLite file
+is the whole of your run history, durable state, and OAuth refresh tokens.
 
-`workflows/` is mounted read-only from the host, so editing a workflow needs a
-restart, not a rebuild.
+### Docker Compose
+
+`docker-compose.yml` is the whole deployment — see [Quick start](#quick-start).
+`workflows/` is bind-mounted read-only from the host here, so editing a
+workflow needs a restart, not a rebuild.
+
+### Coolify
+
+Point a new resource at this repo:
+
+| Field | Value |
+| --- | --- |
+| Build pack | **Dockerfile** |
+| Dockerfile location | `/Dockerfile` |
+| Base directory | `/` |
+| Port | `3000` |
+
+Not Railpack or Nixpacks. Both autodetect Bun and will boot something, but
+they ignore what the Dockerfile sets up — the non-root user, tini, and
+`DATABASE_PATH=/data/automator.db`, which is the path the volume below mounts
+at. Coolify's Docker Compose build pack is the other option, and the only one
+that keeps the live `workflows/` mount.
+
+**Persistent storage.** Add one volume mount, or every redeploy starts on an
+empty database:
+
+| Field | Value |
+| --- | --- |
+| Name | `automator-data` |
+| Source Path | *leave empty* |
+| Destination Path | `/data` |
+
+Leave *Source Path* blank — the `/root` in that field is placeholder text, not
+a default. Blank gives you a Docker-managed named volume, which inherits
+`/data`'s ownership from the image and so is writable by the non-root user the
+container runs as. Filling it in makes a bind mount to that host path instead,
+and a fresh host directory is owned by root — the container can't write to it
+and the boot dies opening the database.
+
+**Environment.** Before the first deploy:
+
+```
+TZ=Asia/Kuala_Lumpur
+DASHBOARD_USER=admin
+DASHBOARD_PASS=…
+WEBHOOK_SECRET=…                  # openssl rand -hex 32
+PUBLIC_URL=https://automator.example.com
+```
+
+Plus every key your workflows declare with `defineSecrets` — a missing one
+stops the boot rather than failing at 3am. `enabled: false` does not exempt a
+workflow from that: `defineSecrets` runs when the file is imported, before the
+loader looks at `enabled`. A workflow whose credentials you don't have yet has
+to come out of `workflows/` altogether.
+
+Don't set `PORT` or `DATABASE_PATH` — the Dockerfile already has both right.
+
+**Workflows are baked into the image** on this path, so changing one is a push
+and a redeploy. Point Coolify's health check at `/healthz` if it asks; the
+image declares one regardless.
 
 ## Trade-offs
 

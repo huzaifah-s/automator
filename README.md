@@ -984,6 +984,21 @@ See `workflows/the-mantra/notion-contents-update-notification.ts` for the whole
 setup, including how the token reaches you without being written to the run
 page.
 
+Telegram is the odd one out: it signs nothing. It echoes back the
+`secret_token` you gave `setWebhook`, in a header of its own — which is still
+something the shared-secret check cannot read, because a bot cannot be told to
+send `X-Automator-Secret`:
+
+```ts
+verify: telegramSecretToken(() => secrets.TELEGRAM_WEBHOOK_SECRET),
+```
+
+That value is yours, so unlike Notion's it can be stored before the route
+exists and should be declared required. See
+`workflows/the-mantra/notion-contents-telegram-commands.ts`, which also
+registers the webhook — note that a bot has exactly one, so registering it
+takes the bot's updates away from wherever they were going before.
+
 Or a function, for a scheme that isn't an HMAC of the body at all:
 
 ```ts

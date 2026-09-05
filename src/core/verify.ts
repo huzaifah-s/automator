@@ -178,3 +178,46 @@ export function isNotionHandshake(body: string): boolean {
     return false;
   }
 }
+
+/**
+ * Telegram's webhook secret token — the string handed to `setWebhook` as
+ * `secret_token`, which Telegram then echoes back verbatim in
+ * `x-telegram-bot-api-secret-token` on every delivery.
+ *
+ * Not an HMAC, and deliberately not dressed up as one: Telegram signs nothing.
+ * It is a bearer token in a header, so this is a constant-time equality check
+ * and nothing more. That is enough here because the value never travels
+ * anywhere except from this process to Telegram over TLS and back — unlike
+ * `WEBHOOK_SECRET`, which the shared-secret path also accepts from a query
+ * string, where it lands in access logs.
+ *
+ * It cannot be `secret:` on the trigger for exactly that reason: the header
+ * Telegram sends is not one of the three that path reads, and a bot cannot be
+ * told to send a different one.
+ *
+ *   verify: telegramSecretToken(() => secrets.TELEGRAM_WEBHOOK_SECRET)
+ *
+ * A getter, for the same reason as hmacSignature: the trigger is built once at
+ * import, so a bare string would freeze the value that existed at boot.
+ */
+export function telegramSecretToken(
+  secret: string | (() => string | undefined),
+): WebhookVerifier {
+  const resolve = typeof secret === "function" ? secret : () => secret;
+
+  return async ({ headers }) => {
+    // Trimmed for the same reason Notion's is: this value is generated with
+    // `openssl rand` and pasted into a form, and a trailing newline fails as an
+    // authentication mismatch with nothing on the route to say why.
+    const key = resolve()?.trim();
+    // Thrown rather than false: "the secret is not set" and "that token is
+    // wrong" are the same 401 to Telegram and completely different problems to
+    // whoever is reading the rejected-deliveries box.
+    if (!key) {
+      throw new Error("Telegram webhook secret token is not set — cannot check a delivery");
+    }
+    const provided = headers.get("x-telegram-bot-api-secret-token");
+    if (!provided) return false;
+    return timingSafeEqual(provided, key);
+  };
+}

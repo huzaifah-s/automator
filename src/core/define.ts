@@ -97,7 +97,13 @@ export { defineSecrets, defineSecretGroup, optionalSecret } from "./secrets.ts";
 export { defineCredential } from "./credentials.ts";
 export type { CredentialValues } from "./credentials.ts";
 export type { ProviderId } from "./providers.ts";
-export { hmacSignature, isNotionHandshake, notionSignature, tallySignature } from "./verify.ts";
+export {
+  hmacSignature,
+  isNotionHandshake,
+  notionSignature,
+  tallySignature,
+  telegramSecretToken,
+} from "./verify.ts";
 /**
  * Scrubs known credentials out of a value. Everything a workflow writes to
  * SQLite or stdout is redacted already; this is for the one thing that isn't —

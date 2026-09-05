@@ -101,3 +101,74 @@ export function hmacSignature(opts: {
 export function tallySignature(secret: string | (() => string)): WebhookVerifier {
   return hmacSignature({ header: "tally-signature", secret });
 }
+
+/**
+ * Notion's webhook signature — a **hex** HMAC-SHA256 of the raw body in
+ * `x-notion-signature`, prefixed `sha256=` and keyed on the subscription's
+ * verification token.
+ *
+ * The token is awkward in a way no other provider's is: Notion mints it,
+ * POSTs it exactly once to the endpoint being subscribed, and never shows it
+ * again — the only recovery is the "Resend token" button in the verification
+ * modal. So this verifier lets the *unsigned* handshake through. Rejecting it
+ * would reject the one delivery that could ever tell you the key, and there
+ * would be no key to verify anything with, ever.
+ *
+ * That is a narrow hole and it is bounded on purpose: `isNotionHandshake`
+ * accepts a body that is *nothing but* a verification token, so the only thing
+ * an unauthenticated caller can do here is hand us a string. Everything else
+ * fails closed, including every real event that arrives before the token has
+ * been stored — a workflow that has not been given its token is not one that
+ * should be acting on events.
+ *
+ *   verify: notionSignature(() => secrets.NOTION_WEBHOOK_TOKEN)
+ *
+ * A getter, for the same reason as hmacSignature: the trigger is built once at
+ * import, and the token is typically stored *after* the first deploy.
+ */
+export function notionSignature(
+  secret: string | (() => string | undefined),
+): WebhookVerifier {
+  const resolve = typeof secret === "function" ? secret : () => secret;
+
+  return async ({ body, headers }) => {
+    if (isNotionHandshake(body)) return true;
+
+    const key = resolve();
+    // Thrown rather than returned false: app.ts logs the reason, and "no token
+    // yet" is a different thing to be told than "that signature is wrong".
+    if (!key) {
+      throw new Error(
+        "Notion webhook verification token is not set — cannot check a signature",
+      );
+    }
+
+    const provided = headers.get("x-notion-signature");
+    if (!provided) return false;
+    const digest = provided.startsWith("sha256=") ? provided.slice(7) : provided;
+    return timingSafeEqual(digest, await hmac("SHA-256", key, body, "hex"));
+  };
+}
+
+/**
+ * The one-time `{"verification_token": "…"}` POST Notion sends when a
+ * subscription is created — the only request on the route that can legitimately
+ * arrive unsigned.
+ *
+ * Deliberately strict: exactly one key, and it is the token. A body that
+ * carries anything else is an event, and an event has to be signed like one.
+ */
+export function isNotionHandshake(body: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (typeof parsed !== "object" || parsed === null) return false;
+    const keys = Object.keys(parsed);
+    return (
+      keys.length === 1 &&
+      keys[0] === "verification_token" &&
+      typeof (parsed as { verification_token: unknown }).verification_token === "string"
+    );
+  } catch {
+    return false;
+  }
+}

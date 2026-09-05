@@ -923,6 +923,24 @@ verify: hmacSignature({
 })
 ```
 
+Notion is the same shape with one wrinkle worth knowing about, so it has its
+own helper:
+
+```ts
+verify: notionSignature(() => secrets.NOTION_WEBHOOK_TOKEN),
+```
+
+The key is a token Notion mints, POSTs once to the endpoint you are subscribing,
+and never shows again. The route therefore has to be live before the key can
+exist, which is why `notionSignature` lets the unsigned `{"verification_token":
+"…"}` handshake through and fails everything else closed — including every real
+event that arrives before the token has been stored. Declare the token
+`.optional()` so a first deploy can boot without it, and pass a getter so
+storing it later takes effect on the next delivery rather than the next restart.
+See `workflows/the-mantra/notion-contents-update-notification.ts` for the whole
+setup, including how the token reaches you without being written to the run
+page.
+
 Or a function, for a scheme that isn't an HMAC of the body at all:
 
 ```ts

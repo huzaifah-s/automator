@@ -8,6 +8,91 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### A step's error message is redacted on the way into SQLite
+
+`recordRun` redacted its error. `saveStep` did not — it redacted the step's
+*name* and passed the message straight through. Both write to the same database
+and both end up on the same run page, so the asymmetry was an oversight rather
+than a decision.
+
+It is not theoretical, and it is the same failure the credentials work already
+called out: Telegram puts the bot token in the URL path, so a 401 from
+`ctx.telegram.send` produces the message
+`HTTP 401 https://api.telegram.org/bot<TOKEN>/sendMessage — …`. The logger
+redacted it on the way to stdout; nothing redacted it on the way to disk. Found
+by running the new Contents notifier against a deliberately dead bot token and
+grepping the database file, which is exactly the sweep AGENTS.md asks for and
+exactly what reading the code would not have shown.
+
+Fixed at the storage boundary in `db.ts` rather than at the call site in
+`runner.ts`, for the reason the rest of the file already works that way: a
+caller that has to remember is a caller that eventually forgets, and `input`
+and `output` are only safe today because `capture()` redacts them regardless of
+who called it.
+
+### The Mantra — Notion (Contents) — Update Notification on Telegram
+
+Ported from n8n. A Status change in the Contents database reassigns the page to
+whoever owns that status and tells them on Telegram, with the page's unresolved
+comments attached when the work is Jenny's.
+`workflows/the-mantra/notion-contents-update-notification.ts`.
+
+**Two n8n graphs became one file.** n8n split "Notion - Webhook Subscriptions"
+from the notifier because a Notion subscription delivers to a single URL for the
+whole integration, and the first graph was the shared front door. It fans out to
+exactly one consumer, so the split bought nothing and cost a second run page per
+event; the database filter that made it meaningful now lives in the notifier as
+one comparison. The losing option was keeping the split and wiring it with
+`ctx.run()` — worth revisiting the day a second database wants its own notifier,
+and not before.
+
+**The route authenticates by signature, and the token bootstraps itself.**
+n8n's endpoint was an unguessable path and nothing else, on a webhook that
+mutates a database. `notionSignature()` (new, in `src/core/verify.ts`) is the
+Notion shape of the existing `hmacSignature` — hex, `sha256=`,
+`x-notion-signature` — with one deliberate hole: the unsigned
+`{"verification_token": "…"}` handshake is accepted, because Notion sends the
+key exactly once, to the endpoint being subscribed, and rejecting that delivery
+would mean never having a key at all. The hole is bounded to a body that is
+nothing but a token, and every real event before the token is stored fails
+closed. `WEBHOOK_SECRET` in the query string was the simpler alternative and
+lost on a fact nobody could confirm: Notion's docs do not say query strings on a
+subscription URL survive, and a webhook that silently stops being delivered is
+the worst failure available here.
+
+**The verification token is never written where it can be read back.** It is a
+live credential arriving for the first time, so the redactor has never heard of
+it — meaning the inbox row, the captured input and the run page would all have
+held it in plaintext. The webhook schema strips it in a transform, which is the
+last boundary before any of that, and parks it in memory for the run to file
+into `ctx.state` — the one store nothing renders. The Telegram nudge says where
+to read it rather than carrying it, because a message body is a captured HTTP
+request. Verified by grepping the database: the token appears in exactly one
+row, in `state`. The cost is that a crash between the 202 and the run loses it,
+which is one click on Notion's "Resend token".
+
+**Four n8n bugs did not survive the port.** It read `changes[0]` and filtered on
+it, so the pinned example — a save that touched a checkbox *and* the status —
+notified nobody depending on the order Notion listed the ids in; the status
+change is now found wherever it is. It wrote the same assignee back for Approved
+and Posted, and each of those writes generated another
+`page.properties_updated` delivery: the loop was one filter condition away from
+being a cycle, and the write is now skipped when it would change nothing. It
+fetched every page in the workspace before discovering it only cared about one
+database. And it interpolated page titles into HTML unescaped, so "Tan & Sons"
+broke the whole message.
+
+Verified end to end against the graph's own pinned payloads with Notion and
+Telegram stubbed at `fetch`: In Review reassigns and tells Huzaifah, To Fix
+reassigns and tells Jenny with comments, Posted with the status listed second
+still routes, a checkbox-only change costs no API call at all, an unrouted
+status warns instead of going quiet, a cleared status sends nothing, and an
+already-correct assignee produces no write. Plus the auth matrix — unsigned 401,
+bad signature 401, handshake 202, handshake-with-an-extra-key 401 — and a sweep
+of the database, the WAL, stdout and every dashboard route for all three
+credentials.
+
+
 ### defineOAuth honours the encryption-key fallback the docs already promised
 
 `.env.example` has said since the secret store landed that `OAUTH_ENCRYPTION_KEY`

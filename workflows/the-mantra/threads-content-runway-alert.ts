@@ -40,7 +40,7 @@ import { cron, defineCredential, defineWorkflow } from "../../src/core/define.ts
  * when the token is missing. It is marked blocked on the dashboard and refuses
  * to run instead — see AGENTS.md.
  */
-const notion = defineCredential("notion", "mantra");
+const notion = defineCredential("notion", "the-mantra-contents");
 
 /* ---------------------------------------------------------- configuration */
 

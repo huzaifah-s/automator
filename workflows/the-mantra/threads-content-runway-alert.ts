@@ -27,20 +27,26 @@ import { cron, defineCredential, defineWorkflow } from "../../src/core/define.ts
  */
 
 /**
- * The Notion internal integration this alert reads with, connected on the
- * Credentials tab rather than declared as an environment variable.
+ * The two platforms this alert talks to, both connected on the Credentials tab
+ * rather than declared as environment variables.
  *
- * "mantra" is a slot, not a value. Revoking the integration in Notion and
- * pasting a new token into the same credential leaves this line alone — which
- * is the whole reason the reference is a name you chose and not an id the
- * database made up. Deleting the credential and creating another called
- * "mantra" also works.
+ * "the-mantra-contents" and "the-mantra" are slots, not values. Revoking the
+ * integration in Notion and pasting a new token into the same credential leaves
+ * these lines alone — which is the whole reason the reference is a name you
+ * chose and not an id the database made up. Deleting a credential and creating
+ * another under the same name also works.
+ *
+ * The Telegram credential is here so the nudge arrives from The Mantra's own
+ * bot rather than from whichever bot happens to be primary. Only its token is
+ * read: the destination is TELEGRAM_CHAT_ID_HUZAIFAH, shared with the pblsh
+ * workflow, because both alerts go to the same person.
  *
  * The cost, and it is the deliberate one: this alert no longer stops the boot
- * when the token is missing. It is marked blocked on the dashboard and refuses
- * to run instead — see AGENTS.md.
+ * when either credential is missing. It is marked blocked on the dashboard and
+ * refuses to run instead — see AGENTS.md.
  */
 const notion = defineCredential("notion", "the-mantra-contents");
+const telegram = defineCredential("telegram", "the-mantra");
 
 /* ---------------------------------------------------------- configuration */
 
@@ -261,9 +267,13 @@ export default defineWorkflow({
 
     await ctx.step("nudge me", () =>
       ctx.telegram.send(assessment.text, {
-        // Configuration, not a secret: declaring it would blank the chat id
-        // out of every run page. Unset, TELEGRAM_CHAT_ID is used.
-        chatId: process.env.MANTRA_TELEGRAM_CHAT_ID,
+        token: telegram.token,
+        // Configuration, not a secret: declaring the chat id with defineSecrets
+        // would blank it out of every run page. Shared with the pblsh workflow
+        // because both alerts go to the same person. Unset, it falls back to
+        // the credential's own chat id — never to another brand's default,
+        // which is the pairing that would send from the wrong bot.
+        chatId: process.env.TELEGRAM_CHAT_ID_HUZAIFAH ?? telegram.chat_id,
         parseMode: "HTML",
       }),
     );

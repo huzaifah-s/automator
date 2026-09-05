@@ -8,6 +8,42 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### Each brand pings from its own Telegram bot
+
+`ctx.telegram.send` takes a `token` override, the way `ctx.discord.send`
+already took `webhookUrl`. The two workflows now name their own bot —
+`defineCredential("telegram", "the-mantra")` and `("telegram", "pblsh")` — and
+`MANTRA_TELEGRAM_CHAT_ID` is gone.
+
+**The bot is a credential; the recipient is not.** This was the question worth
+settling. A bot token is a secret with a Test button and a rotation story, so it
+belongs in a credential. A chat id is neither: declaring it would register it
+with the redactor and blank the destination out of every run page, which is
+exactly the line you want to read when checking where an alert went. So the
+recipient stays `TELEGRAM_CHAT_ID_HUZAIFAH`, read straight from the environment
+and shared by both workflows, because both alerts go to the same person.
+
+The cost is the one the credentials rule already documented, and it is heavier
+here than it was for Notion: an unconnected credential blocks the **whole
+workflow**, and for pblsh the Telegram ping shares a run with the creator's
+agreement email. Until Telegram / "pblsh" is connected, a Tally submission is
+refused at the door and nobody gets a PDF. Connect both credentials before
+deploying, not after.
+
+**Why the dashboard was silent about the old variable.** `process.env.X` read
+inline is invisible to everything — the "wanted" list on the Credentials tab is
+built from `defineCredential`, and the boot check from `defineSecrets`. A bare
+env read is neither, so nothing knew the name existed to report it missing. That
+is still true of `TELEGRAM_CHAT_ID_HUZAIFAH` and is the accepted price of
+keeping it readable; the compensation is that it now falls back to the chat id
+stored on the workflow's own Telegram credential, which *is* shown on the
+dashboard in plain text, rather than to whichever bot happens to be primary.
+Pairing one brand's token with another brand's default chat was a real way to
+send from the wrong bot, and it can no longer happen quietly.
+
+`PBLSH_TELEGRAM_CHAT_ID` was documented in `.env.example` and read by nothing;
+it is deleted rather than wired up.
+
 ### The Mantra's Notion token is a credential, not an env var
 
 First workflow moved onto `defineCredential`. `NOTION_API_KEY` is gone from the

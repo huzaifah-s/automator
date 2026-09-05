@@ -1,5 +1,11 @@
 import { z } from "zod";
-import { defineSecrets, defineWorkflow, tallySignature, webhook } from "../../src/core/define.ts";
+import {
+  defineCredential,
+  defineSecrets,
+  defineWorkflow,
+  tallySignature,
+  webhook,
+} from "../../src/core/define.ts";
 
 /**
  * PBLSH — Content Buyout Agreement.
@@ -34,6 +40,21 @@ const secrets = defineSecrets({
   // option on the trigger below.
   TALLY_SIGNING_SECRET: z.string().min(10),
 });
+
+/**
+ * The bot the summary is sent from, connected on the Credentials tab as
+ * Telegram / "pblsh" rather than declared above.
+ *
+ * Only its token is read; the destination is TELEGRAM_CHAT_ID_HUZAIFAH, shared
+ * with the-mantra alert because both go to the same person.
+ *
+ * The cost is real and worth naming: a credential is not a `defineSecrets` key,
+ * so an unconnected one does not stop the boot — it blocks the **whole
+ * workflow**. Until Telegram / "pblsh" is connected, a Tally submission is
+ * refused at the door and the creator never gets their PDF, because the alert
+ * and the email live in one run. Connect it before deploying.
+ */
+const telegram = defineCredential("telegram", "pblsh");
 
 /* ------------------------------------------------------------------ payload */
 
@@ -252,10 +273,11 @@ export default defineWorkflow<z.infer<typeof payload>>({
           `Email: ${esc(submission.email)}\n\n` +
           `Dated ${esc(submission.agreementDate ?? "—")}`,
         {
+          token: telegram.token,
           // Configuration, not a secret: declaring the chat id would blank it
-          // out of every run page. Unset, the integration's TELEGRAM_CHAT_ID
-          // is used.
-          chatId: process.env.TELEGRAM_CHAT_ID_HUZAIFAH,
+          // out of every run page. Unset, it falls back to the credential's
+          // own chat id rather than to another brand's default.
+          chatId: process.env.TELEGRAM_CHAT_ID_HUZAIFAH ?? telegram.chat_id,
           parseMode: "HTML",
         },
       ),

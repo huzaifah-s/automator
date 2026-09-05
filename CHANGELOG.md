@@ -8,19 +8,6 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-06
 
-### The brand Threads token has a refresher, 60 days late
-
-`threads-token-auto-refresh.ts` now refreshes both accounts — the founder's and
-The Mantra's — in one weekly run, a step each. The n8n cross-post graph never
-had one and admitted it in a sticky note: *"Threads token expires in 60 days -
-no refresh workflow yet."* A Threads token that goes 60 days unrefreshed dies
-permanently, and the only recovery is a full manual re-auth.
-
-**One workflow, not two.** A second file differing only in a credential name
-would be 240 lines maintained in parallel, and the failure mode of forgetting to
-add an account is silent for 59 days. Accounts are rows in one array; adding a
-third is a `defineOAuth` and one entry.
-
 ### Content cross-posts itself, and three more graphs became one
 
 `workflows/the-mantra/cross-poster.ts` replaces the n8n "Cross-post Checker",
@@ -52,6 +39,40 @@ into two HTTP nodes, which put it in its database, in every execution record and
 in the exported JSON. It is now a `meta` credential. The old token has to be
 treated as compromised and rotated by hand — nothing in this repo can do that.
 
+### Content that will never post no longer says nothing about it
+
+`workflows/the-mantra/cross-post-stale-alert.ts` reports the two ways a row goes
+quietly missing: **aged out** past the cross-poster's ten-day ceiling, and
+**stuck on `Posting`** after a run died holding the lock. Neither is retried by
+anything and neither surfaces anywhere, which made "it just never posted" a
+thing you found out about weeks later, by noticing.
+
+**A separate workflow, not part of the cross-poster.** The cross-poster polls
+every five minutes; answering this there would be a second Notion query 288
+times a day to report something that changes once a day. And the natural place
+for it — the poll's `fetch` — is the one place that cannot alert, because it
+runs outside a run.
+
+**The query is the exact complement of the cross-poster's, not "old rows".**
+Its floor is `on_or_after`; this uses `before` on the same instant. The two
+partition the set cleanly, so a row is either still due or reported here, never
+both and never neither. A looser filter would report rows merely waiting out the
+three-day stagger, and an alert that cries wolf about healthy content is worse
+than the silence it replaced.
+
+**It does not nag, and that is a correctness property.** A list nobody has dealt
+with, re-sent every morning, is how an alert stops being read — and an unread
+alert is the same silence. So: a message when something new appears, then quiet,
+then one reminder a week while anything is outstanding. The remembered set is
+refreshed even on the quiet mornings, so a row that goes stale, gets fixed, and
+goes stale again is reported the second time; and `lastSentAt` is deliberately
+*not* refreshed then, or the weekly reminder would reset every quiet day and
+never fire. A hand-started run always speaks, which is how you test it.
+
+**Stuck rows are found by the row's own last-edited time**, which the lock write
+sets — so it measures "untouched since it was claimed" rather than "claimed long
+ago", and a run legitimately in flight is never flagged.
+
 ### ctx.drive and ctx.s3, because media has to be somewhere Meta can fetch it
 
 Instagram, Facebook and Threads all publish by URL: you hand Meta a link and it
@@ -80,6 +101,20 @@ run page — all correct for an API call and all wrong for a 200MB video. They u
 different scope against the same key, and the cache is keyed by scope — one
 cache would hand a Sheets token to Drive, and the 403 that follows says nothing
 about why.
+
+### The brand Threads token has a refresher, 60 days late
+
+`threads-token-auto-refresh.ts` now refreshes both accounts — the founder's and
+The Mantra's — in one weekly run, a step each. The n8n cross-post graph never
+had one and admitted it in a sticky note: *"Threads token expires in 60 days -
+no refresh workflow yet."* A Threads token that goes 60 days unrefreshed dies
+permanently, and the only recovery is a full manual re-auth.
+
+**One workflow, not two.** A second file differing only in a credential name
+would be 240 lines maintained in parallel, and the failure mode of forgetting to
+add an account is silent for 59 days. Accounts are rows in one array; adding a
+third is a `defineOAuth` and one entry.
+
 
 ### A quiet poll and a dead one no longer look the same
 

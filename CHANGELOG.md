@@ -8,6 +8,19 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### The background refresh no longer wipes a control you are in the middle of
+
+The 10-second poll replaces the whole `.wrap` element, and it only ever held
+off for the workflows search box, matched by `id === "filter"`. Every other
+control was fair game: a half-made choice in a `<select>`, or a date being
+typed, would vanish under the cursor on the next tick. The guard now covers any
+focused `input`, `select` or `textarea`.
+
+Guarding by focus rather than by id is the point. Naming the controls to skip
+means the list is wrong again the next time one is added — which is exactly how
+this surfaced, while adding date fields to the executions tab. Focus is the
+property that actually answers "is the user using this right now".
+
 ### Moving a secret between folders no longer costs you the value
 
 The loose-secret form dropped `required` from the Value box when editing, and

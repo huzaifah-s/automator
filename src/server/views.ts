@@ -316,8 +316,11 @@ const SCRIPT = (seconds: number) => `
     var el = document.querySelector(".wrap");
     var secs = el ? Number(el.dataset.poll || 0) : 0;
     if (!secs) return;
-    var typing = document.activeElement && document.activeElement.id === "filter";
-    if (!document.hidden && !typing) {
+    // Any focused control, not just the search box: the refresh replaces the
+    // whole page, and a half-typed date would vanish under the user's cursor.
+    var el2 = document.activeElement;
+    var busy = !!(el2 && el2.matches && el2.matches("input,select,textarea"));
+    if (!document.hidden && !busy) {
       try {
         var res = await fetch(location.href, { credentials: "same-origin" });
         if (res.ok) {

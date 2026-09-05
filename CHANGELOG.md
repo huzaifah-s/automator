@@ -8,6 +8,30 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### defineOAuth honours the encryption-key fallback the docs already promised
+
+`.env.example` has said since the secret store landed that `OAUTH_ENCRYPTION_KEY`
+"falls back to SECRETS_ENCRYPTION_KEY's counterpart: set either, or both to
+separate them". The secret store did that. `defineOAuth` did not — it built its
+cipher from `OAUTH_ENCRYPTION_KEY` alone and declared that exact name as a
+required secret.
+
+For as long as no workflow declared an OAuth credential, nothing noticed. The
+Threads token refresh is the first one that does, and it took the deployment
+down on the next redeploy: a server told it had set enough keys aborted its boot
+over one it had been told was optional. A missing secret stopping the boot is
+correct and stays; being wrong about *which* secrets are missing is not.
+
+The cipher now reads `OAUTH_ENCRYPTION_KEY` then `SECRETS_ENCRYPTION_KEY`, and
+the boot check declares whichever is actually usable, so it agrees with the
+cipher instead of demanding a name. Order is load-bearing: a deployment that
+deliberately separated the two still decrypts tokens written under its own key.
+With neither set the error still names `OAUTH_ENCRYPTION_KEY`, the one an
+operator would expect to be told about.
+
+Verified across all three shapes: SECRETS only boots, both-set-and-different
+boots and prefers OAUTH, neither aborts naming OAUTH_ENCRYPTION_KEY.
+
 ### The Mantra — Threads — Token Auto-Refresh
 
 Ported from n8n. A Threads token that goes 60 days without a refresh dies

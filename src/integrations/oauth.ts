@@ -59,6 +59,16 @@ const DEFAULT_TTL_SECONDS = 3_600;
 const KEY_PREFIX = "@oauth:";
 /** Where the master key lives. 32 bytes, base64 or hex. */
 const KEY_ENV = "OAUTH_ENCRYPTION_KEY";
+/**
+ * ...falling back to the secret store's key, which is what `.env.example` has
+ * always promised ("set either, or both to separate them") and what this file
+ * did not honour. A deployment with only SECRETS_ENCRYPTION_KEY set was told it
+ * had done enough and then refused to boot the moment any workflow declared an
+ * OAuth credential. Order matters: OAUTH_ENCRYPTION_KEY is tried first, so a
+ * deployment that already separated the two keeps decrypting tokens written
+ * under its own.
+ */
+const KEY_ENVS = [KEY_ENV, "SECRETS_ENCRYPTION_KEY"] as const;
 
 export interface OAuthConfig {
   /** The provider's token endpoint, e.g. https://oauth2.googleapis.com/token. */
@@ -230,9 +240,16 @@ export function defineOAuth(name: string, config: OAuthConfig): OAuthCredential 
 
   // Validated and registered for redaction at import time, exactly like every
   // other secret: a missing key stops the deploy, not the 3am run.
+  // Whichever master key is actually usable is the one declared, so the boot
+  // check agrees with the cipher above instead of demanding a specific name.
+  // With neither set this names OAUTH_ENCRYPTION_KEY — the one an operator
+  // reading this file would expect to be told about.
+  const keyEnv =
+    KEY_ENVS.find((name) => decodeKey(process.env[name] ?? "") !== undefined) ?? KEY_ENV;
+
   const shape: Record<string, ZodTypeAny> = {
     [`${prefix}_REFRESH_TOKEN`]: z.string().min(1),
-    [KEY_ENV]: z
+    [keyEnv]: z
       .string()
       .refine((raw) => decodeKey(raw) !== undefined, {
         message: "must be 32 bytes, base64 or hex — generate with: openssl rand -base64 32",
@@ -447,7 +464,8 @@ async function load(cred: Resolved): Promise<Token | undefined> {
     // and it fails loudly at the provider if that one is spent too.
     warnOnce(
       `${cred.name}:undecryptable`,
-      `oauth: stored token for "${cred.name}" could not be decrypted with ${KEY_ENV} — ` +
+      `oauth: stored token for "${cred.name}" could not be decrypted with ` +
+        `${KEY_ENVS.join(" or ")} — ` +
         `falling back to ${cred.prefix}_REFRESH_TOKEN`,
     );
     return undefined;
@@ -492,7 +510,7 @@ async function save(cred: Resolved, token: Token): Promise<void> {
  * databases in the field already hold tokens written that way.
  */
 
-const cipher = createCipher([KEY_ENV]);
+const cipher = createCipher(KEY_ENVS);
 
 async function encrypt(token: Token): Promise<Envelope> {
   return { v: 1, data: await cipher.encrypt(JSON.stringify(token)) };

@@ -820,6 +820,38 @@ stored token — but declaring one name against two different token URLs throws.
 |---|---|
 | `accessToken()` | A usable token, refreshing first if it's within a minute of expiry (or half its life, whichever is sooner) |
 | `refresh()` | Forces one, for the provider that 401s a token it said was good. Retry the call once; don't loop |
+| `status()` | The stored expiry and last-refresh dates, and **no token** — so a workflow can report how long is left without holding the credential |
+
+#### Long-lived tokens that refresh themselves
+
+Meta's Threads and Instagram tokens are the other shape: no client secret, no
+separate refresh token, and a life measured in weeks. You trade the token you
+hold for a later-expiring copy of itself, and *that copy* is what you send next
+time. `flow: "self"` speaks it:
+
+```ts
+const threads = defineOAuth("threads-the-mantra", {
+  tokenUrl: "https://graph.threads.net/refresh_access_token",
+  flow: "self",
+  grantType: "th_refresh_token",   // "ig_refresh_token" for Instagram
+  defaultTtlSeconds: 60 * 24 * 60 * 60,
+});
+```
+
+Only `OAUTH_<NAME>_REFRESH_TOKEN` is read — it holds the long-lived token
+itself — and no client id or secret is asked for, because the provider has no
+concept of them. Storage, encryption, the refresh lock and the seed rule are
+identical to the standard flow.
+
+**These need a scheduled `refresh()`, and it is not optional.** A token good
+for 60 days is never close enough to expiry for `accessToken()` to renew it on
+the way past, so nothing keeps it alive by being used — and Meta kills a token
+that goes its whole life without a refresh, permanently, with no recovery but a
+manual re-auth. A weekly cron calling `refresh()` is the whole safety margin;
+`status()` is how that workflow reports what is left of it. Threads also
+refuses to refresh a token younger than 24 hours, so such a workflow should
+check `status().refreshedAt` before asking. See
+`workflows/the-mantra/threads-token-auto-refresh.ts`.
 
 **There is no "Connect account" button, and there isn't meant to be one.** The
 authorization-code flow needs a browser, a redirect URL, and a place to park

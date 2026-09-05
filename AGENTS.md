@@ -140,6 +140,21 @@ rest of state without deciding that trade again, and don't add a code path that
 writes a token anywhere else. A decrypt failure must stay recoverable: it falls
 back to the seed in the environment rather than throwing.
 
+**A `flow: "self"` OAuth refresh stores the token it got *back*, not the one it
+sent.** Meta's long-lived Threads and Instagram tokens have no separate refresh
+token — the reply *is* the next one. The RFC 6749 path keeps the token it sent
+when a provider omits `refresh_token`, which is correct there and wrong here:
+it pins the chain to a token still counting down on the original clock, and the
+whole point of refreshing is that it isn't. The ternary in `exchange()` is that
+distinction; it is not redundant.
+
+**Those tokens are not kept alive by being used.** Sixty days is never within
+the refresh skew, so `accessToken()` never renews one on the way past, and a
+token that goes its whole life unrefreshed dies with no recovery. A scheduled
+`refresh()` is the only thing standing between the deployment and a manual
+re-auth — see `workflows/the-mantra/threads-token-auto-refresh.ts`. Don't
+delete such a workflow as "it never does anything".
+
 **State keys are namespaced per workflow**, with `ctx.state.shared` as the
 cross-workflow namespace (`@shared` internally — workflow names can't contain
 `@`, so it can't collide). Values must be JSON-serialisable and under

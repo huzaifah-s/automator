@@ -108,7 +108,7 @@ export type {
   WorkflowDef,
 } from "./types.ts";
 export type { StateClient, StateStore, StateSetOptions } from "./state.ts";
-export type { OAuthConfig, OAuthCredential } from "../integrations/oauth.ts";
+export type { OAuthConfig, OAuthCredential, TokenStatus } from "../integrations/oauth.ts";
 export type {
   HttpOptions,
   PaginateOptions,

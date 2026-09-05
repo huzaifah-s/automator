@@ -8,6 +8,26 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### defineOAuth speaks Meta's self-refreshing long-lived tokens
+
+`flow: "self"` in `src/integrations/oauth.ts`. Threads and Instagram have no
+client secret and no separate refresh token: you GET the endpoint with the
+token you hold and receive a later-expiring replacement. Storage, encryption,
+the refresh lock and the seed rule are shared with the standard flow — only the
+exchange differs, and `defaultTtlSeconds` exists because a 3600-second default
+on a 60-day token would make every report of its expiry a lie.
+
+The load-bearing line is that a `self` refresh stores the **returned** token as
+the next refresh token. Keeping the one we sent — which is what the RFC 6749
+path correctly does when a provider omits `refresh_token` — would pin the chain
+to a token still counting down on the original clock, and the whole point of
+refreshing is that it isn't. Verified against a local stand-in for the Threads
+endpoint: the second refresh sends the rotated token, not the seed.
+
+`status()` was added alongside, returning the stored dates and no token, so a
+keep-alive workflow can report how much life is left without ever holding the
+credential.
+
 ### The workflow picker no longer hangs off the side of a phone
 
 A `<select>` is as wide as its widest option, and the widest option here is

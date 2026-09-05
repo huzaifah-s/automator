@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z, type ZodTypeAny } from "zod";
 import { defineSecrets } from "../core/secrets.ts";
 import { registerSecret } from "../core/redact.ts";
 import { createState } from "../core/state.ts";
@@ -26,6 +26,21 @@ import { log } from "../core/logger.ts";
  *
  * Reads OAUTH_NOTION_CLIENT_ID, OAUTH_NOTION_CLIENT_SECRET and
  * OAUTH_NOTION_REFRESH_TOKEN, all validated at boot like any other secret.
+ *
+ * `flow: "self"` covers the other family — Meta's long-lived tokens, where
+ * there is no client secret and no separate refresh token, just one token that
+ * you trade for a later-expiring copy of itself:
+ *
+ *   const threads = defineOAuth("threads-the-mantra", {
+ *     tokenUrl: "https://graph.threads.net/refresh_access_token",
+ *     flow: "self",
+ *     grantType: "th_refresh_token",
+ *   });
+ *
+ * Those tokens live for weeks rather than an hour, so nothing calls
+ * accessToken() often enough to keep one alive on its own — that needs a
+ * scheduled refresh(), and status() is how such a workflow reports what is
+ * left without ever touching the token.
  */
 
 /**
@@ -49,9 +64,32 @@ export interface OAuthConfig {
   /** The provider's token endpoint, e.g. https://oauth2.googleapis.com/token. */
   tokenUrl: string;
   /**
+   * Which refresh shape the provider speaks.
+   *
+   * "oauth2" (default) is RFC 6749 §6: POST the refresh token as a form,
+   * authenticated with the client credentials, and get a short-lived access
+   * token back.
+   *
+   * "self" is the long-lived-token shape Meta uses for Threads and Instagram.
+   * There is no client secret and no separate refresh token — you GET the
+   * endpoint with the token you already hold and receive a later-expiring
+   * replacement, and *that* is what you send next time. Only
+   * OAUTH_<NAME>_REFRESH_TOKEN is read, and it holds the long-lived token.
+   *
+   * Both are stored, encrypted and locked identically. The flow only decides
+   * how the exchange is spelled.
+   */
+  flow?: "oauth2" | "self";
+  /**
+   * The grant_type sent with a refresh. Defaults to "refresh_token"; Meta
+   * wants "th_refresh_token" for Threads and "ig_refresh_token" for Instagram.
+   */
+  grantType?: string;
+  /**
    * How the client credentials are sent. "body" (default) puts client_id and
    * client_secret in the form; "basic" sends them as HTTP Basic, which some
-   * providers require and others reject.
+   * providers require and others reject. Ignored by "self", which has no
+   * client credentials to send.
    */
   auth?: "body" | "basic";
   /** Sent with every refresh, for the providers that want it repeated. */
@@ -60,6 +98,14 @@ export interface OAuthConfig {
   extraParams?: Record<string, string>;
   /** Env prefix override. Default OAUTH_<NAME>. */
   env?: string;
+  /**
+   * What to assume when the provider omits expires_in. Default 3600, which is
+   * right for an hourly access token and badly wrong for a 60-day one — so a
+   * "self" credential should say what its tokens are actually worth. Getting
+   * this wrong does not break the refresh; it makes the stored expiry, and
+   * therefore anything reporting on it, lie.
+   */
+  defaultTtlSeconds?: number;
   /** Ceiling on the token call. Default 15_000. */
   timeoutMs?: number;
 }
@@ -77,6 +123,23 @@ export interface OAuthCredential {
    * Retry the call once with this; do not loop on it.
    */
   refresh(): Promise<string>;
+  /**
+   * What is stored, minus the token itself. Nothing in here is a credential,
+   * which is the point: a workflow whose whole job is keeping a long-lived
+   * token alive has to be able to report how long is left without ever
+   * holding the token, let alone putting it in a step result.
+   *
+   * `undefined` before the first refresh has ever stored anything, and also
+   * when the stored value could not be decrypted.
+   */
+  status(): Promise<TokenStatus | undefined>;
+}
+
+/** The dates behind a stored token. Deliberately carries no credential. */
+export interface TokenStatus {
+  expiresAt: Date;
+  /** Absent on a token stored before this was recorded. */
+  refreshedAt?: Date;
 }
 
 /** What we keep per credential, encrypted, in shared state. */
@@ -84,6 +147,12 @@ interface Token {
   accessToken: string;
   refreshToken: string;
   expiresAt: number;
+  /**
+   * When the last successful refresh landed. Absent on tokens written before
+   * this field existed. Threads refuses to refresh a token younger than 24
+   * hours, so a keep-alive workflow has to be able to ask.
+   */
+  refreshedAt?: number;
   /** How early to refresh this particular token — see REFRESH_SKEW_MS. */
   skewMs: number;
   /**
@@ -161,16 +230,21 @@ export function defineOAuth(name: string, config: OAuthConfig): OAuthCredential 
 
   // Validated and registered for redaction at import time, exactly like every
   // other secret: a missing key stops the deploy, not the 3am run.
-  const env = defineSecrets({
-    [`${prefix}_CLIENT_ID`]: z.string().min(1),
-    [`${prefix}_CLIENT_SECRET`]: z.string().min(1),
+  const shape: Record<string, ZodTypeAny> = {
     [`${prefix}_REFRESH_TOKEN`]: z.string().min(1),
     [KEY_ENV]: z
       .string()
       .refine((raw) => decodeKey(raw) !== undefined, {
         message: "must be 32 bytes, base64 or hex — generate with: openssl rand -base64 32",
       }),
-  }) as Record<string, string | undefined>;
+  };
+  // A "self" credential has no client keys, and declaring them anyway would
+  // abort the boot over two variables nobody can fill in.
+  if (config.flow !== "self") {
+    shape[`${prefix}_CLIENT_ID`] = z.string().min(1);
+    shape[`${prefix}_CLIENT_SECRET`] = z.string().min(1);
+  }
+  const env = defineSecrets(shape) as Record<string, string | undefined>;
 
   const seedToken = env[`${prefix}_REFRESH_TOKEN`] ?? "";
   const cred: Resolved = {
@@ -192,6 +266,15 @@ export function defineOAuth(name: string, config: OAuthConfig): OAuthCredential 
     },
     async refresh() {
       return (await withLock(name, () => refreshNow(cred, true))).accessToken;
+    },
+    async status() {
+      const stored = await load(cred);
+      if (!stored) return undefined;
+      return {
+        expiresAt: new Date(stored.expiresAt),
+        refreshedAt:
+          stored.refreshedAt === undefined ? undefined : new Date(stored.refreshedAt),
+      };
     },
   };
 }
@@ -248,33 +331,49 @@ function isFresh(token: Token | undefined): token is Token {
  * page. This call is not something you want to see there.
  */
 async function exchange(cred: Resolved, refreshToken: string): Promise<Token> {
-  const body = new URLSearchParams({
-    grant_type: "refresh_token",
-    refresh_token: refreshToken,
-    ...(cred.config.scope ? { scope: cred.config.scope } : {}),
-    ...cred.config.extraParams,
-  });
+  const self = (cred.config.flow ?? "oauth2") === "self";
+  const grantType = cred.config.grantType ?? "refresh_token";
+  const url = new URL(cred.config.tokenUrl);
+  const headers: Record<string, string> = { accept: "application/json" };
+  let init: RequestInit;
 
-  const headers: Record<string, string> = {
-    "content-type": "application/x-www-form-urlencoded",
-    accept: "application/json",
-  };
-
-  if ((cred.config.auth ?? "body") === "basic") {
-    // RFC 6749 §2.3.1: form-encode each half before base64.
-    const pair = `${encodeURIComponent(cred.clientId)}:${encodeURIComponent(cred.clientSecret)}`;
-    headers.authorization = `Basic ${Buffer.from(pair).toString("base64")}`;
+  if (self) {
+    // Meta refreshes a long-lived token over GET, with the token itself as a
+    // query parameter. That puts a live credential in a URL — which is the
+    // second reason this call is a plain fetch and never ctx.http: the
+    // recorded request on the run page *would be* the token.
+    for (const [key, value] of Object.entries(cred.config.extraParams ?? {})) {
+      url.searchParams.set(key, value);
+    }
+    url.searchParams.set("grant_type", grantType);
+    url.searchParams.set("access_token", refreshToken);
+    init = { method: "GET", headers };
   } else {
-    body.set("client_id", cred.clientId);
-    body.set("client_secret", cred.clientSecret);
+    const body = new URLSearchParams({
+      grant_type: grantType,
+      refresh_token: refreshToken,
+      ...(cred.config.scope ? { scope: cred.config.scope } : {}),
+      ...cred.config.extraParams,
+    });
+
+    headers["content-type"] = "application/x-www-form-urlencoded";
+
+    if ((cred.config.auth ?? "body") === "basic") {
+      // RFC 6749 §2.3.1: form-encode each half before base64.
+      const pair = `${encodeURIComponent(cred.clientId)}:${encodeURIComponent(cred.clientSecret)}`;
+      headers.authorization = `Basic ${Buffer.from(pair).toString("base64")}`;
+    } else {
+      body.set("client_id", cred.clientId);
+      body.set("client_secret", cred.clientSecret);
+    }
+
+    init = { method: "POST", headers, body };
   }
 
   let res: Response;
   try {
-    res = await fetch(cred.config.tokenUrl, {
-      method: "POST",
-      headers,
-      body,
+    res = await fetch(url, {
+      ...init,
       signal: AbortSignal.timeout(cred.config.timeoutMs ?? DEFAULT_TIMEOUT_MS),
     });
   } catch (err) {
@@ -317,13 +416,19 @@ async function exchange(cred: Resolved, refreshToken: string): Promise<Token> {
   if (parsed.refresh_token) registerSecret(parsed.refresh_token);
 
   const seconds = Number(parsed.expires_in);
-  const lifetimeMs =
-    (Number.isFinite(seconds) && seconds > 0 ? seconds : DEFAULT_TTL_SECONDS) * 1_000;
+  const fallback = cred.config.defaultTtlSeconds ?? DEFAULT_TTL_SECONDS;
+  const lifetimeMs = (Number.isFinite(seconds) && seconds > 0 ? seconds : fallback) * 1_000;
+  const now = Date.now();
   return {
     accessToken: parsed.access_token,
+    // A "self" provider returns no refresh_token because the token it just
+    // issued *is* the next one. Keeping the one we sent would pin the chain to
+    // a token still counting down on the original clock, which is the one
+    // thing refreshing exists to prevent.
     // Providers that don't rotate simply omit it; the one we sent stays valid.
-    refreshToken: parsed.refresh_token ?? refreshToken,
-    expiresAt: Date.now() + lifetimeMs,
+    refreshToken: self ? parsed.access_token : (parsed.refresh_token ?? refreshToken),
+    expiresAt: now + lifetimeMs,
+    refreshedAt: now,
     skewMs: Math.min(REFRESH_SKEW_MS, Math.floor(lifetimeMs / 2)),
     seed: cred.seedHash,
   };

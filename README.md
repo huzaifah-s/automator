@@ -606,6 +606,14 @@ Every run page shows what actually happened, n8n-style:
 - **HTTP calls** — every `ctx.http` request with method, URL, status, timing,
   request body, and response body. Failed and retried attempts all appear.
 
+The **Executions** tab opens on the **last 7 days**. The window is a chip —
+24 hours, 7, 14, 30 days, all time, or a pair of UTC dates — and the counts
+above the list, plus the red failure count on the tab itself, describe whatever
+the filters are set to: the window *and* the workflow or folder. Nothing on the
+page is pinned to a fixed 24 hours any more. The status chip is the one filter
+the counts ignore, since the cards are the statuses. The other tabs have no
+chips of their own and count over the same 7-day default.
+
 Everything is redacted through the same secret filter as the logs before it's
 stored — including workflow return values, error messages, and recorded URLs, and capped at `CAPTURE_MAX_BYTES` (32KB) per value so run history can't
 run away with your disk. Request *headers* are never captured at all, so

@@ -8,6 +8,47 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-06
 
+### The dashboard opens on a week, and every number counts the same week
+
+The executions tab used to open on **all time** and print counts above the
+list that were also all time — but the tab badge beside "Executions" was
+hard-wired to the last 24 hours, and so were the two stat cards on the
+workflows tab. Three numbers on one screen, each counting a different span,
+none of them saying which. Picking a window moved one of them.
+
+**The default window is 7 days, everywhere.** A runner that has been up for a
+month opens on the runs from this week, not on every run it has ever recorded.
+The tabs with no chips of their own — workflows, credentials — count over the
+same seven days, so the red badge means the same thing on whichever tab you
+are looking at, and the "runs · 24h" card is now "runs · 7 days".
+
+**The badge follows every filter on the page.** The old comment said the
+badge did not follow the chips *because* it had to mean the same thing on
+every page. That was solving the wrong half: a red `3` sitting above a list
+showing 24 hours of runs had no way to say it was counting a different
+fortnight. It is now drawn from the same counts as the cards — the window and
+the workflow or folder — so a number on screen can always be traced to rows on
+the page it is sitting on.
+
+The losing option was a badge that followed only the window and stayed
+runner-wide across workflows, on the argument that it answers "is anything
+wrong" and a workflow filter emptying it would hide failures you filtered away
+from. That was rejected: a red count you cannot reach from the list under it is
+a number you cannot act on, and the workflows tab already carries the
+runner-wide figure. The status chip stays excluded either way — filtering to
+"success" must not claim nothing failed.
+
+**"All time" had to be given a name.** With an absent `?range=` now meaning
+the default, the empty string could no longer stand for everything — asking
+for all time and not asking at all were the same URL. The chip carries
+`range=all`, and the workflow page's "All executions →" link carries it too,
+rather than promising all and landing on a week.
+
+An unparseable `?range=` now lands on the default rather than widening to all
+of time. The old rule was that a filter should never narrow into an empty tab
+you cannot explain; the default window is not that failure, because it is the
+same thing you see when you open the tab fresh.
+
 ### The dashboard reads on a phone, and the rows stop being columns
 
 Below 560px every `.row` grid becomes a wrapping flex line: the name takes the

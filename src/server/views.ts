@@ -709,6 +709,7 @@ export function workflowsPage(
   workflows: LoadedWorkflow[],
   nextRun: (name: string) => Date | null,
   pulses: RunPulse[],
+  /** Per status over the default window — the cards and the tab badge. */
   counts: Record<string, number>,
   versions: Map<string, WorkflowVersion>,
   /** Workflow name → the credentials it declared that are not connected. */
@@ -725,8 +726,8 @@ export function workflowsPage(
 
   const groups = groupByFolder(workflows);
   const active = workflows.filter((w) => w.enabled !== false).length;
-  const runs24h = Object.values(counts).reduce((a, b) => a + b, 0);
-  const failed24h = counts.failed ?? 0;
+  const runsInWindow = Object.values(counts).reduce((a, b) => a + b, 0);
+  const failedInWindow = counts.failed ?? 0;
 
   const header = html`<div class="row wf head">
     <div>Workflow</div>
@@ -742,17 +743,17 @@ export function workflowsPage(
       title: "Workflows",
       tab: "workflows",
       refresh: 15,
-      badges: { workflows: workflows.length, failed: failed24h, unconnected: blocked.size },
+      badges: { workflows: workflows.length, failed: failedInWindow, unconnected: blocked.size },
     },
     html`
       <div class="stats">
         <div class="stat"><b>${active}</b><span>active workflows</span></div>
         <div class="stat"><b>${groups.length}</b><span>folder${groups.length === 1 ? "" : "s"}</span></div>
-        <div class="stat"><b>${runs24h}</b><span>runs · 24h</span></div>
+        <div class="stat"><b>${runsInWindow}</b><span>runs · ${DEFAULT_RANGE_LABEL}</span></div>
         ${blocked.size > 0
           ? html`<div class="stat"><b class="failed">${blocked.size}</b><span>blocked</span></div>`
           : ""}
-        <div class="stat"><b class="${failed24h ? "failed" : ""}">${failed24h}</b><span>failed · 24h</span></div>
+        <div class="stat"><b class="${failedInWindow ? "failed" : ""}">${failedInWindow}</b><span>failed · ${DEFAULT_RANGE_LABEL}</span></div>
       </div>
 
       <div class="toolbar">
@@ -814,13 +815,37 @@ const STATUS_FILTERS = [
 // The time windows, in the order they read on screen. The keys are what
 // `?range=` carries and what `resolveRange()` in the server resolves; "custom"
 // is not a chip, it is the state the two date fields put the page into.
+//
+// The spans live here rather than in the server so that a chip and the window
+// it selects cannot drift apart. "All time" carries a key instead of the empty
+// string because an absent `?range=` now means the default, not everything —
+// without a name of its own, asking for all time would be indistinguishable
+// from not asking at all and would bounce straight back to 7 days.
 const RANGE_FILTERS = [
-  { value: "", label: "All time" },
-  { value: "24h", label: "24 hours" },
-  { value: "7d", label: "7 days" },
-  { value: "14d", label: "14 days" },
-  { value: "30d", label: "30 days" },
+  { value: "all", label: "All time", span: 0 },
+  { value: "24h", label: "24 hours", span: 86_400_000 },
+  { value: "7d", label: "7 days", span: 7 * 86_400_000 },
+  { value: "14d", label: "14 days", span: 14 * 86_400_000 },
+  { value: "30d", label: "30 days", span: 30 * 86_400_000 },
 ] as const;
+
+/**
+ * The window every page starts in. The executions chips, the stat cards on the
+ * tabs that have no chips, and the failure badge in the tab bar all begin here,
+ * so this one key moves them together.
+ */
+export const DEFAULT_RANGE = "7d";
+
+/** How far back a range key reaches: 0 for all time, undefined if unknown. */
+export function rangeSpan(key: string): number | undefined {
+  return RANGE_FILTERS.find((r) => r.value === key)?.span;
+}
+
+/** The default window in milliseconds, for pages that cannot choose another. */
+export const DEFAULT_RANGE_MS = rangeSpan(DEFAULT_RANGE)!;
+
+/** What the pages without chips call the window their numbers cover. */
+const DEFAULT_RANGE_LABEL = RANGE_FILTERS.find((r) => r.value === DEFAULT_RANGE)!.label;
 
 /**
  * A resolved time window: the chip that is lit (`key`), the two date fields as
@@ -839,7 +864,7 @@ export interface RunRange {
 function rangeLabel(range: RunRange) {
   if (range.key === "custom") return "selected dates";
   return (
-    RANGE_FILTERS.find((r) => r.value === range.key)?.label ?? "all time"
+    RANGE_FILTERS.find((r) => r.value === range.key)?.label ?? DEFAULT_RANGE_LABEL
   ).toLowerCase();
 }
 
@@ -866,9 +891,13 @@ export function executionsPage(
     limit: number;
     /** Everything the filter matches, so a capped list can say so. */
     matching: number;
-    /** Failures in the last 24h regardless of the window — the tab badge
-     *  means the same thing on every page, so it does not follow the chips. */
-    failed24h: number;
+    /** Failures among everything the filters match — the window, and the
+     *  workflow or folder too. The badge describes the list underneath it
+     *  rather than the runner as a whole: a red number that cannot be traced
+     *  to a row on the page it is sitting on is a number you cannot act on.
+     *  The status chip is the one filter left out, the same way the cards
+     *  leave it out — filtering to "success" must not claim nothing failed. */
+    failedMatching: number;
   },
 ) {
   const current = {
@@ -935,7 +964,7 @@ export function executionsPage(
       title: "Executions",
       tab: "executions",
       refresh: 10,
-      badges: { workflows: null, failed: window.failed24h },
+      badges: { workflows: null, failed: window.failedMatching },
     },
     html`
       <div class="toolbar">
@@ -1018,7 +1047,7 @@ export function executionsPage(
         true,
         // "Nothing has run yet" is a lie once a window is on — the runs may
         // well exist a chip to the left.
-        filter.status || filter.workflow || filter.folder || filter.range.key
+        filter.status || filter.workflow || filter.folder || filter.range.key !== "all"
           ? html`<div class="empty">
               <b>No runs in this window</b>
               Nothing matches ${label}${
@@ -1176,7 +1205,10 @@ export function workflowPage(
         <form method="post" action="/workflows/${wf.name}/run">
           <button class="btn" type="submit">${ICON_PLAY} Run now</button>
         </form>
-        <a class="chip" href="/runs?workflow=${wf.name}">All executions →</a>
+        <!-- Spelled out because the tab now opens on 7 days: a link that says
+             "all" and lands on a week is the kind of small lie you only catch
+             by counting rows. -->
+        <a class="chip" href="/runs?workflow=${wf.name}&range=all">All executions →</a>
       </div>
 
       ${rejections.length > 0 ? rejectionsSection(wf, rejections) : ""}
@@ -1582,7 +1614,7 @@ export function credentialsPage(args: {
   wanted: WantedCredentialView[];
   writable: boolean;
   encryptionReady: boolean;
-  failed24h: number;
+  failedInWindow: number;
   workflowCount: number;
   error?: string | null;
 }) {
@@ -1616,7 +1648,7 @@ export function credentialsPage(args: {
       refresh: null,
       badges: {
         workflows: args.workflowCount,
-        failed: args.failed24h,
+        failed: args.failedInWindow,
         unconnected: wanted.length + broken,
       },
     },

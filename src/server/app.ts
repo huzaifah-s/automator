@@ -36,8 +36,11 @@ import type { LoadedWorkflow, RunRecord } from "../core/types.ts";
 import {
   credentialFormPage,
   credentialsPage,
+  DEFAULT_RANGE,
+  DEFAULT_RANGE_MS,
   executionsPage,
   providerPickerPage,
+  rangeSpan,
   runPage,
   secretFormPage,
   unauthorizedPage,
@@ -50,14 +53,6 @@ import {
 } from "./views.ts";
 
 const RUN_STATUSES = ["success", "failed", "running", "skipped"];
-
-/** How far back each `?range=` key reaches, in milliseconds. */
-const RUN_RANGES: Record<string, number> = {
-  "24h": 86_400_000,
-  "7d": 7 * 86_400_000,
-  "14d": 14 * 86_400_000,
-  "30d": 30 * 86_400_000,
-};
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -77,9 +72,11 @@ function utcDay(value: string, endOfDay: boolean): number | null {
  * `toISOString()`: the day you type has to mean the day you can see, and the
  * zone the server happens to run in is not on the screen anywhere.
  *
- * Anything unparseable widens rather than narrows, for the same reason an
- * unknown `?status=` does — an empty tab you cannot explain is the worse
- * failure.
+ * An absent or unparseable `?range=` lands on the default window rather than
+ * on all of time: the tab has to open on something, and the widest possible
+ * list is the one least likely to be the question. "All time" is still a chip,
+ * it just has to be asked for by name — which is why it carries the key "all"
+ * and not the empty string.
  */
 function resolveRange(q: { range: string; from: string; to: string }): RunRange {
   let since = utcDay(q.from, false);
@@ -100,9 +97,12 @@ function resolveRange(q: { range: string; from: string; to: string }): RunRange 
     };
   }
 
-  const span = RUN_RANGES[q.range];
-  if (!span) return { key: "", from: "", to: "" };
-  return { key: q.range, from: "", to: "", since: Date.now() - span };
+  // An unknown key is not a window anybody asked for, so it falls back to the
+  // default the same way an absent one does.
+  const key = rangeSpan(q.range) === undefined ? DEFAULT_RANGE : q.range;
+  const span = rangeSpan(key)!;
+  // "all" spans zero, which is no lower bound — not a zero-length window.
+  return { key, from: "", to: "", since: span ? Date.now() - span : undefined };
 }
 
 export function createApp(registry: Registry): Hono {
@@ -352,7 +352,7 @@ export function createApp(registry: Registry): Hono {
         registry.all(),
         nextRunFor,
         store.recentRunsPerWorkflow(12),
-        store.statusCountsSince(Date.now() - 86_400_000),
+        store.statusCountsSince(Date.now() - DEFAULT_RANGE_MS),
         store.workflowVersions(),
         blockedWorkflows(),
         store.rejectionTotals(),
@@ -412,7 +412,10 @@ export function createApp(registry: Registry): Hono {
         {
           limit,
           matching,
-          failed24h: store.statusCountsSince(Date.now() - 86_400_000).failed ?? 0,
+          // The same counts the cards are drawn from, so the badge and the
+          // list can never disagree — narrowing to one workflow narrows the
+          // badge with it.
+          failedMatching: counts.failed ?? 0,
         },
       ) as any,
     );
@@ -627,7 +630,7 @@ export function createApp(registry: Registry): Hono {
         wanted: wantedCredentials(),
         writable,
         encryptionReady: secretStoreReady(),
-        failed24h: store.statusCountsSince(Date.now() - 86_400_000).failed ?? 0,
+        failedInWindow: store.statusCountsSince(Date.now() - DEFAULT_RANGE_MS).failed ?? 0,
         workflowCount: registry.all().length,
         error: error ?? null,
       }) as any,

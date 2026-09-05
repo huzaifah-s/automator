@@ -607,15 +607,26 @@ export function createApp(registry: Registry): Hono {
 
     // A credential's fields are stored secrets too. Letting this form write one
     // directly would edit a credential from behind its own validation.
-    const owner = store.secretMeta().find((r) => r.key === key)?.owner;
-    if (owner) {
+    const existing = store.secretMeta().find((r) => r.key === key);
+    if (existing?.owner) {
       return c.html(
         secretFormPage({
           folders: knownFolders(),
-          error: `${key} belongs to credential ${owner} — edit it there.`,
+          error: `${key} belongs to credential ${existing.owner} — edit it there.`,
         }) as any,
         400,
       );
+    }
+
+    // An empty value box on a secret that already exists means "keep it" — the
+    // same contract the credential form uses for its password fields. Moving a
+    // secret between folders is metadata, and making it cost a trip to the
+    // password manager is how a value ends up mistyped or pasted from the
+    // wrong place.
+    if (existing && value === "") {
+      store.secretSetFolder(key, folder || null);
+      log.info(`Secret ${key} was moved to ${folder || "no folder"} from the dashboard`);
+      return c.redirect("/credentials", 303);
     }
 
     try {
@@ -624,6 +635,8 @@ export function createApp(registry: Registry): Hono {
     } catch (err) {
       return c.html(
         secretFormPage({
+          existingKey: existing ? key : undefined,
+          folder: folder || null,
           folders: knownFolders(),
           error: err instanceof Error ? err.message : String(err),
         }) as any,

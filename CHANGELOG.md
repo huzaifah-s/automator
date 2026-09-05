@@ -8,6 +8,27 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### Moving a secret between folders no longer costs you the value
+
+The loose-secret form dropped `required` from the Value box when editing, and
+`POST /secrets` now reads an empty box on an existing key as "keep it" and
+writes only the folder. Creating a secret still requires a value; blank on a
+name that does not exist yet is still refused.
+
+**A blank box means "unchanged", not "clear it".** The credential form had
+settled this already — its password fields are optional once filled, and the
+route skips any secret field submitted empty. The loose-secret form was the
+odd one out, so a folder change meant a round trip to the password manager to
+retype something that was not changing. That is not just friction: retyping a
+value you did not intend to touch is how it ends up mistyped, or pasted from
+the wrong entry. Folders are metadata, and metadata edits should not put the
+value in play at all. `updated_at` is deliberately left alone on a move for the
+same reason — nothing about the value changed.
+
+The one thing lost is the ability to blank a loose secret from this form, which
+was never available anyway: `setSecret` has always refused an empty value with
+"delete it instead", and Delete is the button for that.
+
 ### Each brand pings from its own Telegram bot
 
 `ctx.telegram.send` takes a `token` override, the way `ctx.discord.send`

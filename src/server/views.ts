@@ -1480,10 +1480,15 @@ export function secretFormPage(args: {
           </div>
           <div class="field">
             <label for="value">Value</label>
-            <input type="password" id="value" name="value" required
+            <input type="password" id="value" name="value"
                    autocomplete="new-password" spellcheck="false"
-                   placeholder="${editing ? "•••••••• stored — type to replace" : ""}">
-            <div class="help">Never displayed again once saved, here or over the API.</div>
+                   ${editing ? "" : raw("required")}
+                   placeholder="${editing ? "•••••••• stored — leave blank to keep" : ""}">
+            <div class="help">
+              ${editing
+                ? "Leave it blank to move the folder without retyping the value."
+                : "Never displayed again once saved, here or over the API."}
+            </div>
           </div>
           <div class="field">
             <label for="sfolder">Folder <span class="req">— optional</span></label>

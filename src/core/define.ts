@@ -94,6 +94,9 @@ export function manual(): Trigger {
 }
 
 export { defineSecrets, defineSecretGroup, optionalSecret } from "./secrets.ts";
+export { defineCredential } from "./credentials.ts";
+export type { CredentialValues } from "./credentials.ts";
+export type { ProviderId } from "./providers.ts";
 export { hmacSignature, tallySignature } from "./verify.ts";
 export type { WebhookVerifier } from "./types.ts";
 export { defineOAuth } from "../integrations/oauth.ts";

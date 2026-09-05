@@ -230,6 +230,13 @@ export interface LoadedWorkflow extends WorkflowDef<any> {
    * why it is not the file's mtime.
    */
   hash: string;
+  /**
+   * Credentials this file declared with defineCredential(), as `provider:id`.
+   * Unlike a declared secret, one that is not connected yet does not stop the
+   * boot — it blocks this workflow's runs instead, because the dashboard where
+   * you would connect it is not reachable from a server that refused to start.
+   */
+  credentials: string[];
 }
 
 /** When a workflow file was first seen, and when its contents last changed. */
@@ -297,4 +304,24 @@ export interface CallRecord {
   duration_ms: number | null;
   request: string | null;
   response: string | null;
+}
+
+/**
+ * The grouping half of a credential — see `credentials` in db.ts. Holds no
+ * values: the fields are ordinary rows in the encrypted `secrets` table under
+ * derived names, and this row only says which platform, which folder, and how
+ * the last connection test went.
+ */
+export interface CredentialRow {
+  provider: string;
+  id: string;
+  folder: string | null;
+  /** 1 when this credential feeds the matching built-in integration's env vars. */
+  is_primary: number;
+  created_at: number;
+  updated_at: number;
+  tested_at: number | null;
+  test_ok: number | null;
+  /** Already redacted and capped by src/core/credentials.ts. */
+  test_detail: string | null;
 }

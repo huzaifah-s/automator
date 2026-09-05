@@ -2,6 +2,12 @@ import { resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { log } from "./logger.ts";
 import { collectSecretProblems } from "./secrets.ts";
+import {
+  credentialRef,
+  credentialRequirements,
+  credentialReady,
+  setLoadingFile,
+} from "./credentials.ts";
 import type { LoadedWorkflow, WorkflowDef } from "./types.ts";
 
 /**
@@ -30,11 +36,16 @@ export async function loadWorkflows(dir = "./workflows"): Promise<LoadedWorkflow
     const rel = file.slice(root.length + 1);
     let mod: { default?: WorkflowDef<any> };
 
+    // defineCredential() runs at module scope and has no other way to know
+    // which workflow asked for it, so the importer says so first.
+    setLoadingFile(rel);
     try {
       mod = await import(file);
     } catch (err) {
       errors.push(`${rel}: failed to import — ${err instanceof Error ? err.message : err}`);
       continue;
+    } finally {
+      setLoadingFile(null);
     }
 
     const def = mod.default;
@@ -78,7 +89,34 @@ export async function loadWorkflows(dir = "./workflows"): Promise<LoadedWorkflow
       file: rel,
       folder: slash === -1 ? null : rel.slice(0, slash),
       hash,
+      credentials: credentialRequirements()
+        .filter((r) => r.file === rel)
+        .map((r) => credentialRef(r.provider, r.id)),
     });
+  }
+
+  /*
+   * A credential that has not been connected yet warns; it does not stop the
+   * boot the way a missing defineSecrets key does.
+   *
+   * That difference is deliberate and it is not a softening of the rule. The
+   * rule exists because a credential problem should surface on deploy rather
+   * than at 3am — and it still does, twice: here in the log and as a blocked
+   * workflow on the dashboard. What changes is the remedy. A secret is fixed
+   * in the environment or by the CLI, both of which work on a dead server; a
+   * credential is fixed on the dashboard, which a dead server does not serve.
+   * Aborting would make the one workflow that needs connecting unfixable
+   * without a redeploy, which is the thing this whole feature exists to end.
+   *
+   * Nothing runs on a half-connected credential regardless: runner.ts refuses
+   * the run.
+   */
+  const blocked = credentialRequirements().filter((r) => !credentialReady(r.provider, r.id));
+  for (const r of blocked) {
+    log.warn(
+      `credential ${credentialRef(r.provider, r.id)} is not connected — ` +
+        `${r.file ?? "a workflow"} cannot run until it is (Credentials tab)`,
+    );
   }
 
   const secretProblems = collectSecretProblems();

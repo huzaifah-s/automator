@@ -64,6 +64,45 @@ const undecryptable = new Set<string>();
 let watermark = { count: -1, latest: -1 };
 let timer: ReturnType<typeof setInterval> | undefined;
 
+/**
+ * Called after anything changes what secretValue() would answer. One listener
+ * today: src/core/credentials.ts re-derives the env vars a primary credential
+ * supplies. A callback rather than a direct import because credentials.ts
+ * imports this file, and the cycle would be real at runtime, not just in the
+ * types.
+ */
+const listeners: (() => void)[] = [];
+
+export function onSecretsChanged(fn: () => void): void {
+  listeners.push(fn);
+}
+
+/**
+ * Whether a stored value should be scrubbed from logs. Everything is, by
+ * default — this store cannot tell a token from a hostname.
+ *
+ * Credentials can. A provider declares which of its fields are configuration
+ * rather than secrets, and registering a hostname or a from-address with the
+ * redactor would mangle every log line that legitimately mentions it. The
+ * policy is installed by src/core/credentials.ts at import, which is before
+ * loadSecretStore() runs and therefore before the first value is applied.
+ */
+let redactable: (key: string) => boolean = () => true;
+
+export function setRedactionPolicy(fn: (key: string) => boolean): void {
+  redactable = fn;
+}
+
+function announce(): void {
+  for (const fn of listeners) {
+    try {
+      fn();
+    } catch (err) {
+      log.error(`Secret listener failed: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+}
+
 /* ------------------------------------------------------------------ read */
 
 /**
@@ -172,7 +211,7 @@ function apply(key: string, value: string): void {
   if (!envBaseline.has(key)) envBaseline.set(key, process.env[key]);
   values.set(key, value);
   process.env[key] = value;
-  registerSecret(value);
+  if (redactable(key)) registerSecret(value);
   undecryptable.delete(key);
 }
 
@@ -205,7 +244,11 @@ function warnUndecryptable(key: string): void {
  * Validated against the declaring workflow's schema when there is one, so the
  * failure lands here rather than in a run.
  */
-export async function setSecret(key: string, value: string): Promise<void> {
+export async function setSecret(
+  key: string,
+  value: string,
+  meta: { owner?: string | null; folder?: string | null } = {},
+): Promise<void> {
   if (!KEY_PATTERN.test(key)) {
     throw new Error(
       `Secret name "${key}" must be uppercase letters, digits, and underscores`,
@@ -225,9 +268,10 @@ export async function setSecret(key: string, value: string): Promise<void> {
     }
   }
 
-  store.secretPut(key, await cipher.encrypt(value));
+  store.secretPut(key, await cipher.encrypt(value), meta);
   apply(key, value);
   watermark = store.secretWatermark();
+  announce();
 }
 
 /** Removes a stored credential, restoring the environment's value if it had one. */
@@ -235,6 +279,7 @@ export function deleteSecret(key: string): boolean {
   const existed = store.secretDrop(key);
   unapply(key);
   watermark = store.secretWatermark();
+  announce();
   return existed;
 }
 
@@ -293,5 +338,9 @@ export async function refreshSecrets(): Promise<boolean> {
   watermark = now;
   // Names only. The point of the store is that the values never get printed.
   if (changed.length > 0) log.info(`Secrets updated: ${changed.sort().join(", ")}`);
-  return changed.length > 0;
+  // Announced even when no value moved: the watermark also covers the
+  // credentials table, so another process flipping which credential is primary
+  // has to reach this one's env mapping.
+  announce();
+  return true;
 }

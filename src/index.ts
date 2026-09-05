@@ -14,6 +14,7 @@ import { store, db } from "./core/db.ts";
 import { log } from "./core/logger.ts";
 import { closeSql, registerIntegrationSecrets } from "./integrations/index.ts";
 import { loadSecretStore, startSecretRefresh, stopSecretRefresh } from "./core/secret-store.ts";
+import { initCredentials } from "./core/credentials.ts";
 import { runSecretCli } from "./cli/secrets.ts";
 
 const args = process.argv.slice(2);
@@ -31,6 +32,13 @@ if (args[0] === "--secret") {
 // same values. A key present only in the store must satisfy boot validation.
 const storedSecrets = await loadSecretStore();
 if (storedSecrets > 0) log.info(`Loaded ${storedSecrets} secret(s) from the store`);
+
+// Immediately after, and for the same reason: a credential's fields are stored
+// secrets under derived names, and the one marked primary supplies the bare env
+// vars an integration reads for itself. Both have to be in place before the
+// loader imports a workflow that declares either.
+const credentialFields = initCredentials();
+if (credentialFields > 0) log.info(`Loaded ${credentialFields} credential field(s)`);
 
 // Before anything can log: make the redactor aware of the credentials the
 // built-in integrations read for themselves, not just workflow-declared ones.

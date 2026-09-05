@@ -1,4 +1,5 @@
 import { store } from "./db.ts";
+import { credentialReady } from "./credentials.ts";
 import { createLogger, log } from "./logger.ts";
 import { alertFailure } from "./alerts.ts";
 import { buildIntegrations } from "../integrations/index.ts";
@@ -130,6 +131,31 @@ export async function runWorkflow(
 ): Promise<RunOutcome> {
   if (shuttingDown) {
     return { runId: "", status: "skipped", error: new Error("Shutting down") };
+  }
+
+  /*
+   * A workflow whose credentials are not connected does not start. This is the
+   * other half of the loader's decision to warn rather than abort the boot: the
+   * server comes up so you can connect the thing, and until you have, the
+   * workflow fails loudly at the door instead of part-way through with whatever
+   * error the platform returns for an empty token.
+   *
+   * Recorded as a run rather than dropped, because a cron trigger that quietly
+   * does nothing is indistinguishable from a scheduler that stopped.
+   */
+  const unconnected = (wf.credentials ?? []).filter((ref) => {
+    const [provider, id] = ref.split(":");
+    return !credentialReady(provider!, id!);
+  });
+  if (unconnected.length > 0) {
+    const runId = crypto.randomUUID();
+    const message =
+      `Not connected: ${unconnected.join(", ")} — ` +
+      `open the Credentials tab and fill ${unconnected.length === 1 ? "it" : "them"} in`;
+    store.startRun(runId, wf.name, opts.trigger);
+    store.finishRun(runId, "failed", 0, message, null);
+    createLogger(wf.name, runId).error(message);
+    return { runId, status: "failed", error: new Error(message) };
   }
 
   if (active.has(wf.name)) {

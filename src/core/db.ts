@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { redact } from "./redact.ts";
 import type {
   CallRecord,
+  CredentialRow,
   LogRecord,
   RunRecord,
   RunStatus,
@@ -117,6 +118,27 @@ db.exec(`
     value      TEXT    NOT NULL,
     updated_at INTEGER NOT NULL
   ) WITHOUT ROWID;
+
+  -- The grouping half of a credential: which platform it is for, which folder
+  -- it is filed under, and how the last connection test went. Deliberately
+  -- holds no values at all — the fields themselves are ordinary rows in the
+  -- secrets table above, under derived names, so there is exactly one
+  -- encrypted store and one set of rules about what may reach disk.
+  --
+  -- Keyed on (provider, id) rather than id alone so "main" can exist for two
+  -- platforms at once, which is what people actually name their first one.
+  CREATE TABLE IF NOT EXISTS credentials (
+    provider    TEXT    NOT NULL,
+    id          TEXT    NOT NULL,
+    folder      TEXT,
+    is_primary  INTEGER NOT NULL DEFAULT 0,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    tested_at   INTEGER,
+    test_ok     INTEGER,
+    test_detail TEXT,
+    PRIMARY KEY (provider, id)
+  ) WITHOUT ROWID;
 `);
 
 // Migration for databases created before checkpointing existed.
@@ -150,6 +172,24 @@ if (!runColumns.has("replayed_from")) {
 if (!runColumns.has("parent_run")) {
   db.exec("ALTER TABLE runs ADD COLUMN parent_run TEXT");
   db.exec("CREATE INDEX IF NOT EXISTS idx_runs_parent ON runs(parent_run)");
+}
+
+// Migration for databases created before credentials and folders existed.
+// Both columns are metadata about a row, never part of the credential: the
+// value column stays the only thing that matters and stays ciphertext.
+const secretColumns = new Set(
+  (db.query("PRAGMA table_info(secrets)").all() as { name: string }[]).map((c) => c.name),
+);
+if (!secretColumns.has("folder")) {
+  db.exec("ALTER TABLE secrets ADD COLUMN folder TEXT");
+}
+// `provider:id` of the credential this row belongs to, NULL for a loose
+// secret. Derivable from the credentials table, but stored anyway: it makes
+// "delete everything this credential owns" exact rather than reconstructed,
+// which still works for a credential whose platform was removed from the code.
+if (!secretColumns.has("owner")) {
+  db.exec("ALTER TABLE secrets ADD COLUMN owner TEXT");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_secrets_owner ON secrets(owner)");
 }
 
 const stmts = {
@@ -268,13 +308,51 @@ const stmts = {
   ),
 
   allSecrets: db.prepare(`SELECT key, value, updated_at FROM secrets ORDER BY key`),
+  // Metadata without the ciphertext, for the dashboard and the folder view.
+  // Separate from allSecrets so a page that only lists names never has an
+  // encrypted value in scope to accidentally render.
+  secretMeta: db.prepare(
+    `SELECT key, folder, owner, updated_at FROM secrets ORDER BY key`,
+  ),
+  // COALESCE keeps the existing folder and owner when a write does not carry
+  // them — rotating a value must not silently move the row out of its folder.
+  // Clearing either is what secretSetFolder / secretDropByOwner are for.
   setSecret: db.prepare(
-    `INSERT INTO secrets (key, value, updated_at) VALUES (?, ?, ?)
-     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+    `INSERT INTO secrets (key, value, updated_at, folder, owner) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET
+       value = excluded.value, updated_at = excluded.updated_at,
+       folder = COALESCE(excluded.folder, secrets.folder),
+       owner  = COALESCE(excluded.owner,  secrets.owner)`,
   ),
   deleteSecret: db.prepare(`DELETE FROM secrets WHERE key = ?`),
+  setSecretFolder: db.prepare(`UPDATE secrets SET folder = ? WHERE key = ?`),
+  setSecretFolderByOwner: db.prepare(`UPDATE secrets SET folder = ? WHERE owner = ?`),
+  deleteSecretsByOwner: db.prepare(`DELETE FROM secrets WHERE owner = ?`),
   secretWatermark: db.prepare(
     `SELECT COUNT(*) AS count, COALESCE(MAX(updated_at), 0) AS latest FROM secrets`,
+  ),
+  credentialWatermark: db.prepare(
+    `SELECT COUNT(*) AS count, COALESCE(MAX(updated_at), 0) AS latest FROM credentials`,
+  ),
+
+  allCredentials: db.prepare(
+    `SELECT * FROM credentials ORDER BY COALESCE(folder, ''), provider, id`,
+  ),
+  getCredential: db.prepare(`SELECT * FROM credentials WHERE provider = ? AND id = ?`),
+  putCredential: db.prepare(
+    `INSERT INTO credentials (provider, id, folder, is_primary, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(provider, id) DO UPDATE SET
+       folder = excluded.folder, is_primary = excluded.is_primary,
+       updated_at = excluded.updated_at`,
+  ),
+  deleteCredential: db.prepare(`DELETE FROM credentials WHERE provider = ? AND id = ?`),
+  clearPrimary: db.prepare(
+    `UPDATE credentials SET is_primary = 0 WHERE provider = ? AND id <> ?`,
+  ),
+  recordCredentialTest: db.prepare(
+    `UPDATE credentials SET tested_at = ?, test_ok = ?, test_detail = ?
+     WHERE provider = ? AND id = ?`,
   ),
 
   markOrphans: db.prepare(
@@ -566,21 +644,112 @@ export const store = {
   secretRows: () =>
     stmts.allSecrets.all() as { key: string; value: string; updated_at: number }[],
 
-  secretPut(key: string, ciphertext: string): void {
-    stmts.setSecret.run(key, ciphertext, Date.now());
+  /** Names, folders and owners — everything about a secret except its value. */
+  secretMeta: () =>
+    stmts.secretMeta.all() as {
+      key: string;
+      folder: string | null;
+      owner: string | null;
+      updated_at: number;
+    }[],
+
+  secretPut(
+    key: string,
+    ciphertext: string,
+    meta: { folder?: string | null; owner?: string | null } = {},
+  ): void {
+    stmts.setSecret.run(key, ciphertext, Date.now(), meta.folder ?? null, meta.owner ?? null);
   },
 
   secretDrop(key: string): boolean {
     return stmts.deleteSecret.run(key).changes > 0;
   },
 
+  /** Folders are metadata, so moving one never touches the ciphertext. */
+  secretSetFolder(key: string, folder: string | null): boolean {
+    return stmts.setSecretFolder.run(folder, key).changes > 0;
+  },
+
+  secretSetFolderByOwner(owner: string, folder: string | null): number {
+    return stmts.setSecretFolderByOwner.run(folder, owner).changes;
+  },
+
+  secretDropByOwner(owner: string): number {
+    return stmts.deleteSecretsByOwner.run(owner).changes;
+  },
+
+  /* ------------------------------------------------------- credentials */
+
+  /*
+   * Grouping only. Nothing here is encrypted because nothing here is a
+   * credential — the values live in `secrets` under derived names. The one
+   * field that carries text from outside is test_detail, and that is redacted
+   * by src/core/credentials.ts before it arrives.
+   */
+
+  credentialRows: () => stmts.allCredentials.all() as CredentialRow[],
+
+  /** Same probe as secretWatermark, over the credentials table alone. */
+  credentialWatermark: () =>
+    stmts.credentialWatermark.get() as { count: number; latest: number },
+
+  credentialRow: (provider: string, id: string) =>
+    stmts.getCredential.get(provider, id) as CredentialRow | undefined,
+
+  credentialPut(row: {
+    provider: string;
+    id: string;
+    folder: string | null;
+    is_primary: number;
+    created_at: number;
+    updated_at: number;
+  }): void {
+    stmts.putCredential.run(
+      row.provider,
+      row.id,
+      row.folder,
+      row.is_primary,
+      row.created_at,
+      row.updated_at,
+    );
+  },
+
+  credentialDrop(provider: string, id: string): boolean {
+    return stmts.deleteCredential.run(provider, id).changes > 0;
+  },
+
+  /** Exactly one credential per platform feeds the built-in integration. */
+  credentialClearPrimary(provider: string, keep: string): number {
+    return stmts.clearPrimary.run(provider, keep).changes;
+  },
+
+  credentialRecordTest(
+    provider: string,
+    id: string,
+    ok: boolean,
+    detail: string,
+    at: number,
+  ): void {
+    stmts.recordCredentialTest.run(at, ok ? 1 : 0, detail, provider, id);
+  },
+
   /**
    * Cheap "has anything changed" probe, so the running server can pick up a
    * write made by the CLI in another process without re-reading every row.
    * Count as well as timestamp: a delete moves one and not the other.
+   *
+   * Covers the credentials table too, so a second process flipping which
+   * credential is primary reaches this one's env mapping — that write moves no
+   * secret row at all and would otherwise be invisible until a restart.
    */
-  secretWatermark: () =>
-    stmts.secretWatermark.get() as { count: number; latest: number },
+  secretWatermark(): { count: number; latest: number } {
+    const secrets = stmts.secretWatermark.get() as { count: number; latest: number };
+    const creds = stmts.credentialWatermark.get() as { count: number; latest: number };
+    return {
+      count: secrets.count + creds.count,
+      latest: Math.max(secrets.latest, creds.latest),
+    };
+  },
 };
 
 /** A prefix is user data, so its LIKE wildcards have to be literal. */

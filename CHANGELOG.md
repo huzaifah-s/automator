@@ -8,6 +8,35 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-06
 
+### ctx.drive and ctx.s3, because media has to be somewhere Meta can fetch it
+
+Instagram, Facebook and Threads all publish by URL: you hand Meta a link and it
+fetches the bytes itself. The source media is in Google Drive, which cannot
+serve a link Meta can reliably fetch — the interstitial on large files is the
+end of that idea — so the cross-poster stages each file in an S3 bucket, hands
+over the public URL, and deletes it again.
+
+**R2 was kept rather than replaced.** Serving the media from this runner's own
+Hono server was the obvious alternative and would have avoided the signing code
+entirely. It was rejected: it makes a public unauthenticated route part of every
+publish, and puts the runner's uptime and bandwidth in the path of a post. The
+bucket already existed and was already proven against Meta.
+
+**SigV4 is ~120 lines instead of `@aws-sdk/*`.** Same trade `sheets.ts` made
+against `googleapis`: image size is a core goal. It is verified against AWS's
+published S3 "GET Object" test vector rather than against a live bucket.
+
+**Neither client goes through `ctx.http`.** That client JSON-encodes anything
+that is not a string, retries, and records request and response bodies onto the
+run page — all correct for an API call and all wrong for a 200MB video. They use
+`fetch` directly and let the step record the outcome.
+
+**The Google service-account JWT moved to `google-auth.ts`.** It was private to
+`sheets.ts` with the spreadsheets scope hard-coded into the claim. Drive needs a
+different scope against the same key, and the cache is keyed by scope — one
+cache would hand a Sheets token to Drive, and the 403 that follows says nothing
+about why.
+
 ### A quiet poll and a dead one no longer look the same
 
 `poll()` starts no run when nothing is new — the property the whole trigger

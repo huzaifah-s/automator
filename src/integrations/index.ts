@@ -15,6 +15,8 @@ import { createAi, type AiClient } from "./ai.ts";
 import { createEmail, type EmailClient } from "./email.ts";
 import { createSql } from "./sql.ts";
 import { createSheets, type SheetsClient } from "./sheets.ts";
+import { createDrive, type DriveClient } from "./drive.ts";
+import { createS3, type S3Client } from "./s3.ts";
 import { createScrape, type ScrapeClient } from "./scrape.ts";
 
 /** Everything hanging off `ctx` besides the run metadata. */
@@ -27,6 +29,8 @@ export interface Integrations {
   email: EmailClient;
   sql: Sql;
   sheets: SheetsClient;
+  drive: DriveClient;
+  s3: S3Client;
   scrape: ScrapeClient;
 }
 
@@ -65,6 +69,8 @@ export function buildIntegrations(signal: AbortSignal, runId?: string): Integrat
   let ai: AiClient | undefined;
   let email: EmailClient | undefined;
   let sheets: SheetsClient | undefined;
+  let drive: DriveClient | undefined;
+  let s3: S3Client | undefined;
   let scrape: ScrapeClient | undefined;
 
   return {
@@ -89,6 +95,12 @@ export function buildIntegrations(signal: AbortSignal, runId?: string): Integrat
     },
     get sheets() {
       return (sheets ??= createSheets(http));
+    },
+    get drive() {
+      return (drive ??= createDrive());
+    },
+    get s3() {
+      return (s3 ??= createS3());
     },
     get scrape() {
       return (scrape ??= createScrape(http));
@@ -116,6 +128,10 @@ const INTEGRATION_SECRET_ENV = [
   "WEBHOOK_SECRET",
   "DASHBOARD_PASS",
   "ALERT_WEBHOOK_URL",
+  // ctx.s3. The endpoint, bucket, region and public URL are configuration and
+  // stay readable; only the two that authenticate are here.
+  "S3_ACCESS_KEY_ID",
+  "S3_SECRET_ACCESS_KEY",
   // Declared through defineSecrets by every defineOAuth() call, so this only
   // covers the case where the key is set before any credential uses it.
   "OAUTH_ENCRYPTION_KEY",

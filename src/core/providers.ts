@@ -304,6 +304,158 @@ export const PROVIDERS = {
       return `Authenticated as ${account?.email ?? account?.companyName ?? "the account"}`;
     },
   },
+  /*
+   * Object storage, for the one job it does here: give Meta a public URL it
+   * can fetch media from, then take it down again.
+   *
+   * Four of the six fields are `secret: false` on purpose. An endpoint, a
+   * bucket name, a region and a *deliberately public* URL are all things you
+   * want to read on a run page — and redacting the public URL would blank the
+   * media link out of every captured Instagram call, which is exactly the
+   * thing you go to the run page to look at.
+   */
+  r2: {
+    label: "S3 / Cloudflare R2",
+    blurb: "S3-compatible object storage. Used to host media at a public URL while it uploads.",
+    docs: "https://developers.cloudflare.com/r2/api/s3/tokens/",
+    fields: {
+      endpoint: {
+        label: "S3 endpoint",
+        schema: z.string().url(),
+        secret: false,
+        placeholder: "https://<account-id>.r2.cloudflarestorage.com",
+      },
+      access_key_id: {
+        label: "Access key ID",
+        schema: z.string().min(10),
+      },
+      secret_access_key: {
+        label: "Secret access key",
+        schema: z.string().min(20),
+      },
+      bucket: {
+        label: "Bucket",
+        schema: z.string().min(1),
+        secret: false,
+        placeholder: "media",
+      },
+      public_url: {
+        label: "Public bucket URL",
+        schema: z.string().url(),
+        secret: false,
+        placeholder: "https://pub-<hash>.r2.dev",
+        help: "The bucket must be publicly readable — this is the URL handed to Meta.",
+      },
+      region: {
+        label: "Region",
+        schema: z.string().min(1),
+        secret: false,
+        optional: true,
+        placeholder: "auto",
+        help: "R2 ignores it but still signs with it. Defaults to \"auto\".",
+      },
+    },
+    envMap: {
+      endpoint: "S3_ENDPOINT",
+      access_key_id: "S3_ACCESS_KEY_ID",
+      secret_access_key: "S3_SECRET_ACCESS_KEY",
+      bucket: "S3_BUCKET",
+      public_url: "S3_PUBLIC_URL",
+      region: "S3_REGION",
+    },
+    async test(v, signal) {
+      // A signed GET of the bucket listing one key. Read-only, free, and it
+      // proves the endpoint, the keys, the region and the bucket name all at
+      // once — which four separate field validations cannot.
+      const { listBucket } = await import("../integrations/s3.ts");
+      const bucket = need(v, "bucket");
+      await listBucket(
+        {
+          endpoint: need(v, "endpoint"),
+          accessKeyId: need(v, "access_key_id"),
+          secretAccessKey: need(v, "secret_access_key"),
+          bucket,
+          region: v.region || "auto",
+          publicUrl: need(v, "public_url"),
+        },
+        signal,
+      );
+      return `Bucket "${bucket}" is reachable`;
+    },
+  },
+
+  /*
+   * Meta's Graph API — Instagram publishing and Facebook Pages. One token
+   * covers both when the IG account is a Business account linked to the Page,
+   * which is how The Mantra's is set up.
+   *
+   * The two ids are configuration, not credentials: they appear in every Graph
+   * URL this makes, so redacting them would blank out the run page for no
+   * gain, and neither one authenticates anything on its own.
+   *
+   * Threads is NOT this. It is a separate API with a separate token that
+   * expires in 60 days, so it lives in `defineOAuth` where something can
+   * refresh it — see workflows/the-mantra/threads-token-auto-refresh.ts.
+   */
+  meta: {
+    label: "Meta Graph (Instagram & Facebook)",
+    blurb: "A long-lived Page access token, for publishing to a Facebook Page and its Instagram.",
+    docs: "https://developers.facebook.com/tools/explorer/",
+    fields: {
+      access_token: {
+        label: "Page access token",
+        schema: z.string().min(50),
+        placeholder: "EAA…",
+        help: "Long-lived. Derive it from a long-lived user token so it does not expire.",
+      },
+      page_id: {
+        label: "Facebook Page ID",
+        schema: z.string().regex(/^\d+$/, "A Page ID is digits only"),
+        secret: false,
+      },
+      ig_user_id: {
+        label: "Instagram user ID",
+        schema: z.string().regex(/^\d+$/, "An Instagram user ID is digits only"),
+        secret: false,
+        optional: true,
+        help: "The IG Business account linked to the Page. Leave blank if not posting to Instagram.",
+      },
+    },
+    async test(v, signal) {
+      const token = need(v, "access_token");
+      const page = need(v, "page_id");
+
+      // Reads the Page this token is for. Also surfaces the token's own
+      // expiry, which is the thing most worth knowing about a Meta credential.
+      const me = await probe(
+        `https://graph.facebook.com/v21.0/${encodeURIComponent(page)}` +
+          `?fields=name&access_token=${encodeURIComponent(token)}`,
+        {},
+        signal,
+        "Meta",
+      );
+
+      const debug = await probe(
+        `https://graph.facebook.com/v21.0/debug_token` +
+          `?input_token=${encodeURIComponent(token)}&access_token=${encodeURIComponent(token)}`,
+        {},
+        signal,
+        "Meta",
+      ).catch(() => undefined);
+
+      const expires = debug?.data?.expires_at;
+      // Meta uses 0 for "never", which is what a correctly derived Page token
+      // reports and is worth saying out loud.
+      const when =
+        expires === 0
+          ? ", token does not expire"
+          : typeof expires === "number"
+            ? `, token expires ${new Date(expires * 1000).toISOString().slice(0, 10)}`
+            : "";
+
+      return `Page "${me?.name ?? page}" is reachable${when}`;
+    },
+  },
 } satisfies Record<string, Provider>;
 
 export type ProviderId = keyof typeof PROVIDERS;

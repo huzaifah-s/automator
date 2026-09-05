@@ -131,8 +131,9 @@ the next boot if a restart landed in between — see
 
 ### What's on `ctx`
 
-`http` `slack` `telegram` `discord` `ai` `email` `sql` `sheets` `scrape`,
-plus `log`, `step`, `run`, `state`, `signal`, `input`, `attempt`, `runId`.
+`http` `slack` `telegram` `discord` `ai` `email` `sql` `sheets` `drive` `s3`
+`scrape`, plus `log`, `step`, `run`, `state`, `signal`, `input`, `attempt`,
+`runId`.
 
 All of them except `http` are lazy — a workflow that only makes an HTTP call
 never opens a Postgres pool or reads an unrelated env var.
@@ -140,6 +141,16 @@ never opens a Postgres pool or reads an unrelated env var.
 `ctx.http.paginate(url)` walks a paginated endpoint — see
 [Pagination](#pagination). `ctx.run(name, input)` runs another workflow — see
 [Calling one workflow from another](#calling-one-workflow-from-another).
+
+`ctx.drive.download(fileId)` reads a Google Drive file with the service account
+in `GOOGLE_SERVICE_ACCOUNT_JSON` — the file has to be *shared with that
+account's address*, and a 404 usually means it isn't. `ctx.s3.put(key, bytes)`
+uploads to any S3-compatible bucket (written for Cloudflare R2) and returns the
+public URL; `ctx.s3.delete(key)` takes it down again.
+
+Neither goes through `ctx.http`, deliberately: that client JSON-encodes bodies,
+retries, and records request and response bodies onto the run page, and none of
+that is right for a 200MB video.
 
 `ctx.step(name, fn, { input })` wraps a unit of work. It gets its own timing
 line, its input and output are recorded, and its result becomes a checkpoint.

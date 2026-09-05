@@ -99,7 +99,10 @@ input[type=search]:focus,input[type=date]:focus,select:focus{outline:none;border
 color:var(--muted);font-size:12.5px;white-space:nowrap}
 .chip:hover{color:var(--fg);text-decoration:none;background:var(--panel-2)}
 .chip[aria-current]{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
-.toolbar form{display:flex;gap:8px;align-items:center}
+/* A select is as wide as its widest option, and a workflow name is long:
+   without these it decides the toolbar's width and hangs off a phone. */
+.toolbar form{display:flex;gap:8px;align-items:center;min-width:0;max-width:100%}
+.toolbar select{max-width:100%}
 
 /* ---- menus ---- */
 /* A filter whose options do not earn a permanent chip row: closed it is one

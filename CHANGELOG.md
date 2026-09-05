@@ -8,6 +8,15 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### The workflow picker no longer hangs off the side of a phone
+
+A `<select>` is as wide as its widest option, and the widest option here is
+a workflow name. On a narrow screen the picker decided the toolbar's width
+and the toolbar overflowed the page, so the control you were reaching for sat
+half off the screen. It is bounded to its container now, which truncates the
+name in the closed control and leaves the open list — where the full name
+actually needs to be readable — alone.
+
 ### Executions are grouped and filtered by folder
 
 Every workflow name is global and flat, so a list of runs said nothing about

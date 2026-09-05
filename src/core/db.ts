@@ -700,7 +700,13 @@ export const store = {
       step.durationMs,
       step.input,
       step.output,
-      step.error,
+      // `input` and `output` came through capture(), which redacts. `error` is
+      // a provider's own words and has not been near it: Telegram puts the bot
+      // token in the URL, so an unredacted 401 writes the credential onto the
+      // run page. Redacted here, at the storage boundary, for the same reason
+      // recordRun() redacts its own — not at the call site, where the next
+      // caller would have to remember.
+      redact(step.error),
       step.truncated ? 1 : 0,
     );
   },

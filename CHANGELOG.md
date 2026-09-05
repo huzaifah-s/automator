@@ -8,6 +8,19 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-06
 
+### The brand Threads token has a refresher, 60 days late
+
+`threads-token-auto-refresh.ts` now refreshes both accounts — the founder's and
+The Mantra's — in one weekly run, a step each. The n8n cross-post graph never
+had one and admitted it in a sticky note: *"Threads token expires in 60 days -
+no refresh workflow yet."* A Threads token that goes 60 days unrefreshed dies
+permanently, and the only recovery is a full manual re-auth.
+
+**One workflow, not two.** A second file differing only in a credential name
+would be 240 lines maintained in parallel, and the failure mode of forgetting to
+add an account is silent for 59 days. Accounts are rows in one array; adding a
+third is a `defineOAuth` and one entry.
+
 ### Content cross-posts itself, and three more graphs became one
 
 `workflows/the-mantra/cross-poster.ts` replaces the n8n "Cross-post Checker",

@@ -9,9 +9,12 @@ import {
 /**
  * The Mantra — Threads — Token Auto-Refresh.
  *
- * Keeps the long-lived Threads token alive. A port of the n8n graph
- * "Threads — Token Auto-Refresh" (weekly schedule → data table get → Code →
- * IF → data table update / Telegram).
+ * Keeps every long-lived Threads token alive — the founder's account and The
+ * Mantra's brand account. A port of the n8n graph "Threads — Token
+ * Auto-Refresh" (weekly schedule → data table get → Code → IF → data table
+ * update / Telegram), which only ever covered the first of the two. The n8n
+ * cross-post graph's own sticky note admitted the gap: "Threads token expires
+ * in 60 days - no refresh workflow yet."
  *
  * The hazard this exists for: a Threads token that goes 60 days without a
  * refresh dies permanently. There is no recovery — only a full manual
@@ -33,9 +36,13 @@ import {
  * 3. **A failure is a failure.** The n8n Code node caught everything and
  *    returned `ok: false`, so the execution went green and only Telegram knew.
  *    Here the run goes red, retries, and `onFailure` sends the message.
- * 4. **Re-auth is a paste, not a schema.** When the token does die, pasting a
- *    new one into OAUTH_THREADS_HUZAIFAH_REFRESH_TOKEN changes the seed hash
- *    and the stored chain is abandoned on the next run — see oauth.ts.
+ * 4. **Re-auth is a paste, not a schema.** When a token does die, pasting a
+ *    new one into that account's OAUTH_THREADS_*_REFRESH_TOKEN changes the seed
+ *    hash and the stored chain is abandoned on the next run — see oauth.ts.
+ * 5. **Every account is covered by one job.** Accounts are rows in ACCOUNTS
+ *    below, refreshed in a step each. A missing account is a token nobody is
+ *    keeping alive, and that failure is silent for 59 days — so adding one has
+ *    to be as small as possible.
  */
 
 /**
@@ -60,7 +67,7 @@ import {
  * under the-mantra/ because that is the content operation it serves; those two
  * facts are allowed to differ.
  */
-const threads = defineOAuth("threads-huzaifah", {
+const founder = defineOAuth("threads-huzaifah", {
   tokenUrl: "https://graph.threads.net/refresh_access_token",
   flow: "self",
   grantType: "th_refresh_token",
@@ -69,6 +76,47 @@ const threads = defineOAuth("threads-huzaifah", {
   // dies within the hour.
   defaultTtlSeconds: 60 * 24 * 60 * 60,
 });
+
+/**
+ * The Mantra's *brand* Threads account, which the cross-poster publishes to.
+ *
+ * A second credential rather than a second workflow: the two tokens have
+ * nothing to say to each other, but they have identical lifetimes, an
+ * identical refresh call and an identical cliff, and a second copy of this
+ * file differing only in a credential name would be 240 lines maintained in
+ * parallel. One weekly run refreshes both, in a step each.
+ *
+ * Its seed lives under OAUTH_THREADS_THE_MANTRA_REFRESH_TOKEN. Set it *first*
+ * — a missing secret aborts the boot:
+ *
+ *     bun run secret -- set OAUTH_THREADS_THE_MANTRA_REFRESH_TOKEN
+ */
+const brand = defineOAuth("threads-the-mantra", {
+  tokenUrl: "https://graph.threads.net/refresh_access_token",
+  flow: "self",
+  grantType: "th_refresh_token",
+  defaultTtlSeconds: 60 * 24 * 60 * 60,
+});
+
+/**
+ * Every Threads token this deployment keeps alive. Adding a third account is
+ * a `defineOAuth` and one entry here; nothing below is per-account.
+ *
+ * `envVar` is carried for the alert, which has to tell somebody exactly which
+ * variable to paste a new token into when one does die.
+ */
+const ACCOUNTS = [
+  {
+    label: "Founder (Huzaifah)",
+    credential: founder,
+    envVar: "OAUTH_THREADS_HUZAIFAH_REFRESH_TOKEN",
+  },
+  {
+    label: "The Mantra (brand)",
+    credential: brand,
+    envVar: "OAUTH_THREADS_THE_MANTRA_REFRESH_TOKEN",
+  },
+] as const;
 
 /**
  * The Mantra's own bot, so the alert arrives from the same place as the
@@ -120,12 +168,13 @@ function escapeHtml(text: string): string {
 /* ---------------------------------------------------------------- workflow */
 
 interface Outcome extends Dates {
+  label: string;
   refreshed: boolean;
 }
 
 export default defineWorkflow({
   name: "the-mantra-threads-token-auto-refresh",
-  description: "Refreshes the long-lived Threads token before it can expire",
+  description: "Refreshes every long-lived Threads token before it can expire",
   // n8n's "every 7 days at hour 3". Pinned to KL so the server's zone, and a
   // move to another host, never shift it.
   trigger: cron("0 3 * * 1", { tz: TZ }),
@@ -137,49 +186,63 @@ export default defineWorkflow({
   checkpointTtlHours: 1,
 
   async run(ctx) {
-    const outcome = await ctx.step<Outcome>("refresh the long-lived token", async () => {
-      // Read inside the step, not before it. A retry re-runs this whole step,
-      // so the age check below sees what the *previous attempt* stored — and
-      // an attempt that reached Threads but lost the response on the way back
-      // is then reported as the success it was, instead of failing on the
-      // 24-hour rule and paging about a token that is perfectly healthy.
-      const before = await threads.status();
+    const outcomes: Outcome[] = [];
 
-      if (before?.refreshedAt && hoursSince(before.refreshedAt) < MIN_AGE_HOURS) {
-        return { refreshed: false, ...describe(before.expiresAt) };
-      }
+    // Sequential, and each in its own step. A retry reuses the checkpoint key,
+    // so an account that already refreshed this run is skipped rather than
+    // refreshed twice — which matters, because Threads refuses a token younger
+    // than MIN_AGE_HOURS and the second refresh would fail on a healthy token.
+    for (const account of ACCOUNTS) {
+      const outcome = await ctx.step<Outcome>(
+        `refresh ${account.credential.name}`,
+        async () => {
+          // Read inside the step, not before it. A retry re-runs this whole
+          // step, so the age check below sees what the *previous attempt*
+          // stored — and an attempt that reached Threads but lost the response
+          // on the way back is then reported as the success it was, instead of
+          // failing on the 24-hour rule and paging about a healthy token.
+          const before = await account.credential.status();
 
-      // The return value is a live credential and is dropped on purpose:
-      // nothing in this workflow needs it, and a step result is checkpointed.
-      await threads.refresh();
+          if (before?.refreshedAt && hoursSince(before.refreshedAt) < MIN_AGE_HOURS) {
+            return { label: account.label, refreshed: false, ...describe(before.expiresAt) };
+          }
 
-      const after = await threads.status();
-      if (!after) {
-        // refresh() resolved, so Threads accepted it — an empty store means
-        // the write or the encryption failed, and the new token is simply
-        // gone. Next week would start again from the seed, which by then is
-        // a week closer to dying.
-        throw new Error(
-          "Threads accepted the refresh but nothing was stored — check OAUTH_ENCRYPTION_KEY",
-        );
-      }
-      return { refreshed: true, ...describe(after.expiresAt) };
-    });
+          // The return value is a live credential and is dropped on purpose:
+          // nothing in this workflow needs it, and a step result is checkpointed.
+          await account.credential.refresh();
 
-    if (!outcome.refreshed) {
-      ctx.log.info(
-        `Token was refreshed less than ${MIN_AGE_HOURS}h ago — nothing to do`,
-        { expiresOn: outcome.expiresOn, daysLeft: outcome.daysLeft },
+          const after = await account.credential.status();
+          if (!after) {
+            // refresh() resolved, so Threads accepted it — an empty store means
+            // the write or the encryption failed, and the new token is simply
+            // gone. Next week would start again from the seed, which by then is
+            // a week closer to dying.
+            throw new Error(
+              `${account.label}: Threads accepted the refresh but nothing was stored — ` +
+                "check OAUTH_ENCRYPTION_KEY",
+            );
+          }
+          return { label: account.label, refreshed: true, ...describe(after.expiresAt) };
+        },
       );
-    } else {
-      ctx.log.info(`Refreshed — the token now expires ${outcome.expiresOn}`, {
-        daysLeft: outcome.daysLeft,
-      });
+
+      outcomes.push(outcome);
+
+      if (!outcome.refreshed) {
+        ctx.log.info(
+          `${outcome.label}: refreshed less than ${MIN_AGE_HOURS}h ago — nothing to do`,
+          { expiresOn: outcome.expiresOn, daysLeft: outcome.daysLeft },
+        );
+      } else {
+        ctx.log.info(`${outcome.label}: refreshed — the token now expires ${outcome.expiresOn}`, {
+          daysLeft: outcome.daysLeft,
+        });
+      }
     }
 
     // Silent on success, exactly like the n8n version: a weekly janitor that
     // pings every Monday stops being read by the third month.
-    return outcome;
+    return { accounts: outcomes };
   },
 
   /**
@@ -189,9 +252,6 @@ export default defineWorkflow({
    * message once per attempt.
    */
   async onFailure(ctx, error) {
-    const status = await threads.status().catch(() => undefined);
-    const dates = status ? describe(status.expiresAt) : undefined;
-
     const lines = [
       "\u{1F511} <b>Threads token refresh FAILED</b>",
       "",
@@ -200,34 +260,42 @@ export default defineWorkflow({
       // the way to disk — and for this flow the token travels in the URL.
       escapeHtml(redact(error.message)),
       "",
+      // Which account failed is in the step name and so in the message above,
+      // but every account's remaining margin is what actually decides whether
+      // this is a "look on Monday" or a "drop everything", so all of them are
+      // reported whichever one broke.
+      "<b>Where each token stands:</b>",
     ];
 
-    // One array entry per line Telegram will actually show. Wrapping these in
-    // the source instead would put the breaks in the middle of sentences.
-    if (dates) {
+    for (const account of ACCOUNTS) {
+      const status = await account.credential.status().catch(() => undefined);
+
+      if (!status) {
+        lines.push(
+          `• ${escapeHtml(account.label)} — nothing stored yet, so the token in ` +
+            `<code>${account.envVar}</code> is still the one in play, expiring whenever ` +
+            "it was originally issued to.",
+        );
+        continue;
+      }
+
+      const dates = describe(status.expiresAt);
       const attempts = Math.floor(dates.daysLeft / DAYS_PER_ATTEMPT);
       lines.push(
-        `Stored token expires <b>${dates.expiresOn}</b> — ${dates.daysLeft} day(s) left, ` +
-          `about ${attempts} more weekly attempt(s) before then.`,
-        "",
-        "Left unrefreshed past that date it dies permanently, and there is no " +
-          "recovery — only a full manual re-auth: a new long-lived token, with the " +
-          "<code>threads_delete</code> scope again, pasted into " +
-          "<code>OAUTH_THREADS_HUZAIFAH_REFRESH_TOKEN</code>.",
-      );
-    } else {
-      lines.push(
-        "Nothing has been stored yet, so the token in " +
-          "<code>OAUTH_THREADS_HUZAIFAH_REFRESH_TOKEN</code> is still the one in play, " +
-          "expiring whenever it was originally issued to.",
-        "",
-        "A Threads token that goes 60 days without a refresh dies permanently, and " +
-          "there is no recovery — only a full manual re-auth, with the " +
-          "<code>threads_delete</code> scope again.",
+        `• ${escapeHtml(account.label)} — expires <b>${dates.expiresOn}</b>, ` +
+          `${dates.daysLeft} day(s) left, about ${attempts} more weekly attempt(s). ` +
+          `Re-auth pastes into <code>${account.envVar}</code>.`,
       );
     }
 
-    lines.push("", "Retrying next Monday.");
+    lines.push(
+      "",
+      "A Threads token that goes 60 days without a refresh dies permanently, and there " +
+        "is no recovery — only a full manual re-auth: a new long-lived token, with the " +
+        "<code>threads_delete</code> scope again.",
+      "",
+      "Retrying next Monday.",
+    );
 
     await ctx.telegram.send(lines.join("\n"), {
       token: telegram.token,

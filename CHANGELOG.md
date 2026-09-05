@@ -28,6 +28,19 @@ endpoint: the second refresh sends the rotated token, not the seed.
 keep-alive workflow can report how much life is left without ever holding the
 credential.
 
+### A shared credential now blocks every workflow that declares it
+
+Found while verifying the above, and fixed separately.
+`defineCredential` recorded a requirement once per credential, keeping only the
+*first* file that declared it. `loadWorkflows()` fills `wf.credentials` by
+matching on the file, so the second workflow to share a credential got an empty
+list: it was not marked blocked, and it ran with an unconnected credential
+instead of refusing. The token refresh would have failed silently — its alert
+is the one thing it exists to send, and it sends it through the same Telegram
+credential the runway alert uses. Requirements are recorded per file now. The
+dashboard's "Used by" already accumulated several files per credential, which
+is what it had been waiting for.
+
 ### The workflow picker no longer hangs off the side of a phone
 
 A `<select>` is as wide as its widest option, and the widest option here is

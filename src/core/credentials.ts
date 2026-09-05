@@ -480,7 +480,19 @@ export function defineCredential<P extends ProviderId>(
     );
   }
 
-  if (!requirements.some((r) => r.provider === provider && r.id === id)) {
+  // Recorded per *file*, not per credential. Two workflows sharing one
+  // credential is normal — the runway alert and the token refresh both send
+  // from The Mantra's bot — and deduping on provider+id alone kept only the
+  // first file. Everything downstream keys off the file: loadWorkflows() fills
+  // wf.credentials by matching it, so the second workflow was left with an
+  // empty list and ran happily with an unconnected credential instead of being
+  // blocked. The dashboard's "Used by" already accumulates several files per
+  // credential, which is what it was waiting for.
+  if (
+    !requirements.some(
+      (r) => r.provider === provider && r.id === id && r.file === loadingFile,
+    )
+  ) {
     requirements.push({ provider, id, file: loadingFile });
   }
 

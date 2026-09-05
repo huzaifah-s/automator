@@ -8,6 +8,62 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### An accepted webhook now survives a deploy
+
+Every push redeploys, and a redeploy restarts the process. An async webhook
+lived only in the closure a `queueMicrotask` was holding, so a restart between
+the `202` and the run dropped work the caller had already been told was
+accepted — silently, with no run record, nothing on the dashboard, and no
+reason for the provider to send it again. That is the worst shape a loss can
+take: everyone involved believes it succeeded.
+
+Payloads are now written to an `inbox` table *before* the 202 goes back and
+settled when the run they start reaches a decision; anything still pending at
+boot is run with its recorded input. `/healthz` reports the pending count.
+
+**Recovery is a replay, not a resume, and therefore at-least-once.** A resume
+carries a checkpoint key and no `ctx.input` — a workflow that reads its payload
+would get `{}`, which is the bug the approval-resolve workflow already found
+once. So a run interrupted half way through repeats the steps it had already
+done. Polling makes the same trade for the same reason: doing something twice
+is recoverable, and never doing it is not.
+
+**Two kinds of `skipped` mean opposite things.** A run the shutdown skipped has
+not happened and stays pending; a run `onOverlap: "skip"` dropped *has* been
+decided, and leaving it pending would resurrect a webhook the workflow
+deliberately refused. The runner grew an `isShuttingDown()` to tell them apart,
+rather than the delivery path matching on an error string.
+
+**`respond: "sync"` is deliberately not recorded.** That caller is still
+holding the connection, so it sees the failure and can decide for itself —
+nobody was misled, which is the entire problem being fixed. A sync delivery
+replayed after a restart would also produce a result nobody is waiting for.
+
+**The inbox ignores `CAPTURE_DATA`.** It stores through `capture()`'s `force`
+and against `CHECKPOINT_MAX_BYTES`, the same as step outputs, because it is
+functional data rather than observational. The alternative — reusing the
+capture switch — would let a disk-space setting quietly turn durability off. A
+payload that does not fit is not recorded at all rather than recorded
+truncated; the run still happens and the log says it will not survive a
+restart.
+
+Duplicates are judged inside a window (`INBOX_DEDUP_MS`, 5 min) rather than by
+a unique index on the fingerprint, because two byte-identical payloads an hour
+apart are two real events — a unique index would swallow the second "ping"
+forever. The window only has to outlast a caller's retry. The fingerprint is a
+sha256 of method, path and raw body: a digest of the payload, which is why it
+is the one column here that needs no redaction. The stored `input` is the
+parsed value and goes through `capture()` like everything else.
+
+**What was refused: a separate receiver in front.** It is the only thing that
+could catch a webhook arriving while the process is *down*, and it costs a
+second always-up service that must be deployed separately to be worth
+anything, becomes a single point of failure ahead of everything, breaks
+`respond: "sync"`, and cannot hold a delivery long anyway — Slack and Stripe
+reject signatures older than about five minutes. Provider retries cover the
+down window; this covers the window where we said yes and then lost it. If the
+inbox's pending count shows real losses over time, revisit with numbers.
+
 ### The executions tab can be pointed at a window of time
 
 The **Executions** tab grew a second chip row — All time, 24 hours, 7 days,

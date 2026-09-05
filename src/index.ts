@@ -10,6 +10,7 @@ import {
 } from "./core/runner.ts";
 import { createApp } from "./server/app.ts";
 import { reconcileWebhooks } from "./core/webhooks.ts";
+import { recoverInbox } from "./core/inbox.ts";
 import { store, db } from "./core/db.ts";
 import { log } from "./core/logger.ts";
 import { closeSql, registerIntegrationSecrets } from "./integrations/index.ts";
@@ -132,6 +133,13 @@ for (const w of registry.enabled()) {
 // is down must not hold up or fail a boot.
 void reconcileWebhooks(registry).catch((err) =>
   log.error(`Webhook reconciliation failed: ${err instanceof Error ? err.message : err}`),
+);
+
+// Webhooks that were accepted but never finished — most often because the last
+// deploy landed between the 202 and the run. Not awaited, for the same reason
+// as above: a backlog to work through must not hold up a boot.
+void recoverInbox(registry).catch((err) =>
+  log.error(`Inbox recovery failed: ${err instanceof Error ? err.message : err}`),
 );
 
 if (registry.enabled().some((w) => w.trigger.kind === "cron")) {

@@ -211,6 +211,27 @@ because otherwise which one guards the route is a guess.
 **Webhooks default to `respond: "async"`.** Most providers retry on a slow
 reply. Only use `"sync"` when the caller genuinely needs the result.
 
+**An async webhook is written to the `inbox` table before its 202, and only
+settled when the run reaches a decision.** `src/core/inbox.ts`. Three things in
+there are load-bearing and look like tidying opportunities. The lookup and
+insert live in *one synchronous* `store.recordDelivery` — bun:sqlite is
+synchronous and nothing between them awaits, which is the only reason two
+identical requests arriving together cannot both pass the dedup check; put an
+await between them and duplicates get through. A `skipped` outcome is settled
+or left pending depending on `isShuttingDown()`, because the two kinds of skip
+mean opposite things: one the shutdown caused has to survive the restart, one
+`onOverlap` decided must not be resurrected. And recovery is a **replay, not a
+resume** — a resume carries no `ctx.input`, so a workflow that reads its
+payload would get `{}`. The cost is that recovery is at-least-once; that is the
+trade, not an oversight.
+
+**The inbox stores regardless of `CAPTURE_DATA`.** It uses `capture()`'s
+`force` and the checkpoint ceiling, like step outputs, because it is functional
+data — something fed back into a workflow — not observational. Wiring it to
+`CAPTURE_DATA` would let a disk-space setting quietly switch durability off.
+A payload that does not fit is *not* recorded at all rather than recorded
+truncated, and the run still happens.
+
 **Pass `ctx.signal` into `fetch` and other cancellable calls.** The runner can
 stop *waiting* on work that ignores it, but it cannot *cancel* it.
 
@@ -391,6 +412,12 @@ These were decided deliberately. Raise a trade-off before changing any of them:
   exception, added deliberately and gated behind `DASHBOARD_WRITE`; see the
   entry below. Nothing else may grow a form.
 - **Single process, SQLite only.** No Redis, no external queue, no worker pool.
+  The webhook inbox is a table, not a broker, and deliberately does not try to
+  be one: it makes an *accepted* webhook survive a restart. Catching what
+  arrives while the process is down needs a separate always-up receiver in
+  front, which was considered and refused — it doubles what has to stay alive,
+  breaks `respond: "sync"`, and held deliveries fail the freshness window
+  Slack and Stripe put on their signatures. Provider retries cover that gap.
 - **Checkpoints are memoised step results**, not deterministic replay.
 - **`ctx.state` is durable and never displayed.** It survives run pruning on
   purpose; it is not part of run history.

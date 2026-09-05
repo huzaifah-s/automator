@@ -5,6 +5,7 @@ import { redact } from "./redact.ts";
 import type {
   CallRecord,
   CredentialRow,
+  InboxRecord,
   LogRecord,
   RunRecord,
   RunStatus,
@@ -81,6 +82,36 @@ db.exec(`
     response    TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_calls_run ON calls(run_id, id);
+
+  -- Webhook deliveries, written down before the 202 goes back and settled once
+  -- the run they started reaches a decision. The gap between those two points
+  -- is the whole reason this table exists: the payload used to live only in the
+  -- closure a queueMicrotask was holding, so a restart in that window dropped
+  -- work the caller had already been told was accepted, with nothing on the
+  -- dashboard to say so.
+  --
+  -- Functional data, not observational. Stored with capture()'s force flag, so
+  -- CAPTURE_DATA=false cannot quietly turn recovery off, and against the
+  -- checkpoint ceiling rather than the smaller capture one — the same trade
+  -- step outputs already make, for the same reason: something that gets fed
+  -- back into a workflow needs room to survive whole.
+  CREATE TABLE IF NOT EXISTS inbox (
+    id          TEXT    PRIMARY KEY,
+    workflow    TEXT    NOT NULL,
+    -- sha256 of the method, path and raw body. A digest of the payload rather
+    -- than the payload, which is what makes it the one column here that needs
+    -- no redaction.
+    fingerprint TEXT    NOT NULL,
+    input       TEXT,
+    received_at INTEGER NOT NULL,
+    -- pending → accepted, not finished. done → the run reached a decision.
+    -- abandoned → it can never run now (workflow gone, or too old to be worth
+    -- running), recorded rather than deleted so it is still answerable.
+    status      TEXT    NOT NULL,
+    run_id      TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_inbox_pending ON inbox(status, received_at);
+  CREATE INDEX IF NOT EXISTS idx_inbox_print   ON inbox(fingerprint, received_at DESC);
 
   -- Durable key/value state — the one table here that deliberately outlives
   -- run history: polling cursors, rotating OAuth tokens, cross-run handoffs.
@@ -381,6 +412,28 @@ const stmts = {
        finished_at = ?, duration_ms = ? - started_at
      WHERE status = 'running'`,
   ),
+
+  recentDelivery: db.prepare(
+    `SELECT id, status FROM inbox
+     WHERE fingerprint = ? AND received_at >= ?
+     ORDER BY received_at DESC LIMIT 1`,
+  ),
+  insertDelivery: db.prepare(
+    `INSERT INTO inbox (id, workflow, fingerprint, input, received_at, status)
+     VALUES (?, ?, ?, ?, ?, 'pending')`,
+  ),
+  settleDelivery: db.prepare(`UPDATE inbox SET status = ?, run_id = ? WHERE id = ?`),
+  pendingDeliveries: db.prepare(
+    `SELECT * FROM inbox WHERE status = 'pending' ORDER BY received_at`,
+  ),
+  pendingDeliveryCount: db.prepare(
+    `SELECT COUNT(*) AS count FROM inbox WHERE status = 'pending'`,
+  ),
+  // Settled rows only: a pending one is work that has not happened yet, and
+  // age is exactly what makes it interesting rather than disposable.
+  pruneInbox: db.prepare(
+    `DELETE FROM inbox WHERE status <> 'pending' AND received_at < ?`,
+  ),
 };
 
 export const store = {
@@ -549,12 +602,56 @@ export const store = {
   },
 
   pruneOlderThan(days: number): number {
-    const removed = stmts.pruneRuns.run(Date.now() - days * 86_400_000).changes;
+    const cutoff = Date.now() - days * 86_400_000;
+    const removed = stmts.pruneRuns.run(cutoff).changes;
     // steps aren't FK-bound to runs (they outlive them across resumes), so
     // they need their own sweep once the owning runs are gone.
     stmts.pruneSteps.run();
+    // Settled deliveries age out on the same schedule as the runs they
+    // started; pending ones are left alone at any age, because dropping work
+    // that has not happened yet is the failure this table exists to prevent.
+    stmts.pruneInbox.run(cutoff);
     return removed;
   },
+
+  /* ------------------------------------------------------------- inbox */
+
+  /**
+   * Writes down a webhook delivery, or reports that this one is already here.
+   *
+   * The lookup and the insert are deliberately inside one synchronous method.
+   * bun:sqlite is synchronous and nothing between them awaits, so two copies
+   * of the same request arriving together cannot both pass the check; split
+   * across an await, they could.
+   *
+   * Duplicates are judged inside a window rather than by a unique index on the
+   * fingerprint, because an identical payload an hour later is usually a
+   * second real event — two "ping" webhooks are not one webhook. The window
+   * only has to be long enough to cover a caller retrying.
+   */
+  recordDelivery(entry: {
+    workflow: string;
+    fingerprint: string;
+    input: string | null;
+    dedupWindowMs: number;
+  }): { id: string; duplicate: boolean } {
+    const now = Date.now();
+    const seen = stmts.recentDelivery.get(entry.fingerprint, now - entry.dedupWindowMs) as
+      | { id: string }
+      | null;
+    if (seen) return { id: seen.id, duplicate: true };
+
+    const id = crypto.randomUUID();
+    stmts.insertDelivery.run(id, entry.workflow, entry.fingerprint, entry.input, now);
+    return { id, duplicate: false };
+  },
+
+  settleDelivery(id: string, status: "done" | "abandoned", runId: string | null): void {
+    stmts.settleDelivery.run(status, runId, id);
+  },
+
+  pendingDeliveries: () => stmts.pendingDeliveries.all() as InboxRecord[],
+  pendingDeliveryCount: () => (stmts.pendingDeliveryCount.get() as { count: number }).count,
 
   /* ------------------------------------------------------------- steps */
 

@@ -6,6 +6,7 @@ import { logger as httpLogger } from "hono/logger";
 import { store } from "../core/db.ts";
 import { isTruncated } from "../core/capture.ts";
 import { log } from "../core/logger.ts";
+import { acceptDelivery, deliver } from "../core/inbox.ts";
 import { queuedCount, runningCount, runWorkflow } from "../core/runner.ts";
 import { timingSafeEqual } from "../core/verify.ts";
 import { nextRunFor } from "../core/scheduler.ts";
@@ -119,6 +120,9 @@ export function createApp(registry: Registry): Hono {
       // that never drains looks exactly like a quiet runner.
       running: runningCount(),
       queued: queuedCount(),
+      // Accepted webhooks that have not finished. Steady state is 0; a number
+      // that stays up is deliveries being recorded and never settled.
+      inbox: store.pendingDeliveryCount(),
     }),
   );
 
@@ -200,7 +204,25 @@ export function createApp(registry: Registry): Hono {
 
     // Async is the default: most providers time out or retry on a slow reply.
     if ((wf.trigger.respond ?? "async") === "async") {
-      queueMicrotask(() => void runWorkflow(wf, { input, trigger: "webhook" }));
+      // Written down before the 202 goes back, so a restart between the
+      // acknowledgement and the run finishes the delivery afterwards instead
+      // of losing work the caller was told had been accepted.
+      //
+      // Only the async branch records. A sync caller is still holding the
+      // connection: it sees the failure and decides for itself, and a delivery
+      // replayed after a restart would produce a result nobody is waiting for.
+      const accepted = acceptDelivery(wf, method, path, raw, input);
+
+      if (accepted.kind === "duplicate") {
+        log.info(`Duplicate webhook for ${wf.name} — already accepted, not running it again`);
+        return c.json({ accepted: true, duplicate: true, workflow: wf.name }, 202);
+      }
+
+      queueMicrotask(() =>
+        accepted.kind === "recorded"
+          ? void deliver(wf, accepted.id, input)
+          : void runWorkflow(wf, { input, trigger: "webhook" }),
+      );
       return c.json({ accepted: true, workflow: wf.name }, 202);
     }
 

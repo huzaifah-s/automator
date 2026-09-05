@@ -271,6 +271,19 @@ export interface RunRecord {
   input: string | null;
 }
 
+/** One accepted webhook delivery — see the `inbox` table in db.ts. */
+export interface InboxRecord {
+  id: string;
+  workflow: string;
+  fingerprint: string;
+  /** The trigger input as JSON, ready to be handed straight to a run. */
+  input: string | null;
+  received_at: number;
+  status: "pending" | "done" | "abandoned";
+  /** The run that consumed this delivery, once there was one. */
+  run_id: string | null;
+}
+
 export interface LogRecord {
   id: number;
   run_id: string;

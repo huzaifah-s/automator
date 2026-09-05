@@ -43,6 +43,15 @@ export function beginShutdown(): void {
   shuttingDown = true;
 }
 
+/**
+ * Whether the process is on its way out. The inbox needs this to tell the two
+ * kinds of skipped run apart: one the shutdown caused, which has to survive to
+ * the other side of the restart, and one `onOverlap` decided, which must not.
+ */
+export function isShuttingDown(): boolean {
+  return shuttingDown;
+}
+
 export function activeCount(): number {
   return active.size;
 }

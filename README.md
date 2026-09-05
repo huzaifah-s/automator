@@ -112,6 +112,10 @@ Most providers retry on a slow reply, so waiting for the workflow is usually
 the wrong default. Use `respond: "sync"` when the caller genuinely needs the
 result.
 
+An async delivery is written down before that 202 goes back, and finished on
+the next boot if a restart landed in between — see
+[The webhook inbox](#the-webhook-inbox).
+
 ### Options
 
 | Option | Default | Notes |
@@ -914,7 +918,9 @@ bun run trigger -- send-signed-agreement   # run one now, exit non-zero on failu
 docker compose logs -f automator
 ```
 
-- Runs interrupted by a restart are marked failed at boot, not left `running`.
+- Runs interrupted by a restart are marked failed at boot, not left `running`,
+  and an async webhook that never finished is run again — see
+  [The webhook inbox](#the-webhook-inbox).
 - Any run with a recorded input can be replayed from its run page — see
   [Replay](#replay--the-other-button).
 - Run history is pruned nightly (`RUN_RETENTION_DAYS`, default 30). The same
@@ -929,6 +935,49 @@ docker compose logs -f automator
 - Set `ALERT_WEBHOOK_URL` to a Slack or Discord incoming webhook to get a ping
   on every workflow that exhausts its retries. Set `PUBLIC_URL` and the alert
   links straight to the run page.
+
+### The webhook inbox
+
+A deploy restarts the process, and an async webhook used to live only in the
+closure a `queueMicrotask` was holding. A restart between the `202` and the run
+therefore dropped work the caller had already been told was accepted — silently,
+with nothing on the dashboard to say it happened.
+
+So the payload is written to an `inbox` table *before* the 202 goes back, and
+settled once the run it started reaches a decision. At boot, anything still
+pending is run with its recorded input. Nothing to configure; `/healthz`
+reports `inbox`, which is the number accepted and not yet finished — steady
+state is `0`.
+
+What it does and does not cover:
+
+- **A run that was interrupted is run again from the top.** Recovery is a
+  replay, not a [resume](#checkpoints-and-resume): a resume carries a
+  checkpoint key and no `ctx.input`, so a workflow that reads its payload would
+  get an empty object. That makes recovery **at-least-once** — the same
+  guarantee polling gives — so a run killed half way through repeats the steps
+  it had already done.
+- **A repeat of the same delivery inside `INBOX_DEDUP_MS` (5 min) is treated
+  as a retry** and answered `202 {"duplicate": true}` without running.
+  Byte-identical payloads further apart are two real events, not one.
+- **A run dropped by `onOverlap: "skip"` is finished, not resurrected.** Only a
+  skip *the shutdown caused* stays pending.
+- **`respond: "sync"` is deliberately not recorded.** That caller is still
+  holding the connection: it sees the failure and decides for itself, and a
+  delivery replayed after a restart would produce a result nobody is waiting
+  for.
+- **A payload larger than `CHECKPOINT_MAX_BYTES` runs but is not recorded**, and
+  says so in the log. A truncated payload fed back into a workflow is worse
+  than an honest gap — the same refusal [Replay](#replay--the-other-button)
+  makes.
+- **It cannot catch what arrives while the process is down.** Nothing in-process
+  can; that window belongs to the provider's own retries. This closes the
+  window where *we* said yes and then lost it.
+
+Deliveries that can never run — the workflow no longer takes webhooks, or the
+delivery is older than `INBOX_MAX_AGE_MS` (24h) — are recorded as `abandoned`
+with a log line, rather than deleted or retried forever. Settled rows age out
+with `RUN_RETENTION_DAYS`; pending ones are never pruned at any age.
 
 ## Deploying
 

@@ -8,6 +8,42 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### The executions tab can be pointed at a window of time
+
+The **Executions** tab grew a second chip row — All time, 24 hours, 7 days,
+14 days, 30 days — plus two date fields for anything else. `?range=` carries
+the chip; `?from=` / `?to=` carry the dates. Every filter now cross-carries:
+picking a range keeps the workflow and the status, and picking a status keeps
+the dates.
+
+**The dates win over the chip, and their presence *is* the custom range.**
+There is no "Custom" chip to select first and no mode to be in — filling a date
+field puts the page in a custom window, and clicking any range chip clears both
+fields on the way out. A separate `range=custom` state would have meant two
+places that can disagree about what window you are looking at, and a chip that
+does nothing until you also fill something in.
+
+**The date fields are UTC days, not local ones.** Every timestamp on these
+pages is printed with `toISOString()`, so the day you type has to mean the day
+you can read in the table. The zone the server happens to run in is not on the
+screen anywhere, and a workflow's own `tz` is per-workflow — neither is a
+defensible thing to silently reinterpret the input against.
+
+**The counts above the list now follow the window instead of being fixed at
+24h.** Four cards reading "· 24h" over a 30-day list is two facts that look
+like a contradiction. The status *filter* is deliberately left out of them —
+the cards are the statuses — so they answer "what happened in this window",
+and the tab badge stays at 24h because it means the same thing on every page.
+
+Bad input widens rather than narrows, matching what an unknown `?status=`
+already did: an unparseable date is ignored, and a backwards range is swapped
+rather than answered with nothing. An empty table you cannot explain is the
+worse failure. The row cap stays at 100, but a capped list now says so and
+gives the total it is truncating — a partial answer that looks complete is the
+thing this codebase refuses everywhere else.
+
+Not done, because nothing asked for it: `/api/runs` still takes only `limit`.
+
 ### The background refresh no longer wipes a control you are in the middle of
 
 The 10-second poll replaces the whole `.wrap` element, and it only ever held

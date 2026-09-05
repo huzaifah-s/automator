@@ -43,10 +43,65 @@ import {
   workflowsPage,
   type CredentialView,
   type ProviderView,
+  type RunRange,
   type SecretView,
 } from "./views.ts";
 
 const RUN_STATUSES = ["success", "failed", "running", "skipped"];
+
+/** How far back each `?range=` key reaches, in milliseconds. */
+const RUN_RANGES: Record<string, number> = {
+  "24h": 86_400_000,
+  "7d": 7 * 86_400_000,
+  "14d": 14 * 86_400_000,
+  "30d": 30 * 86_400_000,
+};
+
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
+/** A `YYYY-MM-DD` field as a UTC instant, or null if it is not a real date. */
+function utcDay(value: string, endOfDay: boolean): number | null {
+  if (!DATE_ONLY.test(value)) return null;
+  const ms = Date.parse(`${value}T${endOfDay ? "23:59:59.999" : "00:00:00.000"}Z`);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Resolves the executions tab's window from `?range=` and the two `?from=`
+ * `?to=` date fields, which win when either is set — their presence *is* the
+ * custom range, so a chip that clears them is enough to leave it.
+ *
+ * The dates are read as **UTC** days because the tables print timestamps with
+ * `toISOString()`: the day you type has to mean the day you can see, and the
+ * zone the server happens to run in is not on the screen anywhere.
+ *
+ * Anything unparseable widens rather than narrows, for the same reason an
+ * unknown `?status=` does — an empty tab you cannot explain is the worse
+ * failure.
+ */
+function resolveRange(q: { range: string; from: string; to: string }): RunRange {
+  let since = utcDay(q.from, false);
+  let until = utcDay(q.to, true);
+
+  if (since !== null || until !== null) {
+    // A backwards range is a typo, not a request for nothing.
+    if (since !== null && until !== null && since > until) {
+      [since, until] = [utcDay(q.to, false)!, utcDay(q.from, true)!];
+      [q.from, q.to] = [q.to, q.from];
+    }
+    return {
+      key: "custom",
+      from: since === null ? "" : q.from,
+      to: until === null ? "" : q.to,
+      since: since ?? undefined,
+      until: until ?? undefined,
+    };
+  }
+
+  const span = RUN_RANGES[q.range];
+  if (!span) return { key: "", from: "", to: "" };
+  return { key: q.range, from: "", to: "", since: Date.now() - span };
+}
 
 export function createApp(registry: Registry): Hono {
   const app = new Hono();
@@ -245,14 +300,35 @@ export function createApp(registry: Registry): Hono {
     const asked = c.req.query("status") ?? "";
     const status = RUN_STATUSES.includes(asked) ? asked : "";
     const workflow = registry.get(c.req.query("workflow") ?? "")?.name ?? "";
+    const range = resolveRange({
+      range: c.req.query("range") ?? "",
+      from: c.req.query("from") ?? "",
+      to: c.req.query("to") ?? "",
+    });
+
+    const limit = 100;
+    const window = { since: range.since, until: range.until, workflow };
+    // Counted over the window rather than a fixed 24h, so the numbers above
+    // the list describe the list. The status filter is deliberately left out —
+    // the cards *are* the statuses — so the total is summed back here, and the
+    // list's own total picks the one card the status filter narrowed it to.
+    const counts = store.statusCounts(window);
+    const matching = status
+      ? (counts[status] ?? 0)
+      : Object.values(counts).reduce((a, b) => a + b, 0);
 
     return c.html(
       executionsPage(
-        store.filteredRuns({ status, workflow }, 100),
-        { status, workflow },
-        store.statusCountsSince(Date.now() - 86_400_000),
+        store.filteredRuns({ status, ...window }, limit),
+        { status, workflow, range },
+        counts,
         registry.all().map((w) => w.name),
         runningCount(),
+        {
+          limit,
+          matching,
+          failed24h: store.statusCountsSince(Date.now() - 86_400_000).failed ?? 0,
+        },
       ) as any,
     );
   });

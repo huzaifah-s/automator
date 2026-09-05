@@ -87,10 +87,14 @@ font-variant-numeric:tabular-nums;line-height:1.25}
 h2{font-size:11.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);
 margin:26px 0 10px;font-weight:600}
 .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
-input[type=search],select{background:var(--panel);border:1px solid var(--border);color:var(--fg);
+input[type=search],input[type=date],select{background:var(--panel);
+border:1px solid var(--border);color:var(--fg);
 border-radius:8px;padding:7px 11px;font:13px var(--sans);min-width:0}
 input[type=search]{flex:1;max-width:320px}
-input[type=search]:focus,select:focus{outline:none;border-color:var(--accent)}
+input[type=date]{font:12.5px var(--mono);color-scheme:dark light}
+/* The pair travels as one unit, so a narrow screen never strands the arrow. */
+.dates{display:flex;gap:8px;align-items:center}
+input[type=search]:focus,input[type=date]:focus,select:focus{outline:none;border-color:var(--accent)}
 .chip{padding:6px 11px;border-radius:8px;border:1px solid var(--border);background:var(--panel);
 color:var(--muted);font-size:12.5px;white-space:nowrap}
 .chip:hover{color:var(--fg);text-decoration:none;background:var(--panel-2)}
@@ -647,44 +651,107 @@ const STATUS_FILTERS = [
   { value: "skipped", label: "Skipped" },
 ] as const;
 
+// The time windows, in the order they read on screen. The keys are what
+// `?range=` carries and what `resolveRange()` in the server resolves; "custom"
+// is not a chip, it is the state the two date fields put the page into.
+const RANGE_FILTERS = [
+  { value: "", label: "All time" },
+  { value: "24h", label: "24 hours" },
+  { value: "7d", label: "7 days" },
+  { value: "14d", label: "14 days" },
+  { value: "30d", label: "30 days" },
+] as const;
+
+/**
+ * A resolved time window: the chip that is lit (`key`), the two date fields as
+ * the browser wants them back (`from`/`to`, `YYYY-MM-DD` or empty), and the
+ * epoch-millisecond bounds the query actually ran with.
+ */
+export interface RunRange {
+  key: string;
+  from: string;
+  to: string;
+  since?: number;
+  until?: number;
+}
+
+/** What the window covers, for the captions under the counts. */
+function rangeLabel(range: RunRange) {
+  if (range.key === "custom") return "selected dates";
+  return (
+    RANGE_FILTERS.find((r) => r.value === range.key)?.label ?? "all time"
+  ).toLowerCase();
+}
+
 export function executionsPage(
   runs: RunRecord[],
-  filter: { status: string; workflow: string },
+  filter: { status: string; workflow: string; range: RunRange },
+  /** Per status, over the same window and workflow as `runs`. */
   counts: Record<string, number>,
   workflowNames: string[],
   /** In-flight right now — not the same as "started in the last 24h". */
   running: number,
+  window: {
+    /** The row cap `runs` was fetched under. */
+    limit: number;
+    /** Everything the filter matches, so a capped list can say so. */
+    matching: number;
+    /** Failures in the last 24h regardless of the window — the tab badge
+     *  means the same thing on every page, so it does not follow the chips. */
+    failed24h: number;
+  },
 ) {
-  const qs = (status: string) => {
+  const current = {
+    status: filter.status,
+    workflow: filter.workflow,
+    range: filter.range.key,
+    from: filter.range.from,
+    to: filter.range.to,
+  };
+
+  // One link builder for both chip rows: every filter rides along except the
+  // ones this chip is here to change, so picking a range keeps the workflow
+  // and picking a status keeps the dates.
+  const link = (over: Partial<typeof current>) => {
     const params = new URLSearchParams();
-    if (status) params.set("status", status);
-    if (filter.workflow) params.set("workflow", filter.workflow);
+    for (const [k, v] of Object.entries({ ...current, ...over })) {
+      if (v) params.set(k, v);
+    }
     const s = params.toString();
     return s ? `/runs?${s}` : "/runs";
   };
+
+  // The same filters as hidden fields, for the controls that submit a form.
+  // Without these, changing the workflow would quietly drop the window.
+  const carry = (except: string[]) =>
+    Object.entries(current)
+      .filter(([k, v]) => v && !except.includes(k))
+      .map(([k, v]) => html`<input type="hidden" name="${k}" value="${v}">`);
+
+  const label = rangeLabel(filter.range);
 
   return layout(
     {
       title: "Executions",
       tab: "executions",
       refresh: 10,
-      badges: { workflows: null, failed: counts.failed ?? 0 },
+      badges: { workflows: null, failed: window.failed24h },
     },
     html`
       <div class="stats">
-        <div class="stat"><b>${Object.values(counts).reduce((a, b) => a + b, 0)}</b><span>runs · 24h</span></div>
-        <div class="stat"><b class="success">${counts.success ?? 0}</b><span>succeeded · 24h</span></div>
-        <div class="stat"><b class="${counts.failed ? "failed" : ""}">${counts.failed ?? 0}</b><span>failed · 24h</span></div>
+        <div class="stat"><b>${Object.values(counts).reduce((a, b) => a + b, 0)}</b><span>runs · ${label}</span></div>
+        <div class="stat"><b class="success">${counts.success ?? 0}</b><span>succeeded · ${label}</span></div>
+        <div class="stat"><b class="${counts.failed ? "failed" : ""}">${counts.failed ?? 0}</b><span>failed · ${label}</span></div>
         <div class="stat"><b class="${running ? "running" : ""}">${running}</b><span>running now</span></div>
       </div>
 
       <form class="toolbar" method="get" action="/runs">
         ${STATUS_FILTERS.map(
-          (f) => html`<a class="chip" href="${qs(f.value)}"
+          (f) => html`<a class="chip" href="${link({ status: f.value })}"
             ${filter.status === f.value ? raw('aria-current="true"') : ""}>${f.label}</a>`,
         )}
         <span class="grow"></span>
-        ${filter.status ? html`<input type="hidden" name="status" value="${filter.status}">` : ""}
+        ${carry(["workflow"])}
         <select name="workflow" data-autosubmit>
           <option value="">Every workflow</option>
           ${workflowNames.map(
@@ -694,12 +761,52 @@ export function executionsPage(
         <noscript><button class="btn" type="submit">Apply</button></noscript>
       </form>
 
-      ${runsTable(runs)}
+      <form class="toolbar" method="get" action="/runs">
+        ${RANGE_FILTERS.map(
+          (r) => html`<a class="chip" href="${link({ range: r.value, from: "", to: "" })}"
+            ${filter.range.key === r.value ? raw('aria-current="true"') : ""}>${r.label}</a>`,
+        )}
+        <span class="grow"></span>
+        ${carry(["from", "to"])}
+        <span class="dates">
+          <input type="date" name="from" value="${filter.range.from}"
+            aria-label="From date (UTC)" title="From — UTC, inclusive" data-autosubmit>
+          <span class="muted">→</span>
+          <input type="date" name="to" value="${filter.range.to}"
+            aria-label="To date (UTC)" title="To — UTC, inclusive" data-autosubmit>
+        </span>
+        <noscript><button class="btn" type="submit">Apply</button></noscript>
+      </form>
+
+      ${runsTable(
+        runs,
+        true,
+        // "Nothing has run yet" is a lie once a window is on — the runs may
+        // well exist a chip to the left.
+        filter.status || filter.workflow || filter.range.key
+          ? html`<div class="empty">
+              <b>No runs in this window</b>
+              Nothing matches ${label}${filter.workflow ? html` for <code class="mono">${filter.workflow}</code>` : ""}.
+              Widen the range or clear the filters.
+            </div>`
+          : undefined,
+      )}
+      ${runs.length >= window.limit && window.matching > runs.length
+        ? html`<div class="note" style="margin:12px 0 0">
+            Showing the newest <b>${runs.length}</b> of <b>${window.matching}</b> runs in this
+            window. Narrow the dates or pick a workflow to see the rest.
+          </div>`
+        : ""}
     `,
   );
 }
 
-function runsTable(runs: RunRecord[], showWorkflow = true) {
+function runsTable(
+  runs: RunRecord[],
+  showWorkflow = true,
+  /** Shown instead of the default when a filter, not an idle box, emptied it. */
+  empty?: HtmlEscapedString | Promise<HtmlEscapedString>,
+) {
   const cols = showWorkflow ? html`<div>Workflow</div>` : html`<div>Run</div>`;
   return html`
     <div class="card">
@@ -708,10 +815,11 @@ function runsTable(runs: RunRecord[], showWorkflow = true) {
         <div class="hide-sm">Started</div><div class="hide-sm">Duration</div><div>Detail</div>
       </div>
       ${runs.length === 0
-        ? html`<div class="empty">
+        ? (empty ??
+          html`<div class="empty">
             <b>Nothing has run yet</b>
             Runs appear here as soon as a trigger fires — or press the run button on a workflow.
-          </div>`
+          </div>`)
         : runs.map(
             (r) => html`
               <div class="row ex">

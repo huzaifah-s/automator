@@ -192,6 +192,21 @@ if (!secretColumns.has("owner")) {
   db.exec("CREATE INDEX IF NOT EXISTS idx_secrets_owner ON secrets(owner)");
 }
 
+/**
+ * The executions tab's filter, and the shape both the run list and the counts
+ * above it are built from. `since`/`until` are epoch milliseconds, inclusive
+ * on both ends; leaving either off means "unbounded in that direction".
+ */
+export interface RunFilter {
+  status?: string;
+  workflow?: string;
+  since?: number;
+  until?: number;
+}
+
+/** Stands in for "no upper bound" — SQLite compares it as a plain integer. */
+const TIME_MAX = Number.MAX_SAFE_INTEGER;
+
 const stmts = {
   insertRun: db.prepare(
     `INSERT INTO runs (id, workflow, status, trigger, attempts, started_at,
@@ -240,10 +255,16 @@ const stmts = {
   filteredRuns: db.prepare(
     `SELECT * FROM runs
      WHERE (? = '' OR status = ?) AND (? = '' OR workflow = ?)
+       AND started_at >= ? AND started_at <= ?
      ORDER BY started_at DESC LIMIT ?`,
   ),
-  statusCountsSince: db.prepare(
-    `SELECT status, COUNT(*) AS count FROM runs WHERE started_at > ? GROUP BY status`,
+  // Takes the same window and workflow as `filteredRuns`, so the numbers on
+  // the executions tab describe the rows underneath them. A fixed 24h count
+  // sitting above a 30-day list reads as a contradiction, not as two facts.
+  statusCounts: db.prepare(
+    `SELECT status, COUNT(*) AS count FROM runs
+     WHERE (? = '' OR workflow = ?) AND started_at >= ? AND started_at <= ?
+     GROUP BY status`,
   ),
   pruneRuns: db.prepare(`DELETE FROM runs WHERE started_at < ?`),
   pruneSteps: db.prepare(
@@ -436,7 +457,7 @@ export const store = {
     >[],
 
   filteredRuns: (
-    filter: { status?: string; workflow?: string } = {},
+    filter: RunFilter = {},
     limit = 100,
   ): RunRecord[] => {
     const status = filter.status ?? "";
@@ -446,17 +467,28 @@ export const store = {
       status,
       workflow,
       workflow,
+      filter.since ?? 0,
+      filter.until ?? TIME_MAX,
       limit,
     ) as RunRecord[];
   },
 
-  statusCountsSince: (since: number): Record<string, number> => {
-    const rows = stmts.statusCountsSince.all(since) as {
-      status: string;
-      count: number;
-    }[];
+  /** Runs per status in a window, optionally narrowed to one workflow. */
+  statusCounts: (
+    range: Omit<RunFilter, "status"> = {},
+  ): Record<string, number> => {
+    const workflow = range.workflow ?? "";
+    const rows = stmts.statusCounts.all(
+      workflow,
+      workflow,
+      range.since ?? 0,
+      range.until ?? TIME_MAX,
+    ) as { status: string; count: number }[];
     return Object.fromEntries(rows.map((r) => [r.status, r.count]));
   },
+
+  statusCountsSince: (since: number): Record<string, number> =>
+    store.statusCounts({ since }),
   statsForWorkflow: (name: string) =>
     stmts.statsForWorkflow.get(name) as {
       total: number;

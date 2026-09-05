@@ -8,6 +8,45 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-06
 
+### The filter bar on a phone, fixed where a phone is what found it
+
+Five things the desktop layout hid, all of them in the executions toolbar.
+
+**A date field committed on the first tap.** Both inputs carried
+`data-autosubmit`, and a native date picker fires `change` the moment it opens
+— so touching an empty "from" field navigated away with today's date before
+you had chosen anything. A range needs two values, so it now waits for an
+**Apply dates** button. That button existed already but only inside
+`<noscript>`, which is to say only where it was never seen.
+
+**An empty date field paints nothing at all on a phone.** The menu ended in
+two blank boxes and an arrow between them, which reads as a broken panel
+rather than as a range. Each field has a FROM / TO label above it now; the
+`aria-label` that was there was doing this job for screen readers only.
+
+**"All time" is gone.** With `RUN_RETENTION_DAYS` pruning at 14 days the
+widest chip already covers every run that exists, so the chip promised
+something it could not deliver and cost a second concept to carry — the key
+`all` existed only because an absent `?range=` had come to mean the default.
+The workflow page's "All executions →" link points at the widest window, which
+is the same set of runs.
+
+**The closed menus put their value in the middle of the bar.** Full-width and
+`space-between`, a label, a value and a chevron spread themselves evenly, so
+"7 days" sat centred and looked like a centring that had failed. An auto
+margin sends the value and its chevron to the right edge together.
+
+**The workflow picker was a control from another page.** A native `<select>`
+brings its own font and its own arrow, and next to two custom `<details>`
+menus that is exactly what it looked like. It cannot carry a pseudo-element,
+so the chevron moved to a wrapper and is now the same corner the menus draw —
+which also means it follows the theme, where a background image could not. The
+three controls are one type size on a phone, and it is 16px because that is
+what stops a browser zooming the page when a field takes focus.
+
+The tab row also gets a bottom margin. Without one it sat directly on the
+sticky bar's border and read as part of it.
+
 ### The dashboard opens on a week, and every number counts the same week
 
 The executions tab used to open on **all time** and print counts above the

@@ -607,16 +607,16 @@ Every run page shows what actually happened, n8n-style:
   request body, and response body. Failed and retried attempts all appear.
 
 The **Executions** tab opens on the **last 7 days**. The window is a chip —
-24 hours, 7 days, 14 days, all time, or a pair of UTC dates — and the counts
-above the list, plus the red failure count on the tab itself, describe whatever
-the filters are set to: the window *and* the workflow or folder. Nothing on the
-page is pinned to a fixed 24 hours any more. The status chip is the one filter
-the counts ignore, since the cards are the statuses. The other tabs have no
-chips of their own and count over the same 7-day default.
+24 hours, 7 days, 14 days, or a pair of UTC dates you apply together — and the
+counts above the list, plus the red failure count on the tab itself, describe
+whatever the filters are set to: the window *and* the workflow or folder.
+Nothing on the page is pinned to a fixed 24 hours any more. The status chip is
+the one filter the counts ignore, since the cards are the statuses. The other
+tabs have no chips of their own and count over the same 7-day default.
 
-The widest chip is 14 days because that is where `RUN_RETENTION_DAYS` prunes —
-a longer one could only return the same rows while implying there were older
-ones to find. Raise retention and a wider chip becomes worth adding back.
+The widest chip is 14 days because that is where `RUN_RETENTION_DAYS` prunes,
+so it already covers every run that exists — there is no "all time" chip to
+promise more than that. Raise retention and a wider chip becomes worth adding.
 
 Everything is redacted through the same secret filter as the logs before it's
 stored — including workflow return values, error messages, and recorded URLs, and capped at `CAPTURE_MAX_BYTES` (32KB) per value so run history can't

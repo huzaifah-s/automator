@@ -43,18 +43,37 @@ export function createSlack(http: HttpClient): SlackClient {
 /* --------------------------------------------------------------- Telegram */
 
 export interface TelegramClient {
-  /** chatId defaults to TELEGRAM_CHAT_ID. */
+  /**
+   * `token` defaults to TELEGRAM_BOT_TOKEN and `chatId` to TELEGRAM_CHAT_ID —
+   * both of which a *primary* Telegram credential supplies. Pass `token` to
+   * send as a different bot, which is how one server pings from several brands:
+   *
+   *   const telegram = defineCredential("telegram", "the-mantra");
+   *   ctx.telegram.send(text, { token: telegram.token, chatId: … });
+   */
   send(
     text: string,
-    opts?: { chatId?: string; parseMode?: "Markdown" | "MarkdownV2" | "HTML"; silent?: boolean },
+    opts?: {
+      token?: string;
+      chatId?: string;
+      parseMode?: "Markdown" | "MarkdownV2" | "HTML";
+      silent?: boolean;
+    },
   ): Promise<void>;
-  sendPhoto(photoUrl: string, opts?: { chatId?: string; caption?: string }): Promise<void>;
+  sendPhoto(
+    photoUrl: string,
+    opts?: { token?: string; chatId?: string; caption?: string },
+  ): Promise<void>;
 }
 
 export function createTelegram(http: HttpClient): TelegramClient {
-  const api = (method: string) => {
-    const token = process.env.TELEGRAM_BOT_TOKEN;
-    if (!token) throw new Error("TELEGRAM_BOT_TOKEN is not set");
+  // The token goes in the path, not a header, so this URL is a credential.
+  // It reaches the run page through capture(), which redacts it — every bot
+  // token is registered with the redactor, whether it arrived from the
+  // environment or was decrypted out of a credential.
+  const api = (method: string, override?: string) => {
+    const token = override ?? process.env.TELEGRAM_BOT_TOKEN;
+    if (!token) throw new Error("No token given and TELEGRAM_BOT_TOKEN is not set");
     return `https://api.telegram.org/bot${token}/${method}`;
   };
 
@@ -66,7 +85,7 @@ export function createTelegram(http: HttpClient): TelegramClient {
 
   return {
     async send(text, opts = {}) {
-      await http.post(api("sendMessage"), {
+      await http.post(api("sendMessage", opts.token), {
         chat_id: chat(opts.chatId),
         text,
         parse_mode: opts.parseMode,
@@ -74,7 +93,7 @@ export function createTelegram(http: HttpClient): TelegramClient {
       });
     },
     async sendPhoto(photo, opts = {}) {
-      await http.post(api("sendPhoto"), {
+      await http.post(api("sendPhoto", opts.token), {
         chat_id: chat(opts.chatId),
         photo,
         caption: opts.caption,

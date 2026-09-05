@@ -821,12 +821,16 @@ const STATUS_FILTERS = [
 // string because an absent `?range=` now means the default, not everything —
 // without a name of its own, asking for all time would be indistinguishable
 // from not asking at all and would bounce straight back to 7 days.
+//
+// The widest chip stops at 14 days because `RUN_RETENTION_DAYS` prunes there.
+// A longer chip could only ever return the same rows as this one while quietly
+// implying there were older ones to find. Raising retention is what earns a
+// wider chip; add it back here and it works, spans and all.
 const RANGE_FILTERS = [
   { value: "all", label: "All time", span: 0 },
   { value: "24h", label: "24 hours", span: 86_400_000 },
   { value: "7d", label: "7 days", span: 7 * 86_400_000 },
   { value: "14d", label: "14 days", span: 14 * 86_400_000 },
-  { value: "30d", label: "30 days", span: 30 * 86_400_000 },
 ] as const;
 
 /**

@@ -607,12 +607,16 @@ Every run page shows what actually happened, n8n-style:
   request body, and response body. Failed and retried attempts all appear.
 
 The **Executions** tab opens on the **last 7 days**. The window is a chip —
-24 hours, 7, 14, 30 days, all time, or a pair of UTC dates — and the counts
+24 hours, 7 days, 14 days, all time, or a pair of UTC dates — and the counts
 above the list, plus the red failure count on the tab itself, describe whatever
 the filters are set to: the window *and* the workflow or folder. Nothing on the
 page is pinned to a fixed 24 hours any more. The status chip is the one filter
 the counts ignore, since the cards are the statuses. The other tabs have no
 chips of their own and count over the same 7-day default.
+
+The widest chip is 14 days because that is where `RUN_RETENTION_DAYS` prunes —
+a longer one could only return the same rows while implying there were older
+ones to find. Raise retention and a wider chip becomes worth adding back.
 
 Everything is redacted through the same secret filter as the logs before it's
 stored — including workflow return values, error messages, and recorded URLs, and capped at `CAPTURE_MAX_BYTES` (32KB) per value so run history can't
@@ -1058,8 +1062,14 @@ docker compose logs -f automator
   [The webhook inbox](#the-webhook-inbox).
 - Any run with a recorded input can be replayed from its run page — see
   [Replay](#replay--the-other-button).
-- Run history is pruned nightly (`RUN_RETENTION_DAYS`, default 30). The same
-  job sweeps expired `ctx.state` keys, whatever retention is set to.
+- Run history is pruned nightly (`RUN_RETENTION_DAYS`, default 14). A run
+  older than that takes its logs, steps, HTTP calls, and settled inbox rows
+  with it. `0` keeps everything forever; a value that is not a number logs an
+  error and falls back to 14 rather than silently switching pruning off. Poll
+  ticks are one overwritten row per workflow and never accumulate, so there is
+  nothing there to age out. The same job sweeps expired `ctx.state` keys,
+  whatever retention is set to — durable state is not run history and outlives
+  it on purpose.
 - `SIGTERM` stops the scheduler and waits up to `SHUTDOWN_TIMEOUT_MS` (20s) for
   in-flight runs before exiting. A run still queued when that starts is
   recorded as `skipped`, not silently dropped.

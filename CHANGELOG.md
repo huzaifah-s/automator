@@ -49,6 +49,29 @@ of time. The old rule was that a filter should never narrow into an empty tab
 you cannot explain; the default window is not that failure, because it is the
 same thing you see when you open the tab fresh.
 
+### Run history is kept for two weeks, and the 30-day chip goes with it
+
+`RUN_RETENTION_DAYS` defaults to **14**. Thirty days was chosen before the
+executions tab had windows; a month of rows was mostly history nothing on the
+dashboard was going to ask for. Pruning a run still takes its logs, steps, HTTP
+calls and settled inbox rows with it, `0` still means keep everything, and the
+poll table was never in scope — it is one overwritten row per workflow and does
+not grow.
+
+**The 30-day chip is removed, because it would have lied.** With pruning at 14
+days it could only ever return the same rows as the 14-day chip, while implying
+there were older runs it was reaching for. The widest window the dashboard
+offers and the point at which history is deleted are now the same number, which
+is the property worth keeping: raising retention is what earns a wider chip,
+not the other way round. A bookmarked `?range=30d` is an unknown key now and
+lands on the default, like any other.
+
+**A bad value is loud now.** `Number("abc")` is `NaN`, `NaN > 0` is false, and
+the nightly prune therefore did nothing at all — a typo in one environment
+variable silently switched retention off, which you discover a month later
+from the disk graph. A value that is not a non-negative number logs an error
+and falls back to 14.
+
 ### The dashboard reads on a phone, and the rows stop being columns
 
 Below 560px every `.row` grid becomes a wrapping flex line: the name takes the

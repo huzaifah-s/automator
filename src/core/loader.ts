@@ -121,10 +121,15 @@ export async function loadWorkflows(dir = "./workflows"): Promise<LoadedWorkflow
 
   const secretProblems = collectSecretProblems();
   if (errors.length || secretProblems.length) {
-    for (const e of errors) log.error(e);
-    for (const s of secretProblems) log.error(`secret ${s}`);
-    throw new Error(
-      `${errors.length + secretProblems.length} problem(s) found while loading workflows`,
+    const problems = [...errors, ...secretProblems.map((s) => `secret ${s}`)];
+    for (const p of problems) log.error(p);
+    // The list rides along on the error as well as going to the log, because
+    // the one place that needs it is somewhere nobody can see the log: the
+    // boot alert. A summary count tells you a deploy is down and nothing about
+    // why, which is one round trip too many at the moment it happens.
+    throw Object.assign(
+      new Error(`${problems.length} problem(s) found while loading workflows`),
+      { problems },
     );
   }
 

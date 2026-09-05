@@ -104,7 +104,7 @@ export async function pollOnce(wf: LoadedWorkflow): Promise<void> {
       stack: error.stack,
     });
     store.finishRun(runId, "failed", 1, `poll fetch failed: ${error.message}`, null);
-    await alertFailure(wf.name, runId, error);
+    await alertFailure(wf, runId, error);
   } finally {
     clearTimeout(timer);
   }

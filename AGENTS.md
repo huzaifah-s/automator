@@ -78,6 +78,10 @@ export default defineWorkflow({
 });
 ```
 
+Every workflow is connected to the alert channel unless it says otherwise:
+`alerts: false` opts out, `alerts: { channel: "telegram:pblsh" }` routes its
+problems somewhere else. See README "Alerts".
+
 Triggers: `cron(expr, { tz })`, `webhook(path, { method, schema, respond, secret, verify })`,
 `poll(expr, { fetch, id })`, `manual()`. On `ctx`: `http` `slack` `telegram` `discord` `ai` `email` `sql`
 `sheets` `scrape`, plus `log` `step` `run` `state` `signal` `input` `attempt` `runId`.
@@ -246,6 +250,31 @@ data — something fed back into a workflow — not observational. Wiring it to
 `CAPTURE_DATA` would let a disk-space setting quietly switch durability off.
 A payload that does not fit is *not* recorded at all rather than recorded
 truncated, and the run still happens.
+
+**Nothing in `src/core/alerts.ts` may throw out.** It is called from a run's
+last breath, from the middle of a boot, and from a webhook handler that owes a
+caller a 401 — a broken alert channel turning any of those into an exception
+would make the alerting the outage. Every path ends in a `log.warn`. For the
+same reason a bad `ALERT_CHANNEL` is a warning and no alerts rather than a dead
+boot, while a bad `alerts: { channel }` in a workflow file *does* stop the boot:
+that one is a typo in code, like an unknown credential platform.
+
+**An alert is composed by the runner and sent out of the process, so it is
+redacted on the way.** This is the same category as a workflow relaying a
+provider error into Telegram — the error message that reaches an alert is very
+often the URL that produced it, and Telegram puts the bot token in the URL. The
+`redact()` call in `send()` is the last thing between an error string and a chat.
+
+**The alert cooldown is stamped before delivery is attempted.** A channel that
+is down therefore costs that one alert, not thirty minutes of retries against
+it. That is the trade, not an oversight — and the counters live in shared state
+under a *hashed* `@alert:` key because state is the one thing not redacted on
+the way to disk, and a counter row has no reason to hold an error message.
+
+**Boot alerts fire on the server path only** (`isServerBoot` in
+`src/index.ts`). `loadWorkflows()` also runs for `bun run list` and
+`bun run trigger`, and a person at a terminal watching an error scroll past does
+not also need it in a chat.
 
 **Pass `ctx.signal` into `fetch` and other cancellable calls.** The runner can
 stop *waiting* on work that ignores it, but it cannot *cancel* it.

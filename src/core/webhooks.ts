@@ -1,4 +1,5 @@
 import { createLogger, log } from "./logger.ts";
+import { alertBoot } from "./alerts.ts";
 import { createState, type StateClient } from "./state.ts";
 import { buildIntegrations } from "../integrations/index.ts";
 import type { LoadedWorkflow, RegisterCtx } from "./types.ts";
@@ -98,9 +99,12 @@ export async function reconcileWebhooks(registry: Registry): Promise<void> {
       logger.info(`webhook subscription ${id} registered at ${url}`);
     } catch (err) {
       // Left exactly as it was, so the next boot tries the same thing again.
-      logger.error(
-        `webhook registration failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error(`webhook registration failed: ${message}`);
+      // A subscription that never got created means the provider is calling
+      // nobody. Nothing fails, no run is recorded, and the workflow simply
+      // never fires — the exact shape of problem this is here to catch.
+      await alertBoot("webhook subscription could not be registered", message, wf);
     }
   }
 

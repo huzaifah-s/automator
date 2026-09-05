@@ -185,6 +185,13 @@ export interface Ctx<Input = unknown> extends Integrations {
   run<R = unknown>(name: string, input?: unknown): Promise<R>;
 }
 
+/**
+ * A workflow's connection to the runner's alert channel. `true` (the default)
+ * uses ALERT_CHANNEL; `false` opts out; an object names a different one. See
+ * `alerts` on WorkflowDef and src/core/alerts.ts.
+ */
+export type WorkflowAlerts = boolean | { channel?: string };
+
 export interface WorkflowDef<Input = unknown> {
   /** Unique. Used in URLs, logs, and the CLI. */
   name: string;
@@ -203,6 +210,25 @@ export interface WorkflowDef<Input = unknown> {
    * "skip" (default) drops it — right for cron. "queue" waits its turn.
    */
   onOverlap?: "skip" | "queue";
+  /**
+   * Whether the runner tells you when *this* workflow has a problem it did not
+   * choose to report itself — a run that used up its retries, a run refused
+   * because a credential is not connected, a webhook delivery turned away, a
+   * subscription that failed to register. Default true; the destination is
+   * ALERT_CHANNEL.
+   *
+   * `false` opts out. An object routes this workflow's alerts somewhere else,
+   * which is what one server serving several brands needs: a pblsh failure
+   * belongs in the pblsh chat, not The Mantra's.
+   *
+   *   alerts: false
+   *   alerts: { channel: "telegram:pblsh" }
+   *
+   * This has nothing to do with a workflow messaging you from inside run().
+   * That is part of what the workflow does, and it only happens while the
+   * workflow works.
+   */
+  alerts?: WorkflowAlerts;
   run(ctx: Ctx<Input>): Promise<unknown>;
   /**
    * Memoise successful ctx.step results so a retry — or an explicit resume from

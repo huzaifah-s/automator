@@ -7,6 +7,7 @@ import { store } from "../core/db.ts";
 import { isTruncated } from "../core/capture.ts";
 import { log } from "../core/logger.ts";
 import { acceptDelivery, deliver } from "../core/inbox.ts";
+import { alertRejection } from "../core/alerts.ts";
 import { queuedCount, runningCount, runWorkflow } from "../core/runner.ts";
 import { timingSafeEqual } from "../core/verify.ts";
 import { nextRunFor } from "../core/scheduler.ts";
@@ -145,8 +146,14 @@ export function createApp(registry: Registry): Hono {
      * once `wf` resolved — an unclaimed path is a 404 above and is recorded
      * nowhere, which is what keeps a URL scanner from writing a row per guess.
      */
-    const reject = (reason: string, detail?: string | null) =>
+    const reject = (reason: string, detail?: string | null) => {
       store.recordRejection({ workflow: wf.name, path, reason, detail });
+      // Not awaited: the caller's 401 does not wait on a chat message, and an
+      // alert channel that hangs must not hold a request socket open. The
+      // cooldown in alerts.ts is what keeps a scanner hammering a known path
+      // from becoming a message per attempt.
+      alertRejection(wf, path, reason, detail);
+    };
 
     // Read the body once, as text. A verifier recomputes an HMAC over exactly
     // the bytes that arrived, so parsing first and re-serialising would never

@@ -15,7 +15,13 @@ import { store, db } from "./core/db.ts";
 import { log } from "./core/logger.ts";
 import { closeSql, registerIntegrationSecrets } from "./integrations/index.ts";
 import { loadSecretStore, startSecretRefresh, stopSecretRefresh } from "./core/secret-store.ts";
-import { initCredentials } from "./core/credentials.ts";
+import {
+  credentialReady,
+  credentialRef,
+  credentialRequirements,
+  initCredentials,
+} from "./core/credentials.ts";
+import { alertBoot, describeAlertChannel } from "./core/alerts.ts";
 import { runSecretCli } from "./cli/secrets.ts";
 
 const args = process.argv.slice(2);
@@ -46,10 +52,23 @@ if (credentialFields > 0) log.info(`Loaded ${credentialFields} credential field(
 const registered = registerIntegrationSecrets();
 if (registered > 0) log.debug(`Redacting ${registered} integration credential(s)`);
 
+/**
+ * Whether this process is the long-running server rather than somebody at a
+ * terminal. Boot alerts are for the former: `bun run list` failing is already
+ * on the screen of the person who ran it, and does not belong in a chat.
+ */
+const isServerBoot = args[0] !== "--list" && args[0] !== "--run";
+
 const registry = new Registry(
-  await loadWorkflows(process.env.WORKFLOWS_DIR ?? "./workflows").catch((err) => {
+  await loadWorkflows(process.env.WORKFLOWS_DIR ?? "./workflows").catch(async (err) => {
     log.error(err.message);
     log.error("Fix the problems above and start again.");
+    // A deploy that cannot load its workflows exits here and stays exited.
+    // Without this the only evidence is a container log nobody is reading.
+    if (isServerBoot) {
+      const problems = (err as { problems?: string[] }).problems;
+      await alertBoot("workflows failed to load", problems?.join("\n") ?? err.message);
+    }
     process.exit(1);
   }),
 );
@@ -123,6 +142,28 @@ server = Bun.serve({
 });
 
 log.info(`Dashboard on http://localhost:${port}`);
+
+const alertChannel = describeAlertChannel();
+if (alertChannel) log.info(`Alerts → ${alertChannel}`);
+else {
+  log.warn(
+    "No alert channel configured — set ALERT_CHANNEL (e.g. telegram:the-mantra) " +
+      "or problems are only visible on the dashboard",
+  );
+}
+
+// Warned about by the loader too, but a warning at boot is a line in a log.
+// A workflow blocked on an unconnected credential runs nothing until somebody
+// connects it, and a manual or webhook one may not fail visibly for weeks.
+// Not awaited: an alert channel that is slow must not hold up a boot.
+const blocked = credentialRequirements().filter((r) => !credentialReady(r.provider, r.id));
+if (blocked.length > 0) {
+  void alertBoot(
+    `${blocked.length} credential(s) are not connected — the workflows that ` +
+      `declare them cannot run`,
+    blocked.map((r) => `${credentialRef(r.provider, r.id)} (${r.file ?? "unknown file"})`).join("\n"),
+  );
+}
 for (const w of registry.enabled()) {
   if (w.trigger.kind === "webhook") {
     log.info(`Webhook ${w.trigger.method ?? "POST"} /hooks/${w.trigger.path} → ${w.name}`);

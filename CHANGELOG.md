@@ -8,6 +8,63 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### The runner tells you when a workflow can't run, and you choose where
+
+`ALERT_WEBHOOK_URL` did one thing: post to a Slack- or Discord-shaped incoming
+webhook when a run exhausted its retries. It is now `ALERT_CHANNEL`, which
+names a platform and a *connected credential* — `telegram:the-mantra`,
+`slack:ops/#alerts`, `discord:ops`, or `webhook:<url>` for the old behaviour,
+which still works unchanged.
+
+**The channel is chosen in the environment, not in the database.** A
+Credentials-tab-style Alerts form was the obvious alternative and was rejected:
+it would be the first piece of runner configuration living as rows, and the
+thing the credential system buys — the token in the encrypted store, rotatable
+without a redeploy — is already had by naming a credential from an env var. The
+env var carries the *choice*; the store carries the secret.
+
+**Naming a credential means only that credential is consulted.** A named
+Telegram credential with no chat id is an error, not a fall back to
+`TELEGRAM_CHAT_ID`. The convenience of guessing is not worth its failure mode,
+which is an alert about a brand arriving in another brand's chat.
+
+**Three new things alert, and all three were previously invisible.** A run
+refused because a credential is not connected (it was recorded as a failed run
+and logged, and nobody reads either); a boot problem — workflows that would not
+load, credentials nothing can run without, a webhook subscription that failed to
+register, which means the provider is calling nobody and the workflow simply
+never fires; and a rejected webhook delivery, where a provider calling with the
+wrong secret is otherwise indistinguishable from silence.
+
+Boot alerts fire on the server path only. `bun run list` failing is already on
+the screen of the person who ran it.
+
+**Every workflow is connected by default, and can opt out or route elsewhere.**
+`alerts: false`, or `alerts: { channel: "telegram:pblsh" }`. Default-on was the
+decision worth making deliberately: the whole point is problems you did not
+think to look for, and an opt-in list only ever contains the workflows you were
+already worried about. Per-workflow routing exists because this server already
+sends as three different bots.
+
+**A bad channel in a workflow file stops the boot; a bad `ALERT_CHANNEL` does
+not.** The first is a typo in code, like an unknown credential platform. The
+second is an operator's environment, and a mistake in the alerting must never be
+the thing that stops the runner from running. Same reason a broken channel is a
+log line and never an exception: nothing in `src/core/alerts.ts` may throw out
+into a run, a boot, or a webhook response.
+
+**Repeats are throttled to one per problem per `ALERT_COOLDOWN_MS`** (30
+minutes), and the next alert that gets through carries the count it stands for.
+Without it a five-minute cron that fails every time is twelve messages an hour
+and the alerts stop being read, which is the same outcome as not sending them.
+The counters live in shared `ctx.state` under a hashed `@alert:` key rather than
+in memory, so a crash-looping process does not re-send the same boot failure on
+every restart — hashed because state is the one thing not redacted on its way to
+disk, and a counter row has no reason to hold an error message. The trade: the
+cooldown is stamped before delivery is attempted, so a channel that is down
+costs that alert rather than thirty minutes of retries against it.
+
+
 ### Threads posts itself, and three n8n graphs became one workflow
 
 Ported the n8n graphs "The Mantra - Threads - Checker", "The Mantra - Notion

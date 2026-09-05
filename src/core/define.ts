@@ -5,6 +5,7 @@ import type {
   WebhookVerifier,
   WorkflowDef,
 } from "./types.ts";
+import { parseAlertChannel } from "./alerts.ts";
 import type { ZodType } from "zod";
 
 /**
@@ -19,6 +20,15 @@ export function defineWorkflow<Input = unknown>(
     throw new Error(
       `Workflow name "${def.name}" must be lowercase letters, digits, and dashes`,
     );
+  }
+  // A misspelt alert channel is a typo in code, so it stops the boot the way an
+  // unknown credential platform does — unlike a misspelt ALERT_CHANNEL, which
+  // is an operator's environment and only costs the alerts.
+  if (typeof def.alerts === "object" && def.alerts.channel) {
+    const problem = parseAlertChannel(def.alerts.channel);
+    if (typeof problem === "string") {
+      throw new Error(`Workflow "${def.name}" has an unusable alert channel — ${problem}`);
+    }
   }
   return def;
 }
@@ -118,6 +128,7 @@ export type {
   PollCtx,
   RegisterCtx,
   WebhookRegistration,
+  WorkflowAlerts,
   WorkflowDef,
 } from "./types.ts";
 export type { StateClient, StateStore, StateSetOptions } from "./state.ts";

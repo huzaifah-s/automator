@@ -1,7 +1,7 @@
 import { store } from "./db.ts";
 import { credentialReady } from "./credentials.ts";
 import { createLogger, log } from "./logger.ts";
-import { alertFailure } from "./alerts.ts";
+import { alertBlocked, alertFailure } from "./alerts.ts";
 import { buildIntegrations } from "../integrations/index.ts";
 import { capture, MAX_CHECKPOINT_BYTES } from "./capture.ts";
 import { createState } from "./state.ts";
@@ -164,6 +164,10 @@ export async function runWorkflow(
     store.startRun(runId, wf.name, opts.trigger);
     store.finishRun(runId, "failed", 0, message, null);
     createLogger(wf.name, runId).error(message);
+    // The dashboard already says this, and nobody is looking at the dashboard.
+    // A cron workflow blocked on an unconnected credential is otherwise silent
+    // until somebody notices the thing it was supposed to do never happened.
+    await alertBlocked(wf, runId, message);
     return { runId, status: "failed", error: new Error(message) };
   }
 
@@ -316,7 +320,7 @@ async function executeNow(wf: LoadedWorkflow, opts: RunOptions): Promise<RunOutc
       logger.error("onFailure handler threw", { error: String(err) });
     }
   }
-  await alertFailure(wf.name, runId, lastError);
+  await alertFailure(wf, runId, lastError);
 
   return { runId, status: "failed", error: lastError };
 }

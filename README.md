@@ -127,6 +127,7 @@ the next boot if a restart landed in between — see
 | `onFailure` | — | Runs once after every attempt has failed |
 | `checkpoint` | `true` | Memoise successful `ctx.step` results (see below) |
 | `checkpointTtlHours` | `24` | Checkpoints older than this are ignored on resume |
+| `alerts` | `true` | Connect this workflow to the alert channel — see [Alerts](#alerts--being-told-when-something-breaks) |
 
 ### What's on `ctx`
 
@@ -439,7 +440,8 @@ Use `firstRun: "emit"` if you want the opposite.
 **Items are marked seen only after the run succeeds.** A failed run gets the
 same items again on the next tick rather than dropping them — at-least-once,
 because silent loss is the worse failure. A workflow that fails forever will
-retry forever; that is what `ALERT_WEBHOOK_URL` is for.
+retry forever; that is what [alerts](#alerts--being-told-when-something-breaks)
+are for.
 
 **Give it an `id`.** Without one the whole item is hashed, so an item whose
 title or timestamp changed reads as new.
@@ -1040,9 +1042,91 @@ docker compose logs -f automator
   (default 10, `0` = unlimited). Runs past the cap **queue** — a webhook that
   arrives during a burst is slow, never lost. `/healthz` reports `running` and
   `queued`, which is the only way to see a queue that isn't draining.
-- Set `ALERT_WEBHOOK_URL` to a Slack or Discord incoming webhook to get a ping
-  on every workflow that exhausts its retries. Set `PUBLIC_URL` and the alert
-  links straight to the run page.
+- Set `ALERT_CHANNEL` to be told when something breaks — see
+  [Alerts](#alerts--being-told-when-something-breaks) just below.
+
+### Alerts — being told when something breaks
+
+A workflow that sends you a Telegram message is doing its job. This is the
+other thing: the runner telling you when a workflow *couldn't* do its job. Four
+problems fire an alert, and all four are ones that are otherwise invisible
+until you go looking at the dashboard.
+
+| What | When |
+|---|---|
+| A run failed | Every attempt was used up. A poll whose `fetch` threw counts. |
+| A run never started | It declares a credential that is not connected. |
+| Boot | A workflow file would not load, a credential is unconnected, a webhook subscription failed to register. |
+| A delivery was rejected | A webhook arrived with a bad secret or a failed signature — see [Rejected deliveries](#rejected-deliveries). |
+
+Set one env var:
+
+```bash
+ALERT_CHANNEL=telegram:the-mantra
+```
+
+The grammar is `<platform>` or `<platform>:<credential>[/<where>]`. The
+credential is one you connected on the Credentials tab, so the token is in the
+encrypted store rather than in this file:
+
+```bash
+ALERT_CHANNEL=telegram                    # whichever Telegram credential is primary
+ALERT_CHANNEL=telegram:the-mantra         # that bot, the chat id it carries
+ALERT_CHANNEL=telegram:the-mantra/-1001234567   # that bot, a specific chat
+ALERT_CHANNEL=slack:ops/#alerts           # that bot token, that channel
+ALERT_CHANNEL=slack:/#alerts              # the primary Slack token, that channel
+ALERT_CHANNEL=discord:ops                 # that credential's incoming webhook
+ALERT_CHANNEL=webhook:https://hooks.slack.com/services/…   # any incoming webhook
+```
+
+Naming a credential means only that credential is consulted. A named Telegram
+credential with no chat id is an error rather than a quiet fall back to
+`TELEGRAM_CHAT_ID`, because the failure mode of guessing is an alert arriving
+in somebody else's chat.
+
+Set `PUBLIC_URL` too and every alert links straight to the run page.
+
+**Every workflow is connected by default.** Opt one out, or send its alerts
+somewhere else — which is what one server serving several brands needs:
+
+```ts
+export default defineWorkflow({
+  name: "pblsh-agreement",
+  alerts: { channel: "telegram:pblsh" },   // pblsh problems, pblsh chat
+  …
+});
+
+export default defineWorkflow({
+  name: "noisy-experiment",
+  alerts: false,                            // never ping me about this one
+  …
+});
+```
+
+A typo in `alerts.channel` stops the boot — it is code. A typo in
+`ALERT_CHANNEL` is a warning and no alerts — it is an operator's environment,
+and an alerting mistake must not be the thing that stops the runner running.
+
+**Repeats are throttled.** The same problem is reported once, then goes quiet
+for `ALERT_COOLDOWN_MS` (default 30 minutes) and the next one that gets through
+carries the count of what it stands for:
+
+```
+🚨 threads-poster: failed
+Notion API returned 502
+(11 more since the last alert about this)
+https://automator.example.com/runs/0f9c…
+```
+
+A cron that runs every five minutes and fails every time is one message and a
+number, not twelve an hour. The counters live in [`ctx.state`](#durable-state)
+under a hashed `@alert:` key, so a crash-looping process doesn't re-send the
+same boot failure on every restart. Set `ALERT_COOLDOWN_MS=0` to send
+everything.
+
+Nothing here can break a run: a broken alert channel is a warning in the log
+and nothing else. `ALERT_WEBHOOK_URL` still works and means
+`webhook:<that url>`.
 
 ### The webhook inbox
 

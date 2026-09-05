@@ -147,6 +147,13 @@ db.exec(`
     count    INTEGER NOT NULL DEFAULT 0,
     first_at INTEGER NOT NULL,
     last_at  INTEGER NOT NULL,
+    -- When a delivery to this workflow last got all the way through the door,
+    -- stamped across its rows at that moment. A row whose resolved_at is at or
+    -- after its last_at is history: whatever was wrong is demonstrably not
+    -- wrong now. That is the difference between a record and an alarm, and
+    -- deriving it at read time instead does not work — the evidence lives in
+    -- the inbox, which only async webhooks write to and which is pruned.
+    resolved_at INTEGER,
     PRIMARY KEY (workflow, path, reason)
   ) WITHOUT ROWID;
 
@@ -240,6 +247,17 @@ if (!runColumns.has("replayed_from")) {
 if (!runColumns.has("parent_run")) {
   db.exec("ALTER TABLE runs ADD COLUMN parent_run TEXT");
   db.exec("CREATE INDEX IF NOT EXISTS idx_runs_parent ON runs(parent_run)");
+}
+
+// Migration for databases whose rejections table predates the resolved/active
+// distinction — every row in one of those was written while the only way to
+// quiet the panel was the Clear button, so they start unresolved, which is what
+// they were.
+const rejectionColumns = new Set(
+  (db.query("PRAGMA table_info(rejections)").all() as { name: string }[]).map((c) => c.name),
+);
+if (rejectionColumns.size > 0 && !rejectionColumns.has("resolved_at")) {
+  db.exec("ALTER TABLE rejections ADD COLUMN resolved_at INTEGER");
 }
 
 // Migration for databases created before credentials and folders existed.
@@ -495,9 +513,18 @@ const stmts = {
   ),
   rejectionTotals: db.prepare(
     `SELECT workflow, SUM(count) AS count, MAX(last_at) AS last_at
-     FROM rejections GROUP BY workflow`,
+     FROM rejections
+     WHERE resolved_at IS NULL OR resolved_at < last_at
+     GROUP BY workflow`,
   ),
   clearRejections: db.prepare(`DELETE FROM rejections WHERE workflow = ?`),
+  // Narrowed to rows that are not already settled, so the overwhelmingly
+  // common case — a healthy hook with nothing to resolve — matches no rows and
+  // writes nothing. This runs on every accepted delivery.
+  resolveRejections: db.prepare(
+    `UPDATE rejections SET resolved_at = ?
+     WHERE workflow = ? AND (resolved_at IS NULL OR resolved_at < last_at)`,
+  ),
   // Settled rows only: a pending one is work that has not happened yet, and
   // age is exactly what makes it interesting rather than disposable.
   pruneInbox: db.prepare(
@@ -756,10 +783,25 @@ export const store = {
     );
   },
 
+  /**
+   * Marks this workflow's rejections as belonging to the past, because a
+   * delivery just got through. Called from the one place in the webhook route
+   * where every door check has passed, which is what makes it cover a
+   * `respond: "sync"` hook too — those never reach the inbox, so anything
+   * inferred from delivery records would have left them alarming forever.
+   */
+  resolveRejections(workflow: string): void {
+    stmts.resolveRejections.run(Date.now(), workflow);
+  },
+
   rejectionsFor: (workflow: string) =>
     stmts.rejectionsFor.all(workflow) as RejectionRecord[],
 
-  /** Totals per workflow, for the badge on the list. */
+  /**
+   * Totals per workflow for the list badge — **unresolved only**. A route that
+   * was broken and now works keeps its record on the workflow page and stops
+   * putting a red tag on the list, which is the whole point of resolved_at.
+   */
   rejectionTotals(): Map<string, { count: number; last_at: number }> {
     const rows = stmts.rejectionTotals.all() as Array<{
       workflow: string;

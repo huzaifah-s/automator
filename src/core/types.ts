@@ -298,6 +298,11 @@ export interface RejectionRecord {
   count: number;
   first_at: number;
   last_at: number;
+  /**
+   * When a delivery to this workflow last got through the door. At or after
+   * `last_at` means this row is history rather than a live problem.
+   */
+  resolved_at: number | null;
 }
 
 export interface LogRecord {

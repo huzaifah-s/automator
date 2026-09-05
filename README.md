@@ -332,9 +332,21 @@ Rejected deliveries
   failed verification   3×   Notion webhook verification token is not set
 ```
 
-A **Clear counters** button zeroes them once the route is fixed, and
-`GET /api/workflows/<name>/rejections` has the same thing as JSON.
-`GET /api/workflows` carries a `rejected` summary per workflow.
+**They go quiet on their own.** The moment a delivery gets all the way through
+the door, that workflow's rejections are stamped as resolved: the red box
+becomes a grey line of history, each row is tagged `resolved`, and the badge
+leaves the workflows list. The record stays — "this route was broken for eight
+minutes this morning" is worth being able to answer — but a route that works
+stops looking like a route that doesn't. A **Clear counters** button removes
+them for good, and a fresh rejection after a resolution alarms again.
+
+The stamp is written where every door check has passed, not inferred afterwards
+from a delivery record: only an async webhook reaches the inbox, so a
+`respond: "sync"` hook would otherwise alarm forever.
+
+`GET /api/workflows/<name>/rejections` has the same thing as JSON, and
+`GET /api/workflows` carries a `rejected` summary per workflow — unresolved
+only, so it means "is this broken now".
 
 **Counted, not logged per attempt.** A public endpoint is exactly what gets
 hammered, and a row per rejection is a way to fill a disk from outside. The key

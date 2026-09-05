@@ -8,6 +8,42 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### A fixed webhook stops looking broken
+
+Rejection counters shipped as a running total cleared by hand, which traded a
+false alarm for a kept record: a route that was broken and is now working read
+red until somebody pressed the button. That trade was stated at the time and it
+was the wrong one — the first person to hit it asked why the panel was still up
+after the fix, which is the question a dashboard should never provoke.
+
+A `resolved_at` column now records when a delivery last got all the way
+through. A row whose `resolved_at` is at or after its `last_at` is history: the
+box turns from a red flash into a grey line, the row is tagged `resolved`, and
+the workflows-list badge counts unresolved rows only. Both halves are kept —
+the record survives for the morning-after question, the alarm does not survive
+the fix. A fresh rejection puts `last_at` past `resolved_at` and it alarms
+again, with no extra bookkeeping.
+
+Stamped in the webhook route at the point where every door check has passed,
+rather than derived at read time from the last accepted delivery. Deriving it
+was the first design and it is wrong twice over: only the async branch writes to
+the inbox, so a `respond: "sync"` hook would have alarmed forever, and the
+inbox is pruned, so an old resolved rejection would have started alarming again
+the day its evidence aged out. The `UPDATE` is narrowed to rows that are not
+already settled, so the common case — a healthy hook — matches nothing and
+writes nothing.
+
+Existing databases get the column by migration, with their rows starting
+unresolved, which is what they were.
+
+Verified end to end: three unresolved rejections badge the list, a successful
+delivery clears the badge and flips the panel to history while leaving another
+workflow's counters alone, a still-broken workflow keeps its alarm, a new
+rejection after resolution alarms again, and Clear still removes everything.
+Migration checked against a database that already had rows. Full routing matrix
+re-run clean afterwards.
+
+
 ### Webhook deliveries turned away at the door now show on the dashboard
 
 A webhook rejected before a run exists — bad secret, failed signature,

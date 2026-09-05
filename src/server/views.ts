@@ -1081,21 +1081,37 @@ export function workflowPage(
  * the run table is emptier than they expected, and this is the answer.
  */
 function rejectionsSection(wf: LoadedWorkflow, rejections: RejectionRecord[]) {
-  const total = rejections.reduce((n, r) => n + r.count, 0);
-  const newest = Math.max(...rejections.map((r) => r.last_at));
+  // A row is settled once a delivery got through after it. The distinction is
+  // the difference between "your webhook is broken" and "your webhook was
+  // broken this morning", and only one of those is worth a red box.
+  const settled = (r: RejectionRecord) => r.resolved_at !== null && r.resolved_at >= r.last_at;
+  const live = rejections.filter((r) => !settled(r));
+  const resolvedAt = Math.max(0, ...rejections.map((r) => r.resolved_at ?? 0));
+
+  const total = live.length
+    ? live.reduce((n, r) => n + r.count, 0)
+    : rejections.reduce((n, r) => n + r.count, 0);
+  const newest = Math.max(...(live.length ? live : rejections).map((r) => r.last_at));
 
   return html`
     <h2>Rejected deliveries</h2>
-    <div class="flash">
-      <b>${total} ${total === 1 ? "call was" : "calls were"} turned away</b> before a run
-      started, most recently ${relative(newest)}. These never appear in the run history —
-      there was no run — so this is the only place they show.
-    </div>
+    ${live.length
+      ? html`<div class="flash">
+          <b>${total} ${total === 1 ? "call is" : "calls are"} being turned away</b> before a
+          run starts, most recently ${relative(newest)}. These never appear in the run
+          history — there was no run — so this is the only place they show.
+        </div>`
+      : html`<p class="muted" style="margin:0 0 10px">
+          ${total} ${total === 1 ? "call was" : "calls were"} turned away before a run
+          started, the last of them ${relative(newest)}. A delivery has got through since
+          (${relative(resolvedAt)}), so this is history — kept until you clear it.
+        </p>`}
     <div class="card"><table class="kv"><tbody>
       ${rejections.map(
         (r) => html`<tr>
           <td>
-            <span class="tag failed">${r.reason}</span>
+            <span class="tag ${settled(r) ? "" : "failed"}">${r.reason}</span>
+            ${settled(r) ? html`<span class="tag">resolved</span>` : ""}
             ${r.detail ? html`<div class="desc mono">${r.detail}</div>` : ""}
           </td>
           <td class="mono">

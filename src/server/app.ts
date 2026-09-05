@@ -231,6 +231,14 @@ export function createApp(registry: Registry): Hono {
       input = parsed.data;
     }
 
+    // Every door check has passed, so whatever was turning callers away is no
+    // longer turning them away. Stamped here rather than inferred later from a
+    // delivery record: only the async branch below writes to the inbox, and a
+    // sync hook would otherwise keep alarming about a problem it no longer has.
+    // A no-op — matching no rows — for any workflow with nothing outstanding,
+    // which is nearly all of them nearly all of the time.
+    store.resolveRejections(wf.name);
+
     // Async is the default: most providers time out or retry on a slow reply.
     if ((wf.trigger.respond ?? "async") === "async") {
       // Written down before the 202 goes back, so a restart between the

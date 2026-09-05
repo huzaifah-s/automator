@@ -98,6 +98,13 @@ export { defineCredential } from "./credentials.ts";
 export type { CredentialValues } from "./credentials.ts";
 export type { ProviderId } from "./providers.ts";
 export { hmacSignature, tallySignature } from "./verify.ts";
+/**
+ * Scrubs known credentials out of a value. Everything a workflow writes to
+ * SQLite or stdout is redacted already; this is for the one thing that isn't —
+ * text a workflow composes and sends *out*, like a provider's error message
+ * relayed into a Telegram alert.
+ */
+export { redact } from "./redact.ts";
 export type { WebhookVerifier } from "./types.ts";
 export { defineOAuth } from "../integrations/oauth.ts";
 export type {

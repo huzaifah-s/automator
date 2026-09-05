@@ -8,6 +8,41 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### The Mantra — Threads — Token Auto-Refresh
+
+Ported from n8n. A Threads token that goes 60 days without a refresh dies
+permanently — there is no recovery, only a full manual re-auth — so a weekly
+cron trades it for a later-expiring copy of itself and alerts Telegram when
+that fails. `workflows/the-mantra/threads-token-auto-refresh.ts`.
+
+**The token is a `defineOAuth` credential, not a row somewhere.** n8n kept it
+in a data table and refreshed it in a Code node. The two alternatives
+considered here were writing it back into the secret store (re-exporting
+`setSecret` for workflow code) and giving Threads a Credentials-tab provider —
+both lose, because both add a *fourth* write surface to the store, and the
+settled rule is that only the CLI, `/api` and the Credentials tab write it.
+`defineOAuth` already owns exactly this problem: encrypted at rest, one refresh
+per credential at a time, re-registered with the redactor on every decrypt, and
+a seed rule that abandons a stored chain when you paste a new token. Nothing
+new had to be proven.
+
+The port also fixes three things the n8n graph got wrong. Its Code node caught
+every failure and returned `ok: false`, so the execution went green and only
+Telegram knew — here the run goes red, retries, and `onFailure` sends the
+message once rather than once per attempt. Two overlapping executions would
+each read the same row and write over each other; refreshes are serialised. And
+the token reached the run page as item data; nothing in this workflow ever
+holds it, because `status()` returns dates and `refresh()`'s return value is
+dropped on purpose.
+
+**The failure alert carries days-to-expiry and attempts-remaining.** "It
+failed" is not actionable at a weekly cadence — eight quiet failures look
+identical to one. "59 days left, about 8 more weekly attempts before then" is.
+
+**Weekly at 03:00 Monday KL**, matching n8n's rule rather than the daily check
+that would pin expiry further out. Eight attempts of margin was judged enough,
+and the alert says when it stops being enough.
+
 ### defineOAuth speaks Meta's self-refreshing long-lived tokens
 
 `flow: "self"` in `src/integrations/oauth.ts`. Threads and Instagram have no

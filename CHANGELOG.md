@@ -8,6 +8,76 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### The Mantra's Telegram bot answers /content_id
+
+Ported the n8n graph "Notion - Get contents from Telegram commands" —
+`workflows/the-mantra/notion-contents-telegram-commands.ts`. Ask the bot for a
+Contents page id and it replies with the properties, the Hook / Script /
+Caption written in the page body, the unresolved comments, the post dates and
+the two links.
+
+**One bot has one webhook, so this is a migration and not an addition.**
+`setWebhook` overwrites whatever was there. The moment this deploys, The Mantra
+bot stops delivering to n8n and starts delivering here; nothing warns you and
+there is no way to run both. The alternative was to leave the route unregistered
+and have somebody paste a `setWebhook` URL by hand — rejected, because a
+credential in a shell command is exactly what `register` exists to avoid, and a
+webhook nothing reconciles is one that quietly points at a dead PUBLIC_URL after
+the next move.
+
+**Telegram's `secret_token`, not `WEBHOOK_SECRET`.** A bot cannot be told to
+send `X-Automator-Secret`, so the shared-secret path could not guard this route
+at all — n8n's answer was an unguessable path and nothing else. `verify` takes
+it instead, through a new `telegramSecretToken()` alongside the Notion and Tally
+verifiers. It is a constant-time string compare and is not dressed up as a
+signature, because Telegram signs nothing.
+
+The secret is *required*, unlike `NOTION_WEBHOOK_TOKEN` next door, and the
+difference is worth stating: that one is minted by Notion after the route
+exists, so requiring it would make the deploy that creates the endpoint the
+deploy that cannot boot. This one we choose and store first, so a missing value
+is an operator's omission — and the failure it would otherwise cause is a bot
+that registers a webhook and then rejects every delivery from it, which from
+Telegram is indistinguishable from a bot nobody is running.
+
+**`/content_today` and `/content_date` are still not built.** They were not
+built in n8n either — both Switch outputs went nowhere, so typing either got
+silence. They now answer "not built yet", which is the same functionality and
+less confusion. Building them means guessing a database query nobody has
+specified; ask for them when they are wanted.
+
+Six things the n8n version got wrong, fixed here rather than reproduced:
+
+- A reply over 4096 characters failed to send. It is now split across numbered
+  messages, broken only where no HTML tag is open — a script plus a caption
+  plus a comment thread passes that ceiling regularly.
+- The "(Posted ✅)" marks read `$json`, which at that node held the Code node's
+  output, an object that has never had either key. They could not appear no
+  matter what Notion said.
+- A page with no post date threw on `.start` and lost the whole reply.
+- A date-only property was formatted `dd/MM/yyyy hh:mm a`, inventing a time
+  Notion does not hold and that shifted with the reader's zone.
+- Nothing was HTML-escaped, so a script containing "Q&A" took the message down.
+- `/content_id@TheMantraFragranceBot` — what Telegram sends in a group — missed
+  the exact-match Switch entirely.
+
+Two smaller changes of behaviour. The reply goes to the *chat*, not to
+`message.from.id`: a command asked in a group is answered in that group, where
+n8n sent a private message that fails outright if the asker never started the
+bot. And a failed run tells the asker so in the chat through `onFailure`,
+because a person is waiting on this one and the dashboard is not where they are
+looking.
+
+Verified by driving the real `run()` against a stubbed Notion — the full reply,
+a 60-block script splitting into four messages, escaping, nested blocks, an
+unrecognised heading closing a section, a date-only vs a timed property, a
+loosely-spelled property name, and every ignore branch — then booting the server
+and exercising the route: no token and a wrong token 401, the right one 202, the
+run recorded with its steps and checkpoint reuse, the rejections shown and then
+marked resolved. Swept every API route, both dashboard pages, stdout and the
+database file for the test credentials: zero hits.
+
+
 ### A fixed webhook stops looking broken
 
 Rejection counters shipped as a running total cleared by hand, which traded a

@@ -129,3 +129,11 @@ export type {
   PageInfo,
   NextPage,
 } from "../integrations/http.ts";
+/**
+ * The error every `ctx.http` call throws on a non-2xx. Exported because the
+ * status and the raw body are sometimes the answer rather than the noise: an
+ * API whose errors carry a machine-readable code needs `instanceof HttpError`
+ * to read it, and a call that must not be retried needs the status to tell a
+ * definitive 4xx from an ambiguous 5xx.
+ */
+export { HttpError } from "../integrations/http.ts";

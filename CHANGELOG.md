@@ -8,6 +8,49 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### The Mantra — Threads — Content Runway Alert
+
+Ported from n8n. Reads the Approved buffer in the Threads Notion database
+twice a day and pings Telegram when there is not enough dated, approved
+content left to keep posting 15/day with two days in hand.
+`workflows/the-mantra/threads-content-runway-alert.ts`, and the folder is the
+second one under `workflows/`.
+
+Three things the port fixed rather than reproduced:
+
+- **A manual run now always sends.** The n8n sticky note promised this as the
+  way to test the alert, but the Code node read the flag off a `Time gate`
+  node that was not in the graph — the lookup threw, the `try` swallowed it,
+  and `manual` was permanently false. So a manual run with a healthy buffer
+  sent nothing, silently, which is exactly the case you press the button to
+  check. Here it is `ctx.triggeredBy`, which is not a guess.
+
+- **A row dated today with no time counts as still due.** n8n compared it
+  against KL midnight, so it was always in the past and never appeared in
+  "still due to post today". Nothing in Notion says when an undated-time row
+  would fire, so it counts all day.
+
+- **`alwaysOutputData` is gone.** n8n injected one empty item when the filter
+  matched nothing, and the Code node had to filter it back out to avoid
+  reporting a buffer of 1 when it was 0. An empty array is an empty array.
+
+**Notion goes through `ctx.http`, not a new integration.** One workflow reading
+one database does not justify a client, and `ctx.http.paginate` does not fit
+either — Notion's query endpoint is a POST with the cursor in the body. The
+hand-rolled loop keeps the `maxPages`-throws discipline: running past the
+ceiling raises rather than returning a short count, because a short count
+under-reports the buffer and sends a nudge that is not warranted.
+
+**`checkpointTtlHours: 1`.** The entire value of the run is that its reading is
+current. An hour-old checkpoint is worth reusing across a retry; a day-old one,
+resumed by hand from the dashboard, would report yesterday's buffer as today's.
+
+The chat id is `MANTRA_TELEGRAM_CHAT_ID` — configuration, read from the
+environment, so it is not blanked out of every run page the way a declared
+secret would be. `NOTION_API_KEY` is declared with `defineSecrets`, so a
+deploy without it stops at boot.
+
+
 ### A workflow's "updated" time is a content hash, not a file mtime
 
 The dashboard could say when a workflow last *ran* and never when it last

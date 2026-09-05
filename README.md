@@ -422,6 +422,12 @@ export default defineWorkflow<Issue[]>({
 **Nothing new means no run at all** — not a run that returns zero. A five-minute
 poll would otherwise bury the dashboard under 288 empty runs a day.
 
+Which is why the workflow page carries a **last polled** stat. An empty run list
+is what a healthy quiet poll and a dead scheduler both look like, and that
+timestamp is the only thing that separates them. It moves on every tick, run or
+no run, and says what the fetch saw — `3 item(s), 0 new` — or carries the error
+if the fetch threw. `/api/workflows` exposes the same thing as `lastPoll`.
+
 | Option | Default | Notes |
 |---|---|---|
 | `fetch` | — | Gets every client a run has: `http`, `sql`, `state`, … |

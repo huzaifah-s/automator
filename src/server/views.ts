@@ -4,6 +4,7 @@ import type {
   CallRecord,
   LoadedWorkflow,
   LogRecord,
+  PollRecord,
   RejectionRecord,
   RunRecord,
   RunStatus,
@@ -501,6 +502,27 @@ const triggerLabel = (wf: LoadedWorkflow) =>
       : wf.trigger.kind === "webhook"
         ? `${wf.trigger.method ?? "POST"} /hooks/${wf.trigger.path}`
         : "manual";
+
+/**
+ * The "Last polled" row. A tick that starts no run leaves nothing in the runs
+ * list by design, so this is the only place a poll's cadence — or its fetch
+ * quietly failing — can be read.
+ */
+function lastPollCell(tick: PollRecord | null) {
+  if (!tick) return html`— <span class="muted">(no tick recorded yet)</span>`;
+  const when = html`${fmt(tick.at)} <span class="muted">(${relative(tick.at)})</span>`;
+  return tick.error
+    ? html`${when} <span class="failed">· fetch failed: ${tick.error}</span>`
+    : html`${when}
+        <span class="muted">· ${tick.items ?? 0} item(s), ${tick.fresh ?? 0} new</span>`;
+}
+
+/** The same facts as one line, for the stat tile's hover. */
+function pollTitle(tick: PollRecord | null): string {
+  if (!tick) return "no tick recorded yet — this poll has not run since the server started";
+  if (tick.error) return `${fmt(tick.at)} — fetch failed: ${tick.error}`;
+  return `${fmt(tick.at)} — ${tick.items ?? 0} item(s) returned, ${tick.fresh ?? 0} new`;
+}
 
 function pretty(json: string): string {
   try {
@@ -1008,7 +1030,10 @@ export function workflowPage(
   blocked: string[],
   /** Deliveries turned away before a run existed. Empty for most workflows. */
   rejections: RejectionRecord[] = [],
+  /** The last tick of a poll trigger. Null for every other kind of trigger. */
+  lastPoll: PollRecord | null = null,
 ) {
+  const polls = wf.trigger.kind === "poll";
   const crumb = html`<span class="crumb">
     ${wf.folder ? html`${ICON_FOLDER} <a href="/">${wf.folder}</a> /` : ""}
     <b>${wf.name}</b>
@@ -1022,6 +1047,12 @@ export function workflowPage(
         <div class="stat"><b class="success">${stats.succeeded ?? 0}</b><span>succeeded</span></div>
         <div class="stat"><b class="${stats.failed ? "failed" : ""}">${stats.failed ?? 0}</b><span>failed</span></div>
         <div class="stat"><b>${next ? relative(next.getTime()) : "—"}</b><span>next run</span></div>
+        ${polls
+          ? html`<div class="stat">
+              <b class="${lastPoll?.error ? "failed" : ""}" title="${pollTitle(lastPoll)}"
+                >${lastPoll ? relative(lastPoll.at) : "never"}</b><span>last polled</span>
+            </div>`
+          : ""}
       </div>
 
       ${blocked.length > 0
@@ -1038,6 +1069,9 @@ export function workflowPage(
       <div class="card"><table class="kv"><tbody>
         <tr><td>Trigger</td><td class="mono">${triggerLabel(wf)}</td></tr>
         <tr><td>Next run</td><td class="mono">${next ? fmt(next.getTime()) : "—"}</td></tr>
+        ${polls
+          ? html`<tr><td>Last polled</td><td class="mono">${lastPollCell(lastPoll)}</td></tr>`
+          : ""}
         <tr><td>Retries</td><td class="mono">${wf.retries ?? 2}</td></tr>
         <tr><td>Timeout</td><td class="mono">${dur(wf.timeoutMs ?? 300_000)}</td></tr>
         <tr><td>On overlap</td><td class="mono">${wf.onOverlap ?? "skip"}</td></tr>
@@ -1070,6 +1104,13 @@ export function workflowPage(
       ${rejections.length > 0 ? rejectionsSection(wf, rejections) : ""}
 
       <h2>Recent runs</h2>
+      ${polls
+        ? html`<p class="muted" style="margin:0 0 8px">
+            A tick that finds nothing new starts no run, so gaps here are the normal
+            state of a healthy poll — <b>last polled</b> above is what says the schedule
+            is still running.
+          </p>`
+        : ""}
       ${runsTable(runs, false)}
     `,
   );

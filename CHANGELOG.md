@@ -6,6 +6,36 @@ Entries record the *reasoning*, not just the diff — `git log` already has the
 diff. If a change settled a question, say what was settled and what the losing
 option was, so nobody relitigates it from scratch.
 
+## 2026-09-06
+
+### A quiet poll and a dead one no longer look the same
+
+`poll()` starts no run when nothing is new — the property the whole trigger
+exists for. The cost of it only shows up on the dashboard: a workflow whose last
+run was an hour ago is either polling happily with nothing due, or has not
+polled since the process died, and the runs list is identical either way. Every
+tick now stamps a `polls` row, and the workflow page shows it as **last polled**
+with what the fetch saw.
+
+**It is a table of its own, not `ctx.state`.** State is where a poll's other
+bookkeeping already lives, so putting it there was the small change. It is
+also the one table written *unredacted* on purpose — a rotating OAuth token has
+to come back byte for byte — and the invariant that keeps that safe is that
+state is never displayed. A fetch's thrown error is workflow-authored text
+headed for a web page, so it belongs in a table that redacts and caps on the
+way in like every other observational column.
+
+**One row per workflow, overwritten.** Keeping tick history would be 360 rows a
+day per poll to answer a question the newest row already answers, and the ticks
+that did find something are already runs.
+
+**No "overdue" colouring.** Comparing the stamp against the cron interval was
+the obvious next step and is wrong here: croner runs these jobs with
+`protect: true`, so a fifteen-minute poll run legitimately suppresses three
+ticks, and the workflow doing the most work would be the one flagged red. The
+stat goes red only when the last fetch actually threw. The timestamp is stated;
+whether it is too old is the reader's call.
+
 ## 2026-09-05
 
 ### The runner tells you when a workflow can't run, and you choose where

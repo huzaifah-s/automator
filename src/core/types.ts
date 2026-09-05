@@ -331,6 +331,23 @@ export interface RejectionRecord {
   resolved_at: number | null;
 }
 
+/**
+ * The last time a poll trigger looked, and what it saw. One row per workflow,
+ * overwritten every tick — see the `polls` table in db.ts for why the tick
+ * history is not kept.
+ */
+export interface PollRecord {
+  workflow: string;
+  /** When the tick started fetching, not when it finished. */
+  at: number;
+  /** How many items the fetch returned. Null only when it threw. */
+  items: number | null;
+  /** How many of those had not been seen before. Null only when it threw. */
+  fresh: number | null;
+  /** Why the fetch failed, redacted and capped. Null on a healthy tick. */
+  error: string | null;
+}
+
 export interface LogRecord {
   id: number;
   run_id: string;

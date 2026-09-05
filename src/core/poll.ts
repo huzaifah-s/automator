@@ -20,6 +20,12 @@ const DEFAULT_FETCH_TIMEOUT_MS = 60_000;
  * a run only if something is. Nothing new means no run record at all — a poll
  * on a five-minute cron would otherwise bury the dashboard in 288 empty runs a
  * day.
+ *
+ * Every tick is still *stamped*, though, run or no run (`store.recordPoll`).
+ * Without that, a poll whose scheduler had died looked exactly like a poll
+ * with nothing to do: a workflow page showing its last run an hour ago and no
+ * way to tell which. The stamp is what the dashboard reads to say "polled 2m
+ * ago, nothing due" instead of leaving you to guess.
  */
 export async function pollOnce(wf: LoadedWorkflow): Promise<void> {
   const t = wf.trigger;
@@ -27,12 +33,34 @@ export async function pollOnce(wf: LoadedWorkflow): Promise<void> {
 
   const logger = createLogger(wf.name);
   const state = createState(wf.name);
+  const startedAt = Date.now();
   const timeoutMs = t.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
   const controller = new AbortController();
   const timer = setTimeout(
     () => controller.abort(new Error(`poll fetch timed out after ${timeoutMs}ms`)),
     timeoutMs,
   );
+
+  /**
+   * Records what this tick saw. Every exit below goes through it — above all
+   * the ones that start no run, which are the whole reason it exists.
+   *
+   * Stamped with `startedAt` and written *before* the run rather than after
+   * it, because a fifteen-minute run would otherwise leave the page insisting
+   * nothing had polled for fifteen minutes — the opposite of what this is for.
+   * Something throwing after that point re-stamps with the error, which is the
+   * truer of the two records.
+   */
+  const stamp = (seen: { items?: number; fresh?: number; error?: string }): void => {
+    try {
+      store.recordPoll({ workflow: wf.name, at: startedAt, ...seen });
+    } catch (err) {
+      // Observational. Losing the stamp must not cost the tick its real work.
+      logger.warn(
+        `could not record the poll tick: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  };
 
   try {
     const items = await t.fetch(buildPollCtx(wf.name, logger, state, controller.signal));
@@ -59,6 +87,7 @@ export async function pollOnce(wf: LoadedWorkflow): Promise<void> {
     if (seen === undefined && (t.firstRun ?? "skip") === "skip") {
       await state.set(SEEN_KEY, trim(items.map(identify), cap));
       logger.info(`first poll — baselined ${items.length} existing item(s), no run`);
+      stamp({ items: items.length, fresh: 0 });
       return;
     }
 
@@ -77,10 +106,12 @@ export async function pollOnce(wf: LoadedWorkflow): Promise<void> {
 
     if (fresh.length === 0) {
       logger.debug(`polled ${items.length} item(s), nothing new`);
+      stamp({ items: items.length, fresh: 0 });
       return;
     }
 
     logger.info(`${fresh.length} new item(s) of ${items.length} — starting a run`);
+    stamp({ items: items.length, fresh: fresh.length });
     const outcome = await runWorkflow(wf, { trigger: "poll", input: fresh });
 
     // Marked seen only after the run succeeds. A failed or skipped run gets the
@@ -98,6 +129,7 @@ export async function pollOnce(wf: LoadedWorkflow): Promise<void> {
     // A throwing fetch never reaches the runner, so nothing else would record
     // it. Give it a failed run of its own so it shows up on the dashboard and
     // alerts like any other failure.
+    stamp({ error: error.message });
     const runId = crypto.randomUUID();
     store.startRun(runId, wf.name, "poll");
     createLogger(wf.name, runId).error(`poll fetch failed: ${error.message}`, {

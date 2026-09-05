@@ -7,6 +7,7 @@ import type {
   CredentialRow,
   InboxRecord,
   LogRecord,
+  PollRecord,
   RejectionRecord,
   RunRecord,
   RunStatus,
@@ -19,6 +20,9 @@ const path = process.env.DATABASE_PATH ?? "./data/automator.db";
 
 /** Ceiling on a rejection's `detail`. Long enough for a sentence or a field list. */
 const REJECTION_DETAIL_MAX = 500;
+
+/** Ceiling on a poll tick's `error`. Same reasoning as a rejection's detail. */
+const POLL_ERROR_MAX = 500;
 
 mkdirSync(dirname(path), { recursive: true });
 
@@ -155,6 +159,30 @@ db.exec(`
     -- the inbox, which only async webhooks write to and which is pruned.
     resolved_at INTEGER,
     PRIMARY KEY (workflow, path, reason)
+  ) WITHOUT ROWID;
+
+  -- The last time each poll trigger looked, and what it saw. A tick that finds
+  -- nothing new deliberately starts no run (see poll.ts) — which is what keeps
+  -- the runs list readable, and also what makes "quiet" and "dead" look
+  -- identical from the dashboard: both are an empty list. This row is the
+  -- difference. It is stamped on every tick, so a stale at means the scheduler
+  -- stopped rather than that there was nothing to do.
+  --
+  -- One row per workflow, overwritten. Keeping the tick history would be 360
+  -- rows a day per poll to answer a question the newest row already answers,
+  -- and the ticks that did find something are already in the runs table.
+  --
+  -- The error column is a message thrown by workflow-authored fetch code, and
+  -- it is rendered on the workflow page, so it is redacted and capped on the
+  -- way in. State, which is where a poll's own bookkeeping already lives, was
+  -- the tempting place to keep all this and is the wrong one for exactly that
+  -- reason: it is stored unredacted on purpose and is never displayed.
+  CREATE TABLE IF NOT EXISTS polls (
+    workflow TEXT    PRIMARY KEY,
+    at       INTEGER NOT NULL,
+    items    INTEGER,
+    fresh    INTEGER,
+    error    TEXT
   ) WITHOUT ROWID;
 
   -- Durable key/value state — the one table here that deliberately outlives
@@ -518,6 +546,19 @@ const stmts = {
      GROUP BY workflow`,
   ),
   clearRejections: db.prepare(`DELETE FROM rejections WHERE workflow = ?`),
+  // Replaced wholesale each tick — the previous tick's numbers are never
+  // wanted alongside the current ones.
+  recordPoll: db.prepare(
+    `INSERT INTO polls (workflow, at, items, fresh, error)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(workflow) DO UPDATE SET
+       at    = excluded.at,
+       items = excluded.items,
+       fresh = excluded.fresh,
+       error = excluded.error`,
+  ),
+  lastPoll: db.prepare(`SELECT * FROM polls WHERE workflow = ?`),
+  lastPolls: db.prepare(`SELECT * FROM polls`),
   // Narrowed to rows that are not already settled, so the overwhelmingly
   // common case — a healthy hook with nothing to resolve — matches no rows and
   // writes nothing. This runs on every accepted delivery.
@@ -812,6 +853,39 @@ export const store = {
   },
 
   clearRejections: (workflow: string) => stmts.clearRejections.run(workflow).changes,
+
+  /* ------------------------------------------------------------- polls */
+
+  /**
+   * Stamps one tick of a poll trigger. Called from every exit in `pollOnce`,
+   * including — especially — the ones that start no run: a quiet poll is the
+   * only kind the dashboard cannot otherwise see.
+   */
+  recordPoll(tick: {
+    workflow: string;
+    at: number;
+    items?: number | null;
+    fresh?: number | null;
+    error?: string | null;
+  }): void {
+    stmts.recordPoll.run(
+      tick.workflow,
+      tick.at,
+      tick.items ?? null,
+      tick.fresh ?? null,
+      // Arbitrary text from workflow code, headed for a web page. Same
+      // treatment as any other observational string.
+      tick.error == null ? null : redact(tick.error).slice(0, POLL_ERROR_MAX),
+    );
+  },
+
+  lastPoll: (workflow: string) =>
+    (stmts.lastPoll.get(workflow) as PollRecord | null) ?? null,
+
+  lastPolls(): Map<string, PollRecord> {
+    const rows = stmts.lastPolls.all() as PollRecord[];
+    return new Map(rows.map((r) => [r.workflow, r]));
+  },
 
   /* ------------------------------------------------------------- steps */
 

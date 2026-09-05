@@ -433,6 +433,7 @@ export function createApp(registry: Registry): Hono {
         store.workflowVersions().get(wf.name),
         blockedWorkflows().get(wf.name) ?? [],
         store.rejectionsFor(wf.name),
+        store.lastPoll(wf.name),
       ) as any,
     );
   });
@@ -839,9 +840,11 @@ export function createApp(registry: Registry): Hono {
   app.get("/api/workflows", (c) => {
     const versions = store.workflowVersions();
     const rejected = store.rejectionTotals();
+    const polls = store.lastPolls();
     return c.json(
       registry.all().map((w) => {
         const version = versions.get(w.name);
+        const poll = polls.get(w.name);
         return {
           name: w.name,
           description: w.description ?? null,
@@ -855,6 +858,19 @@ export function createApp(registry: Registry): Hono {
           addedAt: version ? new Date(version.first_seen).toISOString() : null,
           updatedAt: version ? new Date(version.updated_at).toISOString() : null,
           nextRun: nextRunFor(w.name)?.toISOString() ?? null,
+          // The last time a poll trigger looked, whether or not it found
+          // anything. Null for every other trigger kind, and for a poll that
+          // has not ticked since this process started. A poll deliberately
+          // records no run when there is nothing new, so this is the only
+          // field that distinguishes a quiet schedule from a stopped one.
+          lastPoll: poll
+            ? {
+                at: new Date(poll.at).toISOString(),
+                items: poll.items,
+                fresh: poll.fresh,
+                error: poll.error,
+              }
+            : null,
           // Deliveries turned away before a run existed, which is why they
           // cannot be counted from /api/runs. Null, not 0, when there have
           // never been any: "none ever" and "cleared" read the same otherwise.

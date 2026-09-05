@@ -698,6 +698,88 @@ a value.
 `secret set BREVO_API_KEY=oops` is rejected at the point you make the mistake
 rather than at 3am. A key nothing declares is accepted with a warning.
 
+### Credentials — several values that only work together
+
+A secret is one value under one name. A credential is a platform: the fields it
+wants, kept as one thing, with a button that proves they work.
+
+```ts
+import { defineCredential } from "../src/core/define.ts";
+
+const smtp = defineCredential("smtp", "main");
+
+// inside run() — every read resolves the current stored value
+await ctx.http.post(url, { headers: { host: smtp.host } });
+```
+
+The fields are ordinary rows in the same encrypted store, under derived names
+(`SMTP_MAIN_HOST`, `SMTP_MAIN_PASS`, …), so redaction, rotation and the
+cross-process refresh all behave exactly as they do for a plain secret. Values
+are always strings, because that is what an environment variable is —
+`Number(smtp.port)` is your job.
+
+Known platforms live in `src/core/providers.ts`: SMTP, Notion, Telegram, Slack,
+Discord, Brevo. Each declares its fields and one cheap read-only call that
+answers *are these credentials live*. Adding one is a few lines there. It is
+code rather than a form on the dashboard on purpose — a request the server runs,
+configured from a browser and stored in the database, is the shape this project
+left n8n to avoid.
+
+#### Connecting one
+
+The Credentials tab groups credentials and loose secrets into folders, shows
+what is connected, and tests on demand. Set `DASHBOARD_WRITE=1` to get the
+buttons; without it the tab renders the same page read-only and every write
+route answers 403.
+
+That flag is worth turning on if you write workflows with an AI coding agent.
+The agent writes the `defineCredential` line; you paste the value into the form.
+Every other route into the store — `bun run secret`, `PUT /api/secrets/:key` —
+means whoever is driving handles the raw value on the way past, and when that is
+an agent, the credential ends up in a transcript. It is hygiene rather than a
+security boundary: anything that can read `.env` can decrypt the store anyway.
+
+#### A credential that isn't connected yet doesn't stop the boot
+
+This is the one place the boot-time-validation rule bends, and it bends because
+it has to. A missing `defineSecrets` key still kills the process on deploy. A
+missing *credential* cannot: the dashboard is where you would go to connect it,
+and a server that refused to start never serves that page.
+
+So the server comes up, logs the warning, marks the workflow **Blocked** on the
+dashboard, and refuses to start a run of it:
+
+```
+warn  credential notion:mantra is not connected — the-mantra/runway-alert.ts
+      cannot run until it is (Credentials tab)
+```
+
+Nothing runs half-configured; you just get a server you can fix it from. A typo
+in the *platform* name is still a boot failure, because no amount of dashboard
+work will fix `defineCredential("notionn", …)`.
+
+#### Feeding the built-in clients
+
+`ctx.email` reads `SMTP_HOST` for itself, not `SMTP_MAIN_HOST`. Tick **use this
+for the built-in client** and the credential fills those bare names at boot —
+so connecting SMTP on the dashboard reaches `ctx.email` without any workflow
+naming a credential. One credential per platform can claim it, and it wins over
+the same name set in `.env`, which is what makes rotating a password a form
+submission rather than a redeploy.
+
+#### Over the API
+
+```bash
+curl localhost:3000/api/providers                       # fields each platform wants
+curl localhost:3000/api/credentials                     # what is stored, never a value
+curl -XPUT localhost:3000/api/credentials/smtp/main \
+     -d '{"values":{"host":"smtp.example.com","user":"me","pass":"…"},"primary":true}'
+curl -XPOST localhost:3000/api/credentials/smtp/main/test
+```
+
+`PUT` runs the test and returns its result. No route returns a stored value —
+`fields` says which ones are set, and that is all it says.
+
 ### OAuth2 with refresh tokens
 
 Some providers won't take a static key at all: Notion, HubSpot, Salesforce,
@@ -977,9 +1059,15 @@ Worth knowing before you commit:
   cheap — Docker's layer cache reduces a workflow change to one small `COPY`
   layer — so the cost is a couple of seconds of downtime, not a long build. In
   exchange for all of it there is no
-  code sandbox to secure and no way to break production from a browser.
-  Credentials are the exception and no longer need any of this — see the
+  code sandbox to secure. Credentials are the exception and no longer need any
+  of this — see the
   [secret store](#the-secret-store--changing-a-credential-without-a-redeploy).
+- **The dashboard is read-only, except for credentials.** Everything else is a
+  view: no workflow editor, no way to change what runs from a browser.
+  Credentials are the deliberate hole in that, and `DASHBOARD_WRITE=0` closes it
+  again for a deployment that would rather keep the old guarantee. See
+  [Credentials](#credentials--several-values-that-only-work-together) for why
+  the hole is worth having.
 - **Single process, no external queue.** Fine for hundreds of runs a day.
   Concurrency is capped in-process (`MAX_CONCURRENT_RUNS`) and the queue lives
   in memory, so a restart mid-burst loses what hadn't started — those runs are
@@ -993,7 +1081,9 @@ Worth knowing before you commit:
 - **No Wait node.** Nothing suspends a run and picks it up tomorrow. Approvals
   and other human-paced waits are two workflows joined by shared state — see
   [Approval gates](#approval-gates) for the pattern and what it costs.
-- **No visual editor.** That's the entire 1.9GB you're not shipping.
+- **No visual editor.** That's the entire 1.9GB you're not shipping. The
+  Credentials tab is the only page with a form on it, and it edits credentials —
+  never what runs.
 
 ## For AI agents
 

@@ -126,7 +126,15 @@ Worth stating so nobody re-solves a solved problem:
 - Run history with step inputs/outputs and full HTTP request/response capture
 - Failure alerts (`ALERT_WEBHOOK_URL`), nightly history pruning
 - Webhook auth (constant-time, per-workflow override), graceful shutdown
-- Boot-time secret validation — n8n failed at 3am, we fail on deploy
+- Boot-time secret validation — n8n failed at 3am, we fail on deploy. One
+  documented exception: an unconnected *credential* warns and blocks the
+  workflow rather than aborting the boot, because the dashboard is where you
+  connect it. See CHANGELOG.
+- Credential manager with a **Test connection** button — n8n's one genuinely
+  good non-editor UI, matched by the Credentials tab (`defineCredential`,
+  folders, per-platform tests). Unlike n8n's, the platform definitions are code
+  rather than database rows, so there is still nothing executable in the
+  database.
 - Email attachments (`ctx.email.send`), binary fetches (`http` `as: "buffer"`)
 - **Checkpoint resume**, which n8n has no equivalent of — it re-runs from the start
 

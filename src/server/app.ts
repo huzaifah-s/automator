@@ -16,14 +16,34 @@ import {
   setSecret,
   storedSecretKeys,
 } from "../core/secret-store.ts";
+import {
+  credentialReady,
+  credentialRef,
+  credentialRequirements,
+  deleteCredential,
+  fieldKey,
+  getCredential,
+  listCredentials,
+  saveCredential,
+  testCredential,
+  type CredentialStatus,
+} from "../core/credentials.ts";
+import { PROVIDERS, isProviderId, providerIds, type Provider } from "../core/providers.ts";
 import type { Registry } from "../core/loader.ts";
 import type { LoadedWorkflow, RunRecord } from "../core/types.ts";
 import {
+  credentialFormPage,
+  credentialsPage,
   executionsPage,
+  providerPickerPage,
   runPage,
+  secretFormPage,
   unauthorizedPage,
   workflowPage,
   workflowsPage,
+  type CredentialView,
+  type ProviderView,
+  type SecretView,
 } from "./views.ts";
 
 const RUN_STATUSES = ["success", "failed", "running", "skipped"];
@@ -169,13 +189,41 @@ export function createApp(registry: Registry): Hono {
     // "/runs" and "/workflows" are listed alongside their wildcards: a bare
     // "/runs/*" does not match "/runs" itself, and the executions tab lives
     // there.
-    for (const p of ["/", "/runs", "/runs/*", "/workflows", "/workflows/*", "/api/*"])
+    for (const p of [
+      "/",
+      "/runs",
+      "/runs/*",
+      "/workflows",
+      "/workflows/*",
+      "/credentials",
+      "/credentials/*",
+      "/secrets",
+      "/secrets/*",
+      "/api/*",
+    ])
       app.use(p, auth);
   } else {
     log.warn("DASHBOARD_USER / DASHBOARD_PASS are not set — the dashboard is public");
   }
 
   /* ---------------------------------------------------------- dashboard */
+
+  /**
+   * Which workflows cannot run because a credential they declared has not been
+   * connected. Computed per request rather than at boot: connecting one on the
+   * Credentials tab has to clear the badge without a restart.
+   */
+  const blockedWorkflows = (): Map<string, string[]> => {
+    const out = new Map<string, string[]>();
+    for (const w of registry.all()) {
+      const missing = (w.credentials ?? []).filter((ref) => {
+        const [provider, id] = ref.split(":");
+        return !credentialReady(provider!, id!);
+      });
+      if (missing.length > 0) out.set(w.name, missing);
+    }
+    return out;
+  };
 
   app.get("/", (c) =>
     c.html(
@@ -185,6 +233,7 @@ export function createApp(registry: Registry): Hono {
         store.recentRunsPerWorkflow(12),
         store.statusCountsSince(Date.now() - 86_400_000),
         store.workflowVersions(),
+        blockedWorkflows(),
       ) as any,
     ),
   );
@@ -221,6 +270,7 @@ export function createApp(registry: Registry): Hono {
         store.statsForWorkflow(wf.name),
         store.runsForWorkflow(wf.name, 40),
         store.workflowVersions().get(wf.name),
+        blockedWorkflows().get(wf.name) ?? [],
       ) as any,
     );
   });
@@ -275,6 +325,325 @@ export function createApp(registry: Registry): Hono {
       replayedFrom: plan.run.id,
     });
     return c.redirect(outcome.runId ? `/runs/${outcome.runId}` : `/runs/${plan.run.id}`, 303);
+  });
+
+  /* -------------------------------------------------------- credentials */
+
+  /*
+   * The one part of the dashboard that writes, and the only one gated by a
+   * flag. DASHBOARD_WRITE is the switch that decides whether "the dashboard is
+   * read-only" still holds for this deployment: off, the tab renders exactly
+   * the same page with no buttons on it.
+   *
+   * The reason to allow it at all is narrower than convenience. A credential
+   * typed into this form goes from a person straight into the encrypted store.
+   * Every other route into the store — the CLI, the API — means whoever is
+   * driving handles the raw value on the way past, and when that is an agent
+   * writing workflow code, the credential ends up in a transcript. This form
+   * is the only path where it does not.
+   */
+  const writable = process.env.DASHBOARD_WRITE === "1";
+  if (writable) log.warn("DASHBOARD_WRITE=1 — credentials can be changed from the browser");
+
+  /** Blocks a write route when the flag is off, rather than hiding the button. */
+  const requireWrite = (c: any) =>
+    writable
+      ? null
+      : c.text(
+          "The dashboard is read-only. Set DASHBOARD_WRITE=1 to change credentials here, " +
+            "or use `bun run secret` and the API.",
+          403,
+        );
+
+  const providerView = (id: string): ProviderView => {
+    const p = PROVIDERS[id as keyof typeof PROVIDERS] as Provider;
+    return {
+      id,
+      label: p.label,
+      blurb: p.blurb,
+      docs: p.docs,
+      envNamesForPrimary: Object.values(p.envMap ?? {}),
+      fields: Object.entries(p.fields).map(([name, f]) => ({
+        name,
+        label: f.label,
+        secret: f.secret !== false,
+        optional: f.optional === true,
+        set: false,
+        placeholder: f.placeholder,
+        help: f.help,
+      })),
+    };
+  };
+
+  /**
+   * A stored credential as the browser is allowed to see it. Secret fields
+   * report only whether a value exists; non-secret ones — a hostname, a port —
+   * carry their value, because an edit form you cannot read is not one.
+   */
+  const credentialView = (status: CredentialStatus): CredentialView => {
+    const { row, provider } = status;
+    const requiredBy = credentialRequirements()
+      .filter((r) => r.provider === row.provider && r.id === row.id)
+      .map((r) => r.file)
+      .filter((f): f is string => f !== null);
+
+    return {
+      provider: row.provider,
+      id: row.id,
+      folder: row.folder,
+      platform: provider?.label ?? null,
+      primary: row.is_primary === 1,
+      envNames: row.is_primary === 1 ? Object.values(provider?.envMap ?? {}) : [],
+      missing: status.missing,
+      testedAt: row.tested_at,
+      testOk: row.test_ok === null ? null : row.test_ok === 1,
+      testDetail: row.test_detail,
+      requiredBy,
+      fields: Object.entries(provider?.fields ?? {}).map(([name, f]) => {
+        const stored = secretValue(fieldKey(row.provider, row.id, name));
+        return {
+          name,
+          label: f.label,
+          secret: f.secret !== false,
+          optional: f.optional === true,
+          set: stored !== undefined,
+          value: f.secret === false ? stored : undefined,
+          placeholder: f.placeholder,
+          help: f.help,
+        };
+      }),
+    };
+  };
+
+  /** Loose secrets are the rows no credential owns. */
+  const looseSecrets = (): SecretView[] =>
+    store
+      .secretMeta()
+      .filter((r) => r.owner === null)
+      .map((r) => ({ key: r.key, folder: r.folder, updatedAt: r.updated_at }));
+
+  const knownFolders = (): string[] => {
+    const set = new Set<string>();
+    for (const row of store.credentialRows()) if (row.folder) set.add(row.folder);
+    for (const r of store.secretMeta()) if (r.folder) set.add(r.folder);
+    return [...set].sort();
+  };
+
+  /** Declared by a workflow with nothing stored for it yet. */
+  const wantedCredentials = () => {
+    const have = new Set(store.credentialRows().map((r) => credentialRef(r.provider, r.id)));
+    const seen = new Map<string, { provider: string; id: string; requiredBy: string[] }>();
+    for (const r of credentialRequirements()) {
+      const ref = credentialRef(r.provider, r.id);
+      if (have.has(ref)) continue;
+      const entry = seen.get(ref) ?? { provider: r.provider, id: r.id, requiredBy: [] };
+      if (r.file) entry.requiredBy.push(r.file);
+      seen.set(ref, entry);
+    }
+    return [...seen.values()].map((w) => ({ ...w, known: isProviderId(w.provider) }));
+  };
+
+  const renderCredentials = (c: any, error?: string) =>
+    c.html(
+      credentialsPage({
+        credentials: listCredentials().map(credentialView),
+        secrets: looseSecrets(),
+        wanted: wantedCredentials(),
+        writable,
+        encryptionReady: secretStoreReady(),
+        failed24h: store.statusCountsSince(Date.now() - 86_400_000).failed ?? 0,
+        workflowCount: registry.all().length,
+        error: error ?? null,
+      }) as any,
+      error ? 400 : 200,
+    );
+
+  app.get("/credentials", (c) => renderCredentials(c));
+
+  // Registered before "/credentials/:provider/:id" so a literal "new" is not
+  // read as a platform name. No provider is called "new", but relying on that
+  // rather than on the order would be relying on a coincidence.
+  app.get("/credentials/new", (c) => {
+    const denied = requireWrite(c);
+    if (denied) return denied;
+    return c.html(providerPickerPage(providerIds().map(providerView)) as any);
+  });
+
+  app.get("/credentials/new/:provider", (c) => {
+    const denied = requireWrite(c);
+    if (denied) return denied;
+    const provider = c.req.param("provider");
+    if (!isProviderId(provider)) return c.notFound();
+    return c.html(
+      credentialFormPage({
+        provider: providerView(provider),
+        suggestedId: c.req.query("id"),
+        folders: knownFolders(),
+      }) as any,
+    );
+  });
+
+  app.get("/credentials/:provider/:id", (c) => {
+    const denied = requireWrite(c);
+    if (denied) return denied;
+    const status = getCredential(c.req.param("provider"), c.req.param("id"));
+    if (!status || !status.provider) return c.notFound();
+    return c.html(
+      credentialFormPage({
+        provider: providerView(status.row.provider),
+        existing: credentialView(status),
+        folders: knownFolders(),
+      }) as any,
+    );
+  });
+
+  app.post("/credentials", async (c) => {
+    const denied = requireWrite(c);
+    if (denied) return denied;
+
+    const body = await c.req.parseBody();
+    const text = (name: string): string | undefined => {
+      const value = body[name];
+      return typeof value === "string" ? value : undefined;
+    };
+
+    const providerId = text("provider") ?? "";
+    if (!isProviderId(providerId)) return c.notFound();
+    const provider = PROVIDERS[providerId] as Provider;
+    const id = (text("id") ?? "").trim();
+    const folder = (text("folder") ?? "").trim();
+
+    // A field the form did not send stays untouched — that is what makes
+    // submitting an unchanged password placeholder keep the stored value
+    // rather than blanking it. An empty *secret* box means "unchanged"; an
+    // empty non-secret box means "clear it".
+    const values: Record<string, string | undefined> = {};
+    for (const [name, field] of Object.entries(provider.fields)) {
+      const given = text(`f_${name}`);
+      if (given === undefined) continue;
+      if (field.secret !== false && given === "") continue;
+      values[name] = given;
+    }
+
+    try {
+      await saveCredential({
+        provider: providerId,
+        id,
+        folder: folder || null,
+        primary: body.primary === "1",
+        values,
+      });
+    } catch (err) {
+      const existing = getCredential(providerId, id);
+      // Non-secret values come back so one bad field does not cost the rest.
+      const submitted: Record<string, string> = { "@id": id, "@folder": folder };
+      for (const [name, field] of Object.entries(provider.fields)) {
+        if (field.secret !== false) continue;
+        const given = text(`f_${name}`);
+        if (given !== undefined) submitted[name] = given;
+      }
+      return c.html(
+        credentialFormPage({
+          provider: providerView(providerId),
+          existing: existing?.provider ? credentialView(existing) : undefined,
+          folders: knownFolders(),
+          submitted,
+          error: err instanceof Error ? err.message : String(err),
+        }) as any,
+        400,
+      );
+    }
+
+    // Saving and connecting are the same act as far as anyone using this is
+    // concerned, so the test runs here rather than waiting for a second click.
+    await testCredential(providerId, id).catch(() => {});
+    return c.redirect("/credentials", 303);
+  });
+
+  app.post("/credentials/:provider/:id/test", async (c) => {
+    const denied = requireWrite(c);
+    if (denied) return denied;
+    const provider = c.req.param("provider");
+    const id = c.req.param("id");
+    if (!getCredential(provider, id)) return c.notFound();
+    await testCredential(provider, id).catch(() => {});
+    return c.redirect("/credentials", 303);
+  });
+
+  app.post("/credentials/:provider/:id/delete", (c) => {
+    const denied = requireWrite(c);
+    if (denied) return denied;
+    deleteCredential(c.req.param("provider"), c.req.param("id"));
+    return c.redirect("/credentials", 303);
+  });
+
+  /* ------------------------------------------------------ loose secrets */
+
+  app.get("/secrets/new", (c) => {
+    const denied = requireWrite(c);
+    if (denied) return denied;
+    return c.html(secretFormPage({ folders: knownFolders() }) as any);
+  });
+
+  app.get("/secrets/:key", (c) => {
+    const denied = requireWrite(c);
+    if (denied) return denied;
+    const key = c.req.param("key");
+    const row = store.secretMeta().find((r) => r.key === key && r.owner === null);
+    if (!row) return c.notFound();
+    return c.html(
+      secretFormPage({ existingKey: key, folder: row.folder, folders: knownFolders() }) as any,
+    );
+  });
+
+  app.post("/secrets", async (c) => {
+    const denied = requireWrite(c);
+    if (denied) return denied;
+
+    const body = await c.req.parseBody();
+    const key = typeof body.key === "string" ? body.key.trim() : "";
+    const value = typeof body.value === "string" ? body.value : "";
+    const folder = typeof body.folder === "string" ? body.folder.trim() : "";
+
+    // A credential's fields are stored secrets too. Letting this form write one
+    // directly would edit a credential from behind its own validation.
+    const owner = store.secretMeta().find((r) => r.key === key)?.owner;
+    if (owner) {
+      return c.html(
+        secretFormPage({
+          folders: knownFolders(),
+          error: `${key} belongs to credential ${owner} — edit it there.`,
+        }) as any,
+        400,
+      );
+    }
+
+    try {
+      await setSecret(key, value, { folder: folder || null });
+      if (!folder) store.secretSetFolder(key, null);
+    } catch (err) {
+      return c.html(
+        secretFormPage({
+          folders: knownFolders(),
+          error: err instanceof Error ? err.message : String(err),
+        }) as any,
+        400,
+      );
+    }
+    log.info(`Secret ${key} was set from the dashboard`);
+    return c.redirect("/credentials", 303);
+  });
+
+  app.post("/secrets/:key/delete", (c) => {
+    const denied = requireWrite(c);
+    if (denied) return denied;
+    const key = c.req.param("key");
+    if (store.secretMeta().find((r) => r.key === key)?.owner) {
+      return renderCredentials(c, `${key} belongs to a credential — delete that instead.`);
+    }
+    deleteSecret(key);
+    log.info(`Secret ${key} was deleted from the dashboard`);
+    return c.redirect("/credentials", 303);
   });
 
   /* ---------------------------------------------------------------- API */
@@ -375,9 +744,15 @@ export function createApp(registry: Registry): Hono {
 
   app.get("/api/secrets", (c) => {
     const stored = new Set(storedSecretKeys());
-    const rows = store
-      .secretRows()
-      .map((r) => ({ key: r.key, source: "store" as const, updatedAt: r.updated_at }));
+    const rows = store.secretMeta().map((r) => ({
+      key: r.key,
+      source: "store" as const,
+      updatedAt: r.updated_at,
+      folder: r.folder,
+      // `provider:id` when this row is one field of a credential — those are
+      // edited through /api/credentials, which validates the whole bundle.
+      credential: r.owner,
+    }));
 
     // Rows the store holds but this process could not decrypt still exist and
     // should be visible — otherwise a wrong master key looks like a missing key.
@@ -391,13 +766,22 @@ export function createApp(registry: Registry): Hono {
     const key = c.req.param("key");
     const body = await c.req.json().catch(() => null);
     const value = (body as { value?: unknown } | null)?.value;
+    const folder = (body as { folder?: unknown } | null)?.folder;
 
     if (typeof value !== "string") {
       return c.json({ error: "Body must be {\"value\": \"…\"}" }, 400);
     }
 
+    const owner = store.secretMeta().find((r) => r.key === key)?.owner;
+    if (owner) {
+      return c.json(
+        { error: `${key} is a field of credential ${owner} — use /api/credentials` },
+        409,
+      );
+    }
+
     try {
-      await setSecret(key, value);
+      await setSecret(key, value, { folder: typeof folder === "string" ? folder : null });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
@@ -409,10 +793,124 @@ export function createApp(registry: Registry): Hono {
 
   app.delete("/api/secrets/:key", (c) => {
     const key = c.req.param("key");
+    const owner = store.secretMeta().find((r) => r.key === key)?.owner;
+    if (owner) {
+      return c.json(
+        { error: `${key} is a field of credential ${owner} — delete that instead` },
+        409,
+      );
+    }
     if (!deleteSecret(key)) return c.json({ error: "Not in the store" }, 404);
 
     log.info(`Secret ${key} was deleted over the API`);
     return c.json({ key, ok: true, fallsBackToEnv: secretValue(key) !== undefined });
+  });
+
+  /*
+   * Credentials over the API. Same rule as secrets, one step further: a field
+   * declared `secret` is never returned, and neither is a field's value in any
+   * response — `fields` says which ones are set, and that is the whole of it.
+   *
+   * Not gated by DASHBOARD_WRITE. The flag exists to decide whether a *browser
+   * session* can change production; the API was already a write surface before
+   * this tab existed, and quietly narrowing it would break the CLI-shaped
+   * callers it was built for.
+   */
+
+  app.get("/api/providers", (c) =>
+    c.json(
+      providerIds().map((id) => {
+        const p = PROVIDERS[id] as Provider;
+        return {
+          id,
+          label: p.label,
+          blurb: p.blurb,
+          docs: p.docs ?? null,
+          suppliesEnv: Object.values(p.envMap ?? {}),
+          fields: Object.entries(p.fields).map(([name, f]) => ({
+            name,
+            label: f.label,
+            secret: f.secret !== false,
+            optional: f.optional === true,
+          })),
+        };
+      }),
+    ),
+  );
+
+  app.get("/api/credentials", (c) =>
+    c.json(
+      listCredentials().map((status) => {
+        const view = credentialView(status);
+        return {
+          provider: view.provider,
+          id: view.id,
+          folder: view.folder,
+          platform: view.platform,
+          primary: view.primary,
+          suppliesEnv: view.envNames,
+          // Whether every required field has a value — not whether the last
+          // test passed. A credential can be complete and still be refused by
+          // the platform, which is exactly what lastTest is for.
+          complete: view.missing.length === 0 && view.platform !== null,
+          missing: view.missing,
+          requiredBy: view.requiredBy,
+          lastTest:
+            view.testedAt === null
+              ? null
+              : {
+                  at: new Date(view.testedAt).toISOString(),
+                  ok: view.testOk,
+                  detail: view.testDetail,
+                },
+          // Which fields hold a value — never what the value is.
+          fields: view.fields.map((f) => ({ name: f.name, secret: f.secret, set: f.set })),
+        };
+      }),
+    ),
+  );
+
+  app.put("/api/credentials/:provider/:id", async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const values = (body as { values?: unknown } | null)?.values;
+    if (values === null || typeof values !== "object") {
+      return c.json({ error: 'Body must be {"values": {…}}' }, 400);
+    }
+
+    try {
+      await saveCredential({
+        provider: c.req.param("provider"),
+        id: c.req.param("id"),
+        folder: (body as { folder?: string }).folder ?? null,
+        primary: (body as { primary?: boolean }).primary === true,
+        values: values as Record<string, string>,
+      });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+
+    // Names only, as everywhere else.
+    log.info(`Credential ${credentialRef(c.req.param("provider"), c.req.param("id"))} set over the API`);
+    const test = await testCredential(c.req.param("provider"), c.req.param("id")).catch(
+      (err) => ({ ok: false, detail: err instanceof Error ? err.message : String(err), at: Date.now() }),
+    );
+    return c.json({ ok: true, test: { ok: test.ok, detail: test.detail } });
+  });
+
+  app.post("/api/credentials/:provider/:id/test", async (c) => {
+    const provider = c.req.param("provider");
+    const id = c.req.param("id");
+    if (!getCredential(provider, id)) return c.json({ error: "No such credential" }, 404);
+    const result = await testCredential(provider, id);
+    return c.json({ ok: result.ok, detail: result.detail, at: new Date(result.at).toISOString() });
+  });
+
+  app.delete("/api/credentials/:provider/:id", (c) => {
+    const provider = c.req.param("provider");
+    const id = c.req.param("id");
+    if (!deleteCredential(provider, id)) return c.json({ error: "No such credential" }, 404);
+    log.info(`Credential ${credentialRef(provider, id)} deleted over the API`);
+    return c.json({ ok: true });
   });
 
   app.get("/api/runs", (c) =>

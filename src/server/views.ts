@@ -113,6 +113,8 @@ border-bottom:1.6px solid var(--faint);transform:rotate(-45deg);margin-left:2px;
 .row{display:grid;align-items:center;gap:14px;padding:11px 14px;border-top:1px solid var(--border-soft)}
 .wf{grid-template-columns:minmax(0,1fr) 158px 92px 84px 84px 40px}
 .ex{grid-template-columns:minmax(0,1fr) 92px 84px 104px 72px 90px}
+.cr{grid-template-columns:minmax(0,1fr) 120px 96px 210px}
+.sc{grid-template-columns:minmax(0,1fr) 96px 150px}
 .row.head{padding:7px 14px;border-top:none;font-size:10.5px;text-transform:uppercase;
 letter-spacing:.07em;color:var(--faint);font-weight:600;background:var(--sunk)}
 .folder .row.head{background:transparent;border-top:1px solid var(--border-soft)}
@@ -150,7 +152,40 @@ border:1px solid var(--border);color:var(--fg);padding:5px 11px;border-radius:7p
 font:12px/1.4 var(--sans);cursor:pointer}
 .btn:hover{border-color:var(--accent);color:var(--accent)}
 .btn.icon{padding:5px 7px}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.primary:hover{color:#fff;filter:brightness(1.08)}
+.btn.danger:hover{border-color:var(--red);color:var(--red)}
 .bar{display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap}
+.actions{display:flex;gap:6px;justify-content:flex-end}
+.actions form{display:contents}
+
+/* ---- forms ---- */
+input[type=text],input[type=password],textarea{background:var(--panel);width:100%;
+border:1px solid var(--border);color:var(--fg);border-radius:8px;padding:8px 11px;
+font:13px var(--sans)}
+input[type=text]:focus,input[type=password]:focus,textarea:focus{outline:none;border-color:var(--accent)}
+input.mono{font-family:var(--mono);font-size:12.5px}
+.form{display:grid;gap:15px;padding:16px}
+.field label{display:block;font-size:12px;font-weight:600;margin-bottom:5px}
+.field .help{font-size:11.5px;color:var(--muted);margin-top:5px}
+.field .req{color:var(--faint);font-weight:400;text-transform:none;letter-spacing:0}
+.check{display:flex;gap:8px;align-items:flex-start;font-size:12.5px;color:var(--muted)}
+.check input{margin:3px 0 0}
+.check b{color:var(--fg);font-weight:600;display:block;font-size:13px}
+.note{background:var(--sunk);border:1px solid var(--border);border-radius:9px;
+padding:11px 13px;font-size:12.5px;color:var(--muted);margin-bottom:14px}
+.note b{color:var(--fg)}
+.flash{border-radius:9px;padding:10px 13px;font-size:12.5px;margin-bottom:14px;
+border:1px solid color-mix(in srgb,var(--red) 35%,var(--border));
+background:color-mix(in srgb,var(--red) 9%,var(--panel));color:var(--red)}
+.pick{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+.pick a{display:block;background:var(--panel);border:1px solid var(--border);border-radius:10px;
+padding:13px 15px;color:var(--fg)}
+.pick a:hover{border-color:var(--accent);text-decoration:none}
+.pick b{display:block;font-weight:600;margin-bottom:3px}
+.pick span{color:var(--muted);font-size:12.5px}
+.detail{font-size:12px;color:var(--muted);margin-top:2px;overflow:hidden;
+text-overflow:ellipsis;white-space:nowrap}
 
 /* ---- detail pages ---- */
 table{width:100%;border-collapse:collapse}
@@ -187,6 +222,8 @@ white-space:pre-wrap;word-break:break-word}
 @media(max-width:880px){
 .wf{grid-template-columns:minmax(0,1fr) 92px 40px}
 .ex{grid-template-columns:minmax(0,1fr) 92px 90px}
+.cr{grid-template-columns:minmax(0,1fr) 210px}
+.sc{grid-template-columns:minmax(0,1fr) 150px}
 .hide-sm{display:none}
 .stats{grid-template-columns:repeat(2,1fr)}
 .brand span:last-child{display:none}}
@@ -252,6 +289,12 @@ const SCRIPT = (seconds: number) => `
     if (e.target && e.target.matches && e.target.matches("[data-autosubmit]")) e.target.form.submit();
   });
 
+  // Delete is the one control here that cannot be undone by pressing it again.
+  document.addEventListener("submit", function (e) {
+    var ask = e.target && e.target.dataset && e.target.dataset.confirm;
+    if (ask && !confirm(ask)) e.preventDefault();
+  });
+
   // Persisted from the click and not from "toggle", because apply() opens and
   // closes folders itself — a search that opens every folder would otherwise
   // be indistinguishable from the user opening every folder, and would erase
@@ -299,7 +342,7 @@ const ICON_PLAY = raw(
   `<svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-hidden="true"><path d="M4.6 3.1v9.8c0 .4.45.65.79.43l7.7-4.9a.5.5 0 0 0 0-.86l-7.7-4.9a.5.5 0 0 0-.79.43Z"/></svg>`,
 );
 
-type Tab = "workflows" | "executions" | null;
+type Tab = "workflows" | "executions" | "credentials" | null;
 
 interface Shell {
   /** Browser title and, on detail pages, the breadcrumb next to the tabs. */
@@ -310,7 +353,7 @@ interface Shell {
   /** Rendered next to the tabs on pages that are not a tab themselves. */
   crumb?: HtmlEscapedString | Promise<HtmlEscapedString> | null;
   /** Tab badges — kept out of the pages so every page can show them. */
-  badges?: { workflows?: number | null; failed?: number | null };
+  badges?: { workflows?: number | null; failed?: number | null; unconnected?: number | null };
 }
 
 function layout(shell: Shell, body: HtmlEscapedString | Promise<HtmlEscapedString>) {
@@ -330,6 +373,9 @@ function layout(shell: Shell, body: HtmlEscapedString | Promise<HtmlEscapedStrin
       }</a>
       <a class="tab" href="/runs" ${tab === "executions" ? raw('aria-current="page"') : ""}>Executions${
         badges.failed ? html`<span class="n bad">${badges.failed}</span>` : ""
+      }</a>
+      <a class="tab" href="/credentials" ${tab === "credentials" ? raw('aria-current="page"') : ""}>Credentials${
+        badges.unconnected ? html`<span class="n bad">${badges.unconnected}</span>` : ""
       }</a>
     </nav>
     <span class="grow"></span>
@@ -457,6 +503,8 @@ function workflowRow(
   nextRun: (name: string) => Date | null,
   pulses: RunPulse[],
   version: WorkflowVersion | undefined,
+  /** Credentials this workflow declared that are not connected yet. */
+  blocked: string[],
 ) {
   const next = nextRun(w.name);
   const last = pulses[0];
@@ -469,8 +517,16 @@ function workflowRow(
                 title="${last ? `last run ${last.status} · ${relative(last.started_at)}` : "never run"}"></span>
           <b><a href="/workflows/${w.name}">${w.name}</a></b>
           ${w.enabled === false ? html`<span class="tag">Disabled</span>` : ""}
+          ${blocked.length > 0
+            ? html`<a class="tag failed" href="/credentials"
+                      title="Runs are refused until ${blocked.join(", ")} is connected">Blocked</a>`
+            : ""}
         </div>
-        ${w.description ? html`<div class="desc">${w.description}</div>` : ""}
+        ${blocked.length > 0
+          ? html`<div class="desc failed">Not connected: ${blocked.join(", ")}</div>`
+          : w.description
+            ? html`<div class="desc">${w.description}</div>`
+            : ""}
       </div>
       <div class="mono muted trunc hide-sm" title="${triggerLabel(w)}">${triggerLabel(w)}</div>
       <div class="hide-sm">${healthStrip(pulses)}</div>
@@ -491,6 +547,8 @@ export function workflowsPage(
   pulses: RunPulse[],
   counts: Record<string, number>,
   versions: Map<string, WorkflowVersion>,
+  /** Workflow name → the credentials it declared that are not connected. */
+  blocked: Map<string, string[]>,
 ) {
   const byWorkflow = new Map<string, RunPulse[]>();
   for (const p of pulses) {
@@ -518,13 +576,16 @@ export function workflowsPage(
       title: "Workflows",
       tab: "workflows",
       refresh: 15,
-      badges: { workflows: workflows.length, failed: failed24h },
+      badges: { workflows: workflows.length, failed: failed24h, unconnected: blocked.size },
     },
     html`
       <div class="stats">
         <div class="stat"><b>${active}</b><span>active workflows</span></div>
         <div class="stat"><b>${groups.length}</b><span>folder${groups.length === 1 ? "" : "s"}</span></div>
         <div class="stat"><b>${runs24h}</b><span>runs · 24h</span></div>
+        ${blocked.size > 0
+          ? html`<div class="stat"><b class="failed">${blocked.size}</b><span>blocked</span></div>`
+          : ""}
         <div class="stat"><b class="${failed24h ? "failed" : ""}">${failed24h}</b><span>failed · 24h</span></div>
       </div>
 
@@ -550,7 +611,13 @@ export function workflowsPage(
                 </summary>
                 ${header}
                 ${group.map((w) =>
-                  workflowRow(w, nextRun, byWorkflow.get(w.name) ?? [], versions.get(w.name)),
+                  workflowRow(
+                    w,
+                    nextRun,
+                    byWorkflow.get(w.name) ?? [],
+                    versions.get(w.name),
+                    blocked.get(w.name) ?? [],
+                  ),
                 )}
               </details>
             `,
@@ -677,6 +744,7 @@ export function workflowPage(
   stats: { total: number; succeeded: number; failed: number },
   runs: RunRecord[],
   version: WorkflowVersion | undefined,
+  blocked: string[],
 ) {
   const crumb = html`<span class="crumb">
     ${wf.folder ? html`${ICON_FOLDER} <a href="/">${wf.folder}</a> /` : ""}
@@ -693,6 +761,14 @@ export function workflowPage(
         <div class="stat"><b>${next ? relative(next.getTime()) : "—"}</b><span>next run</span></div>
       </div>
 
+      ${blocked.length > 0
+        ? html`<div class="flash">
+            <b>Not connected.</b> This workflow declares ${blocked.join(", ")}, which
+            ${blocked.length === 1 ? "has" : "have"} no stored value yet — runs are refused
+            until then. <a href="/credentials">Connect ${blocked.length === 1 ? "it" : "them"} →</a>
+          </div>`
+        : ""}
+
       ${wf.description ? html`<p class="muted" style="margin:0 0 4px">${wf.description}</p>` : ""}
 
       <h2>Definition</h2>
@@ -704,6 +780,13 @@ export function workflowPage(
         <tr><td>On overlap</td><td class="mono">${wf.onOverlap ?? "skip"}</td></tr>
         <tr><td>Folder</td><td class="mono">${wf.folder ? `workflows/${wf.folder}/` : "workflows/ (top level)"}</td></tr>
         <tr><td>File</td><td class="mono">workflows/${wf.file}</td></tr>
+        ${wf.credentials.length > 0
+          ? html`<tr><td>Credentials</td><td class="mono">
+              ${wf.credentials.map(
+                (ref) => html`<a href="/credentials">${ref}</a> `,
+              )}
+            </td></tr>`
+          : ""}
         <tr><td>Updated</td><td class="mono">${
           version
             ? html`${fmt(version.updated_at)} <span class="muted">(${relative(version.updated_at)}${
@@ -884,6 +967,537 @@ export function runPage(
               `,
             )}
       </div>
+    `,
+  );
+}
+
+/* ----------------------------------------------------------- credentials */
+
+/*
+ * The one tab that writes. Everything here is gated on `writable`, which the
+ * server sets from DASHBOARD_WRITE — with it off the page still renders, still
+ * groups by folder, and still shows what is connected and what is not; it just
+ * has no buttons. That is the read-only dashboard this project started with,
+ * kept as a deployment choice rather than deleted.
+ *
+ * The rule about values is narrower than "nothing comes back". A field the
+ * provider declared `secret: false` — a hostname, a port, a from-address — is
+ * configuration and is rendered into the edit form, because an edit form you
+ * cannot see is not an edit form. A field that is a credential is never sent
+ * to the browser at all, in any view, at any time. See providers.ts.
+ */
+
+export interface CredentialFieldView {
+  name: string;
+  label: string;
+  secret: boolean;
+  optional: boolean;
+  /** Whether a value is stored — the only thing said about a secret field. */
+  set: boolean;
+  /** Populated for non-secret fields only. */
+  value?: string;
+  placeholder?: string;
+  help?: string;
+}
+
+export interface CredentialView {
+  provider: string;
+  id: string;
+  folder: string | null;
+  /** The provider's label, or null when the platform is gone from this build. */
+  platform: string | null;
+  primary: boolean;
+  /** Environment variables this credential supplies, when it is primary. */
+  envNames: string[];
+  fields: CredentialFieldView[];
+  missing: string[];
+  testedAt: number | null;
+  testOk: boolean | null;
+  testDetail: string | null;
+  /** Workflow files that declared it with defineCredential(). */
+  requiredBy: string[];
+}
+
+/** Declared by a workflow, with nothing stored for it yet. */
+export interface WantedCredentialView {
+  provider: string;
+  id: string;
+  /** Whether the platform is one this build knows how to connect. */
+  known: boolean;
+  requiredBy: string[];
+}
+
+export interface SecretView {
+  key: string;
+  folder: string | null;
+  updatedAt: number;
+}
+
+export interface ProviderView {
+  id: string;
+  label: string;
+  blurb: string;
+  docs?: string;
+  fields: CredentialFieldView[];
+  /**
+   * The environment variables a primary credential of this platform supplies.
+   * Empty when the platform has no built-in client, which is what hides the
+   * "use this for the built-in client" checkbox rather than offering one that
+   * would do nothing.
+   */
+  envNamesForPrimary: string[];
+}
+
+const ICON_KEY = raw(
+  `<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M10.5 1a4.5 4.5 0 1 0-4.28 5.86L2 11.09V15h3.9l.6-.6v-1.5h1.5l.9-.9v-1.5h1.5l1.1-1.1A4.5 4.5 0 0 0 10.5 1Zm1.25 3.25a1.25 1.25 0 1 1 0-2.5 1.25 1.25 0 0 1 0 2.5Z"/></svg>`,
+);
+
+/** "connected" / "not connected" / "never tested" as one pill. */
+function connectionPill(c: CredentialView) {
+  if (c.platform === null) return html`<span class="pill skipped">unknown platform</span>`;
+  if (c.missing.length > 0) return html`<span class="pill failed">incomplete</span>`;
+  if (c.testOk === null) return html`<span class="pill skipped">untested</span>`;
+  return c.testOk
+    ? html`<span class="pill success">connected</span>`
+    : html`<span class="pill failed">failing</span>`;
+}
+
+function credentialDot(c: CredentialView): string {
+  if (c.platform === null || c.missing.length > 0) return "failed";
+  if (c.testOk === null) return "";
+  return c.testOk ? "success" : "failed";
+}
+
+function credentialRow(c: CredentialView, writable: boolean) {
+  const ref = `${c.provider}/${c.id}`;
+  const search = `${c.provider} ${c.id} ${c.platform ?? ""} ${c.folder ?? ""}`.toLowerCase();
+  return html`
+    <div class="row cr" data-search="${search}">
+      <div style="min-width:0">
+        <div class="name">
+          <span class="dot ${credentialDot(c)}"></span>
+          <b>${c.id}</b>
+          <span class="tag">${c.platform ?? c.provider}</span>
+          ${c.primary
+            ? html`<span class="tag" title="Supplies ${c.envNames.join(", ") || "no env vars"} for the built-in client">Primary</span>`
+            : ""}
+        </div>
+        ${c.missing.length > 0
+          ? html`<div class="detail failed">Not set: ${c.missing.join(", ")}</div>`
+          : c.testDetail
+            ? html`<div class="detail ${c.testOk ? "" : "failed"}" title="${c.testDetail}">${c.testDetail}</div>`
+            : html`<div class="detail">Never tested</div>`}
+        ${c.requiredBy.length > 0
+          ? html`<div class="detail">Used by ${c.requiredBy.join(", ")}</div>`
+          : ""}
+      </div>
+      <div class="hide-sm">${connectionPill(c)}</div>
+      <div class="mono muted trunc hide-sm" title="${c.testedAt ? fmt(c.testedAt) : "never tested"}">
+        ${c.testedAt ? relative(c.testedAt) : "—"}
+      </div>
+      <div class="actions">
+        ${writable
+          ? html`
+              <form method="post" action="/credentials/${ref}/test">
+                <button class="btn" type="submit">Test</button>
+              </form>
+              <a class="btn" href="/credentials/${ref}">Edit</a>
+              <form method="post" action="/credentials/${ref}/delete"
+                    data-confirm="Delete ${c.id} and every value it holds? This cannot be undone.">
+                <button class="btn danger" type="submit">Delete</button>
+              </form>
+            `
+          : html`<span class="muted mono" style="font-size:11.5px">read-only</span>`}
+      </div>
+    </div>
+  `;
+}
+
+function secretRow(secret: SecretView, writable: boolean) {
+  return html`
+    <div class="row sc" data-search="${secret.key.toLowerCase()}">
+      <div class="name" style="min-width:0">
+        ${ICON_KEY}<b class="mono trunc">${secret.key}</b>
+      </div>
+      <div class="mono muted trunc hide-sm" title="${fmt(secret.updatedAt)}">
+        ${relative(secret.updatedAt)}
+      </div>
+      <div class="actions">
+        ${writable
+          ? html`
+              <a class="btn" href="/secrets/${secret.key}">Edit</a>
+              <form method="post" action="/secrets/${secret.key}/delete"
+                    data-confirm="Delete ${secret.key}? If the environment also sets it, that value becomes live again.">
+                <button class="btn danger" type="submit">Delete</button>
+              </form>
+            `
+          : html`<span class="muted mono" style="font-size:11.5px">read-only</span>`}
+      </div>
+    </div>
+  `;
+}
+
+export function credentialsPage(args: {
+  credentials: CredentialView[];
+  secrets: SecretView[];
+  wanted: WantedCredentialView[];
+  writable: boolean;
+  encryptionReady: boolean;
+  failed24h: number;
+  workflowCount: number;
+  error?: string | null;
+}) {
+  const { credentials, secrets, wanted, writable, encryptionReady } = args;
+
+  // Credentials and loose secrets share one folder tree: they are the same
+  // kind of thing to whoever is looking for one.
+  const folders = new Map<string, { creds: CredentialView[]; secrets: SecretView[] }>();
+  const bucket = (name: string | null) => {
+    const key = name ?? "";
+    let group = folders.get(key);
+    if (!group) folders.set(key, (group = { creds: [], secrets: [] }));
+    return group;
+  };
+  for (const c of credentials) bucket(c.folder).creds.push(c);
+  for (const s of secrets) bucket(s.folder).secrets.push(s);
+  const groups = [...folders].sort(([a], [b]) => a.localeCompare(b));
+
+  const connected = credentials.filter((c) => c.testOk === true).length;
+  const broken = credentials.filter(
+    (c) => c.platform === null || c.missing.length > 0 || c.testOk === false,
+  ).length;
+
+  return layout(
+    {
+      title: "Credentials",
+      tab: "credentials",
+      // Deliberately not refreshed: this page has forms in it, and the
+      // background swap that keeps the other tabs current would throw away
+      // whatever was half-typed into one.
+      refresh: null,
+      badges: {
+        workflows: args.workflowCount,
+        failed: args.failed24h,
+        unconnected: wanted.length + broken,
+      },
+    },
+    html`
+      ${args.error ? html`<div class="flash">${args.error}</div>` : ""}
+
+      ${!encryptionReady
+        ? html`<div class="flash">
+            <b>Nothing can be stored yet.</b> Set
+            <code class="mono">SECRETS_ENCRYPTION_KEY</code> to a 32-byte key —
+            <code class="mono">openssl rand -base64 32</code> — and restart. Until then every
+            credential comes from the environment.
+          </div>`
+        : ""}
+
+      ${!writable
+        ? html`<div class="note">
+            <b>Read-only.</b> Set <code class="mono">DASHBOARD_WRITE=1</code> to add and edit
+            credentials here. Without it the write surface is
+            <code class="mono">bun run secret</code> and the API, which is how this dashboard
+            behaved before the tab existed.
+          </div>`
+        : ""}
+
+      <div class="stats">
+        <div class="stat"><b>${credentials.length}</b><span>credentials</span></div>
+        <div class="stat"><b class="${connected ? "success" : ""}">${connected}</b><span>connected</span></div>
+        <div class="stat"><b class="${broken ? "failed" : ""}">${broken}</b><span>need attention</span></div>
+        <div class="stat"><b>${secrets.length}</b><span>loose secrets</span></div>
+      </div>
+
+      ${wanted.length > 0
+        ? html`
+            <h2>Declared by a workflow, not connected</h2>
+            <div class="card">
+              ${wanted.map(
+                (w) => html`
+                  <div class="row cr">
+                    <div style="min-width:0">
+                      <div class="name">
+                        <span class="dot failed"></span>
+                        <b>${w.id}</b><span class="tag">${w.provider}</span>
+                      </div>
+                      <div class="detail">Needed by ${w.requiredBy.join(", ")}</div>
+                    </div>
+                    <div class="hide-sm">
+                      ${w.known
+                        ? html`<span class="pill failed">missing</span>`
+                        : html`<span class="pill skipped">unknown platform</span>`}
+                    </div>
+                    <div class="hide-sm"></div>
+                    <div class="actions">
+                      ${writable && w.known
+                        ? html`<a class="btn primary" href="/credentials/new/${w.provider}?id=${w.id}">Connect</a>`
+                        : ""}
+                    </div>
+                  </div>
+                `,
+              )}
+            </div>
+            <div class="note" style="margin-top:10px">
+              These workflows are loaded but will not run until their credentials are filled in.
+              A missing credential does not stop the server, on purpose — this page is where you
+              fix it, and a server that refused to boot could not serve it.
+            </div>
+          `
+        : ""}
+
+      <div class="toolbar" style="margin-top:22px">
+        <input type="search" id="filter" placeholder="Filter credentials and secrets…"
+               autocomplete="off" spellcheck="false">
+        ${writable
+          ? html`<a class="btn primary" href="/credentials/new">Add credential</a>
+                 <a class="btn" href="/secrets/new">Add secret</a>`
+          : ""}
+      </div>
+
+      ${credentials.length === 0 && secrets.length === 0
+        ? html`<div class="card"><div class="empty">
+            <b>Nothing stored yet</b>
+            ${writable
+              ? raw("A credential is one platform's fields kept together and testable. A secret is a single value.")
+              : raw("Add one with <code class='mono'>bun run secret -- set KEY</code>.")}
+          </div></div>`
+        : groups.map(
+            ([folder, group]) => html`
+              <details class="folder" data-group="cred:${folder || "/"}" open>
+                <summary>
+                  ${folder ? ICON_FOLDER : ICON_HOME}
+                  <span class="fname">${folder ? html`<b>${folder}</b>` : html`<i>(no folder)</i>`}</span>
+                  <span class="grow"></span>
+                  <span class="tag" data-count>${group.creds.length + group.secrets.length}</span>
+                </summary>
+                ${group.creds.length > 0
+                  ? html`<div class="row cr head">
+                      <div>Credential</div>
+                      <div class="hide-sm">Status</div>
+                      <div class="hide-sm">Tested</div>
+                      <div></div>
+                    </div>
+                    ${group.creds.map((c) => credentialRow(c, writable))}`
+                  : ""}
+                ${group.secrets.length > 0
+                  ? html`<div class="row sc head">
+                      <div>Secret</div>
+                      <div class="hide-sm">Updated</div>
+                      <div></div>
+                    </div>
+                    ${group.secrets.map((secret) => secretRow(secret, writable))}`
+                  : ""}
+              </details>
+            `,
+          )}
+
+      <div class="card" id="no-matches" hidden><div class="empty">
+        <b>Nothing matches that filter</b>
+        Clear the box above to see everything again.
+      </div></div>
+    `,
+  );
+}
+
+/** Step one of adding a credential: which platform. */
+export function providerPickerPage(providers: ProviderView[]) {
+  return layout(
+    {
+      title: "Add credential",
+      tab: "credentials",
+      crumb: html`<span class="crumb"><a href="/credentials">Credentials</a> / <b>Add</b></span>`,
+    },
+    html`
+      <h2>Pick a platform</h2>
+      <div class="pick">
+        ${providers.map(
+          (p) => html`
+            <a href="/credentials/new/${p.id}">
+              <b>${p.label}</b><span>${p.blurb}</span>
+            </a>
+          `,
+        )}
+      </div>
+      <div class="note" style="margin-top:16px">
+        Not here? A platform is a few lines in <code class="mono">src/core/providers.ts</code> —
+        its fields and one cheap call that proves the values work. It is code rather than a form
+        on this page on purpose: a test request the server runs, configured from a browser and
+        stored in the database, is the shape this project left n8n to avoid.
+      </div>
+    `,
+  );
+}
+
+/** Create or edit one credential. */
+export function credentialFormPage(args: {
+  provider: ProviderView;
+  /** Absent when creating. */
+  existing?: CredentialView;
+  suggestedId?: string;
+  folders: string[];
+  error?: string | null;
+  /**
+   * Non-secret values from a submission that failed validation, so one bad
+   * field does not make you retype the other four. Secret fields are never
+   * echoed back — a rejected password is retyped, which is the correct cost.
+   */
+  submitted?: Record<string, string>;
+}) {
+  const { provider, existing, error } = args;
+  const editing = existing !== undefined;
+  const title = editing ? `${existing.id}` : `New ${provider.label} credential`;
+
+  return layout(
+    {
+      title,
+      tab: "credentials",
+      crumb: html`<span class="crumb"><a href="/credentials">Credentials</a> / <b>${title}</b></span>`,
+    },
+    html`
+      ${error ? html`<div class="flash">${error}</div>` : ""}
+
+      <h2>${provider.label}</h2>
+      <div class="note">
+        ${provider.blurb}
+        ${provider.docs
+          ? html` <a href="${provider.docs}" rel="noreferrer noopener" target="_blank">Where to get one →</a>`
+          : ""}
+      </div>
+
+      <form class="card" method="post" action="/credentials">
+        <input type="hidden" name="provider" value="${provider.id}">
+        <div class="form">
+          <div class="field">
+            <label for="id">Name <span class="req">— lowercase letters, digits and dashes</span></label>
+            ${editing
+              ? html`<input class="mono" type="text" id="id" name="id" value="${existing.id}" readonly>
+                     <div class="help">A credential cannot be renamed — workflows refer to it by this name.</div>`
+              : html`<input class="mono" type="text" id="id" name="id" required
+                            value="${args.submitted?.["@id"] ?? args.suggestedId ?? ""}" placeholder="main"
+                            pattern="[a-z0-9][a-z0-9-]*">
+                     <div class="help">
+                       A workflow reaches it with
+                       <code class="mono">defineCredential("${provider.id}", "&lt;name&gt;")</code>.
+                     </div>`}
+          </div>
+
+          <div class="field">
+            <label for="folder">Folder <span class="req">— optional, for grouping only</span></label>
+            <input type="text" id="folder" name="folder" list="folders"
+                   value="${args.submitted?.["@folder"] ?? existing?.folder ?? ""}" placeholder="the-mantra">
+            <datalist id="folders">
+              ${args.folders.map((f) => html`<option value="${f}"></option>`)}
+            </datalist>
+          </div>
+
+          ${provider.fields.map((f) => {
+            const stored = existing?.fields.find((x) => x.name === f.name);
+            const filled = stored?.set ?? false;
+            return html`
+              <div class="field">
+                <label for="f_${f.name}">
+                  ${f.label}
+                  ${f.optional ? html`<span class="req">— optional</span>` : ""}
+                </label>
+                ${f.secret
+                  ? html`<input type="password" id="f_${f.name}" name="f_${f.name}"
+                                autocomplete="new-password" spellcheck="false"
+                                placeholder="${filled ? "•••••••• stored — leave blank to keep" : (f.placeholder ?? "")}"
+                                ${!f.optional && !filled ? raw("required") : ""}>`
+                  : html`<input type="text" id="f_${f.name}" name="f_${f.name}"
+                                spellcheck="false" value="${args.submitted?.[f.name] ?? stored?.value ?? ""}"
+                                placeholder="${f.placeholder ?? ""}"
+                                ${!f.optional ? raw("required") : ""}>`}
+                ${f.help ? html`<div class="help">${f.help}</div>` : ""}
+              </div>
+            `;
+          })}
+
+          ${provider.envNamesForPrimary.length > 0
+            ? html`
+                <label class="check">
+                  <input type="checkbox" name="primary" value="1"
+                         ${existing?.primary ? raw("checked") : ""}>
+                  <span>
+                    <b>Use this for the built-in client</b>
+                    Fills ${provider.envNamesForPrimary.join(", ")}, so
+                    <code class="mono">ctx</code> uses it without the workflow naming a
+                    credential. Only one ${provider.label} credential can do this at a time.
+                  </span>
+                </label>
+              `
+            : ""}
+
+          <div class="bar">
+            <button class="btn primary" type="submit">
+              ${editing ? "Save and test" : "Connect and test"}
+            </button>
+            <a class="btn" href="/credentials">Cancel</a>
+            <span class="muted" style="font-size:12px">
+              Saving runs the connection test straight away.
+            </span>
+          </div>
+        </div>
+      </form>
+    `,
+  );
+}
+
+/** Create or edit one loose secret — a single value with no platform. */
+export function secretFormPage(args: {
+  /** Absent when creating. */
+  existingKey?: string;
+  folder?: string | null;
+  folders: string[];
+  error?: string | null;
+}) {
+  const editing = args.existingKey !== undefined;
+  return layout(
+    {
+      title: editing ? args.existingKey! : "New secret",
+      tab: "credentials",
+      crumb: html`<span class="crumb"><a href="/credentials">Credentials</a> /
+        <b>${editing ? args.existingKey! : "New secret"}</b></span>`,
+    },
+    html`
+      ${args.error ? html`<div class="flash">${args.error}</div>` : ""}
+      <div class="note">
+        A single value under one name, the same thing
+        <code class="mono">bun run secret -- set</code> writes. Workflows read it with
+        <code class="mono">defineSecrets</code>, and integrations that read the environment
+        for themselves see it too. Use a credential instead when a platform wants several
+        values that only make sense together.
+      </div>
+
+      <form class="card" method="post" action="/secrets">
+        <div class="form">
+          <div class="field">
+            <label for="key">Name <span class="req">— uppercase letters, digits and underscores</span></label>
+            <input class="mono" type="text" id="key" name="key" required
+                   value="${args.existingKey ?? ""}" placeholder="SOME_API_KEY"
+                   pattern="[A-Z][A-Z0-9_]*" ${editing ? raw("readonly") : ""}>
+          </div>
+          <div class="field">
+            <label for="value">Value</label>
+            <input type="password" id="value" name="value" required
+                   autocomplete="new-password" spellcheck="false"
+                   placeholder="${editing ? "•••••••• stored — type to replace" : ""}">
+            <div class="help">Never displayed again once saved, here or over the API.</div>
+          </div>
+          <div class="field">
+            <label for="sfolder">Folder <span class="req">— optional</span></label>
+            <input type="text" id="sfolder" name="folder" list="folders" value="${args.folder ?? ""}">
+            <datalist id="folders">
+              ${args.folders.map((f) => html`<option value="${f}"></option>`)}
+            </datalist>
+          </div>
+          <div class="bar">
+            <button class="btn primary" type="submit">Save</button>
+            <a class="btn" href="/credentials">Cancel</a>
+          </div>
+        </div>
+      </form>
     `,
   );
 }

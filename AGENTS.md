@@ -27,8 +27,8 @@ There is no test suite. Verify by running the thing (see **Verifying** below).
 
 ```
 src/core/          define · loader · runner · scheduler · poll · db · secrets
-                   secret-store · crypto · redact · capture · state · logger
-                   alerts · types
+                   secret-store · credentials · providers · crypto · redact
+                   capture · state · logger · alerts · types
 src/cli/           secrets — the write side of the store, run before the loader
 src/integrations/  index (barrel + lazy ctx clients) · http · messaging
                    ai · email · sql · sheets · scrape · oauth
@@ -263,6 +263,69 @@ able to run before any of it.
 
 **Workflow names must match `/^[a-z0-9][a-z0-9-]*$/`** — they appear in URLs.
 
+**A credential is stored secrets plus a grouping row — never a second store.**
+Each field of `defineCredential("smtp", "main")` is an ordinary row in the
+encrypted `secrets` table under a derived name (`SMTP_MAIN_PASS`), and the
+`credentials` table holds only provider, folder, primary flag and last test
+result. That is what makes redaction, rotation, the master key and the
+cross-process refresh apply to credentials without being re-proven. Don't add a
+second encrypted table; don't put a value in the `credentials` table.
+
+**An unconnected credential warns, a missing secret aborts.** `defineSecrets`
+still stops the boot. `defineCredential` cannot, and the reason is a chicken and
+egg: the dashboard is where you connect it, and a server that refused to start
+never serves that page. The compensation is in two places — the loader logs it,
+and `runWorkflow` refuses the run with a clear error before anything executes.
+Do not "restore consistency" by making it abort; do not remove the runner check,
+which is the thing that keeps nothing running half-configured. An unknown
+*platform* still aborts, because that is a typo in code.
+
+**A provider's `secret: false` fields must not reach the redactor.**
+`src/core/secret-store.ts` registers every stored value by default because it
+cannot tell a token from a hostname. `src/core/credentials.ts` installs a
+redaction policy **at module import** — before `loadSecretStore()` applies the
+first value — that exempts fields a provider declared as configuration. Move
+that installation into `initCredentials()` and it runs too late: the store is
+already loaded, and a hostname registered once cannot be taken back out. The
+index is also rebuilt inside `saveCredential` *before* the field writes, for the
+same reason on the first save of a new credential.
+
+**A connection test's message is redacted before it is stored or shown.** This
+is not belt-and-braces. Telegram puts the bot token in the URL, so an
+unredacted fetch failure prints the credential onto the dashboard and into the
+database. `record()` in credentials.ts is the only path that writes
+`test_detail`; keep it that way. A provider's `test` must also stay read-only,
+free and fast — it answers "are these live", it does not exercise the client.
+
+**Only one credential per platform is primary, and it overwrites env vars.**
+A primary credential mirrors its fields into the bare names the built-in
+integration reads (`SMTP_HOST`, not `SMTP_MAIN_HOST`), because that is what
+makes connecting a platform on the dashboard reach `ctx.email`. The mapping is
+recomputed from scratch in `syncPrimaryEnv()` rather than tracked incrementally,
+and it remembers what the environment held so clearing the flag puts it back.
+A stored value under the same name loses to the credential — deliberately, and
+it is logged once when it happens.
+
+**Nothing outside `saveCredential` may write a credential's field.** The CLI,
+`PUT /api/secrets/:key` and the loose-secret form all refuse a key whose `owner`
+column is set, and `DELETE` refuses too. Writing one directly goes around the
+bundle's validation and leaves its "connected" state claiming something that is
+no longer true.
+
+**The dashboard renders a non-secret field's value and never a secret one.**
+The rule is narrower than "no value ever comes back", because an edit form you
+cannot read is not an edit form. A field the provider declared `secret: false`
+is configuration and is rendered; a field that is a credential is never sent to
+the browser in any view, and is never echoed back into a form after a failed
+submit. `GET /api/credentials` reports which fields are *set*, never what they
+hold.
+
+**An empty field means clear it; an absent field means leave it.** That is what
+makes "leave the password box blank to keep it" work — `src/server/app.ts`
+drops empty *secret* fields before calling `saveCredential`, rather than
+`saveCredential` treating empty as unchanged. Fold the two meanings together
+and clearing an optional value becomes impossible.
+
 ## Adding an integration
 
 1. New file in `src/integrations/`, exporting a `createX(...)` factory and its
@@ -278,14 +341,55 @@ Prefer `fetch` or the service's official SDK over heavy vendor packages —
 image size is a core goal. Google Sheets deliberately signs its own JWT with
 WebCrypto rather than pulling in `googleapis`.
 
+## Adding a platform to the Credentials tab
+
+One entry in `PROVIDERS` in `src/core/providers.ts`. Everything else — the
+form, the folder view, validation, the test button, the API — is derived from
+it.
+
+```ts
+shopee: {
+  label: "Shopee",
+  blurb: "One line, shown under the name when you pick it",
+  docs: "https://…",                       // optional link on the form
+  fields: {
+    partner_id:  { label: "Partner ID",  schema: z.string().min(1), secret: false },
+    partner_key: { label: "Partner key", schema: z.string().min(20) },
+  },
+  envMap: { partner_key: "SHOPEE_PARTNER_KEY" },   // only if an integration reads it
+  async test(v, signal) {
+    const me = await probe(url, { headers: … }, signal, "Shopee");
+    return `Authenticated as ${me.shop_name}`;     // shown on the dashboard
+  },
+},
+```
+
+Four things that are easy to get wrong:
+
+- **`secret: false` is a claim about redaction, not just masking.** Mark a
+  hostname, a port, an account id — anything you would want to read in a log —
+  and leave it off anything that authenticates.
+- **`test` must be read-only, free and fast.** It answers "are these
+  credentials live". It is not a smoke test of the integration, and it must not
+  send anything.
+- **Check the failure body, not just the status.** Slack answers `200` with
+  `ok:false` for a dead token.
+- **Import heavy dependencies inside `test`.** SMTP does `await
+  import("nodemailer")` so a dashboard that never tests SMTP never pays for it.
+
+A field name that collides with another credential's derived key is refused at
+save time; you do not need to reason about it, but don't remove the check.
+
 ## Settled architecture — do not drift
 
 These were decided deliberately. Raise a trade-off before changing any of them:
 
 - **Workflows live in the repo as files**, never rows in the database. This is
   why there is no code sandbox to secure.
-- **The dashboard is read-only.** No browser-based workflow editor — that is
-  the weight we left n8n to avoid.
+- **The dashboard is read-only about *workflows*.** No browser-based workflow
+  editor — that is the weight we left n8n to avoid. Credentials are the one
+  exception, added deliberately and gated behind `DASHBOARD_WRITE`; see the
+  entry below. Nothing else may grow a form.
 - **Single process, SQLite only.** No Redis, no external queue, no worker pool.
 - **Checkpoints are memoised step results**, not deterministic replay.
 - **`ctx.state` is durable and never displayed.** It survives run pruning on
@@ -299,15 +403,29 @@ These were decided deliberately. Raise a trade-off before changing any of them:
   an env value deliberately — the other order would make every rotation a
   redeploy again. The database also holds the *rotated* half of an OAuth
   credential, which by definition cannot live in an immutable env var.
-- **The store's write surface is the CLI and `/api`, never the dashboard.**
-  `bun run secret` and `PUT /api/secrets/:key` both exist; a form in the
-  browser does not. The dashboard staying read-only is what keeps a browser
-  from being able to break production, and a credential editor is exactly the
-  thing that would end that.
+- **The store's write surface is the CLI, `/api`, and — behind a flag — the
+  Credentials tab.** This reverses an earlier decision, on purpose. The old rule
+  was that a browser must not be able to break production, and a credential
+  editor is exactly what would end that. What changed is who does the typing:
+  when workflows are written by an AI coding agent, every other route into the
+  store makes the agent handle the raw credential, and it lands in a transcript.
+  The form is the only path where the value goes from a person straight into the
+  encrypted store. `DASHBOARD_WRITE` keeps the old behaviour available as a
+  deployment choice rather than deleting it — unset, every write route on the
+  dashboard answers 403 and the tab is a read-only view. This is hygiene, not a
+  boundary: anything that can read `.env` can decrypt the store regardless, and
+  the flag should not be described as if it were access control.
 - **No OAuth consent flow.** A refresh token is obtained by hand, once, and
-  pasted into the environment. Building a browser redirect flow means sessions,
-  a callback route, and parked half-finished consent — for a once-per-credential
-  action.
+  pasted into the environment or the Credentials tab. Building a browser
+  redirect flow means sessions, a callback route, and parked half-finished
+  consent — for a once-per-credential action. The connection test is not the
+  thin end of this: it makes one read-only call with credentials that already
+  exist, and never redirects anywhere.
+- **A platform's fields and its test live in code.** `src/core/providers.ts`,
+  not a browser form and not a database row. A test request the server executes,
+  configured from a browser and stored as data, is configuration-as-code in the
+  database — the n8n shape this project exists to avoid. Adding a platform is a
+  few lines and a deploy, and that cost is the point.
 
 ## Verifying before you finish
 
@@ -319,7 +437,9 @@ These were decided deliberately. Raise a trade-off before changing any of them:
 4. If you touched anything storage-related, grep the API output and stdout for a
    known secret value and confirm zero occurrences. For the secret store that
    means `strings data/automator.db | grep <value>` as well — the table holds
-   ciphertext, and a plaintext hit there is the whole failure.
+   ciphertext, and a plaintext hit there is the whole failure. Check the `-wal`
+   file too. For credentials, sweep every page and every `/api` route, and
+   confirm a `secret: false` field is *not* redacted while its neighbours are.
 5. If you touched the Dockerfile, `docker build` and run the container.
 
 Report what you actually ran. Do not claim a behaviour works because the types

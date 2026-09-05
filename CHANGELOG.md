@@ -8,6 +8,98 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### Credentials, folders, and a dashboard that writes
+
+A credential is now a first-class thing: several fields for one platform, kept
+together, filed in a folder, and testable. `defineCredential("smtp", "main")`
+returns a live view of it in a workflow, the Credentials tab creates and
+connects one in the browser, and a **Test** button asks the platform whether the
+values are live. Loose secrets got folders too, in the same tree.
+
+This reverses two settled decisions and bends a third. All three were decided
+deliberately, so here is what changed and what was traded.
+
+**The dashboard is no longer read-only, and that was the point of the
+exercise.** The old rule — no write surface in the browser, so a browser cannot
+break production — was written for a person with a terminal. It reads
+differently once workflows are written by an AI coding agent: `bun run secret`
+means the agent runs a command with the key in it, `PUT /api/secrets/:key` means
+it sends the key in a request body, and either way a live credential lands in a
+chat transcript. The form is the only route where the value goes from a person
+straight into the encrypted store, and the agent never sees it. That is the
+whole argument for it.
+
+The losing option was "read-only tab, copy-paste the CLI command", which keeps
+the guarantee intact and does not solve the problem it was kept for.
+
+What survives is `DASHBOARD_WRITE`. Unset, the tab renders the same page with no
+buttons and every write route answers 403 — the old behaviour, kept as a
+deployment choice rather than deleted from the codebase. Be honest about what
+the flag is: hygiene, not access control. Anything that can read `.env` can
+decrypt the store regardless, so it stops credentials passing through
+conversations; it does not stop an agent with shell access.
+
+**A platform's fields and its test live in code, not in the database.** The
+tempting version is a free-form credential where you name the fields and
+configure a test request in the browser — any platform, no deploy. That is a
+request the server executes, configured from a form and stored as a row, which
+is configuration-as-code in the database and the exact n8n shape this project
+exists to avoid. `src/core/providers.ts` costs a few lines and a deploy per
+platform, and that cost is what keeps the database free of anything executable.
+SMTP, Notion, Telegram, Slack, Discord and Brevo ship with it.
+
+**An unconnected credential warns instead of aborting the boot.** This bends
+"boot-time secret validation — n8n failed at 3am, we fail on deploy", and only
+for credentials. A missing `defineSecrets` key still kills the process. A
+missing credential cannot, because of a chicken and egg: the dashboard is where
+you connect it, and a server that refused to start never serves that page.
+Aborting would make the one workflow that needs connecting unfixable without a
+redeploy, which is the thing this feature exists to end.
+
+Nothing runs half-configured in exchange. The loader logs the warning, the
+workflow is marked **Blocked** on the dashboard, and `runWorkflow` refuses the
+run — recorded as a failed run rather than dropped, because a cron trigger that
+quietly does nothing is indistinguishable from a scheduler that stopped. A typo
+in the *platform* name still aborts, since no amount of dashboard work fixes
+`defineCredential("notionn", …)`.
+
+**There is still one encrypted store.** A credential's fields are ordinary rows
+in the `secrets` table under derived names — `SMTP_MAIN_PASS` — and the new
+`credentials` table holds only the grouping: platform, folder, primary flag,
+last test result. That was the cheapest correct option by a distance: redaction,
+rotation, the master key, the env mirror and the cross-process refresh all apply
+without being re-established, and there is no second thing that can hold a
+credential. The alternative — a separate encrypted table with its own read path
+— would have doubled the surface where the no-raw-credential-on-disk invariant
+has to hold.
+
+Two consequences worth knowing. Nothing outside `saveCredential` may write a
+field, so the CLI, the loose-secret form and `/api/secrets` all refuse a key
+whose `owner` is set — writing one directly goes around the bundle's validation
+and leaves "connected" claiming something untrue. And `secret-store.ts` had to
+learn that not every stored value is a credential: it registers everything with
+the redactor by default because it cannot tell a token from a hostname, so
+credentials.ts installs a redaction policy exempting fields a provider declared
+`secret: false`. Without it the connection test reported *Connected to
+«redacted»:2525* — caught by running it, not by reading it. The policy is
+installed at module import, because `loadSecretStore()` has already applied
+every value by the time `initCredentials()` runs and a hostname registered once
+cannot be taken back out.
+
+**A primary credential fills the bare env names.** `ctx.email` reads
+`SMTP_HOST`, not `SMTP_MAIN_HOST`, so without this, connecting SMTP on the
+dashboard would test green and change nothing about what `ctx.email` sends
+with — the worst kind of working. One credential per platform can claim it, and
+it beats an env var of the same name, which is what makes rotating an SMTP
+password a form submission rather than a redeploy.
+
+**The value rule got narrower rather than weaker.** "A credential is never
+returned by an HTTP route" becomes: a field the provider declared `secret: false`
+is configuration and is rendered into the edit form, because an edit form you
+cannot read is not one; a field that is a credential is never sent to the
+browser in any view, is never echoed back after a failed submit, and `GET
+/api/credentials` reports only which fields are set.
+
 ### The Mantra — Threads — Content Runway Alert
 
 Ported from n8n. Reads the Approved buffer in the Threads Notion database

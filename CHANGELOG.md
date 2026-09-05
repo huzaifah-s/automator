@@ -8,6 +8,55 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### Executions are grouped and filtered by folder
+
+Every workflow name is global and flat, so a list of runs said nothing about
+which project it belonged to — `threads-content-runway-alert` and
+`send-signed-agreement` read as one undifferentiated pile. Each row now carries
+its folder in front of the name, `?folder=` filters the list to one folder, and
+the workflow select groups its options under `workflows/<folder>/`.
+
+**The window and folder filters are menus, not chip rows.** Five windows plus
+two date fields, and one chip per folder, came to three rows of controls above
+a list of runs — the filters were louder than the thing being filtered. Each is
+now a `<details>` that reads as its own value when closed (`Window · 7 days`,
+`📁 pblsh`) and opens its options on click, so the whole filter area is one
+row. They are native `<details>`, so opening one costs no script; the two
+lines of script they did need keep an open menu from being swallowed by the
+background refresh, and close one when you click elsewhere. The dates live
+inside the window menu and still decide on their own what a custom window is —
+there is no `range=custom` state for them to disagree with, which was already
+settled when the chips were added.
+
+**The status chips stay flat, above the list and below the cards.** They are
+five short words, and the cards *are* the statuses — putting the same four
+numbers behind a click would hide the page's summary to save nothing. The
+window and folder rows moved above the cards instead, because both change every
+number in them, and a control that rewrites the cards from underneath reads as
+unrelated to what it just changed.
+
+**The folder is looked up from the registry, not stored on the run.** A run
+records a workflow name and nothing else, and adding a `folder` column would
+have made it a second source of truth that drifts: move a file between folders
+and the old rows would keep claiming the old project forever. The cost of
+reading it live is the opposite skew — old runs show where the file lives
+*now* — which is the one people can reason about, because the dashboard and
+the repo always agree. A run whose file has since been deleted simply shows no
+folder, exactly like a top-level one.
+
+**So the folder filter is a set of names, passed as JSON.** `RunFilter` grew a
+`workflows` list that the query matches with
+`workflow IN (SELECT value FROM json_each(?))`, which keeps one prepared
+statement instead of a generated `IN` list per folder size. `''` means "not
+filtering by folder" and `'[]'` is a folder with nothing left in it, which
+correctly matches nothing.
+
+**A folder and a workflow that disagree resolve to the folder.** Picking a
+folder clears the workflow in every chip link, and the route drops a workflow
+that is not inside the chosen folder rather than running the impossible query —
+an empty page reads as broken, not as two filters contradicting each other. An
+unknown `?folder=` widens to everything, the same as an unknown `?status=`.
+
 ### An accepted webhook now survives a deploy
 
 Every push redeploys, and a redeploy restarts the process. An async webhook

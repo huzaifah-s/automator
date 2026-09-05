@@ -99,6 +99,32 @@ input[type=search]:focus,input[type=date]:focus,select:focus{outline:none;border
 color:var(--muted);font-size:12.5px;white-space:nowrap}
 .chip:hover{color:var(--fg);text-decoration:none;background:var(--panel-2)}
 .chip[aria-current]{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+.toolbar form{display:flex;gap:8px;align-items:center}
+
+/* ---- menus ---- */
+/* A filter whose options do not earn a permanent chip row: closed it is one
+   chip that reads as its own value, open it is the list. Native <details>,
+   so it costs no script to open — see SCRIPT for the two lines that keep an
+   open one alive across a background refresh. */
+.menu{position:relative}
+.menu>summary{display:flex;align-items:center;gap:7px;list-style:none;cursor:pointer;
+padding:6px 11px;border-radius:8px;border:1px solid var(--border);background:var(--panel);
+color:var(--muted);font-size:12.5px;white-space:nowrap}
+.menu>summary::-webkit-details-marker{display:none}
+.menu>summary::after{content:"";width:5px;height:5px;margin:-3px 0 0 1px;
+border-right:1.6px solid var(--faint);border-bottom:1.6px solid var(--faint);transform:rotate(45deg)}
+.menu>summary:hover{background:var(--panel-2);color:var(--fg)}
+.menu>summary b{color:var(--fg);font-weight:600;font-size:13px}
+.menu[open]>summary{border-color:var(--accent)}
+.menu svg{color:var(--faint);flex:none}
+.pop{position:absolute;z-index:8;top:calc(100% + 6px);left:0;min-width:190px;
+max-width:calc(100vw - 40px);display:flex;flex-direction:column;gap:2px;padding:6px;
+background:var(--panel);border:1px solid var(--border);border-radius:10px;
+box-shadow:0 14px 30px rgba(0,0,0,.35)}
+.pop a{padding:6px 9px;border-radius:7px;color:var(--fg);font-size:13px;white-space:nowrap}
+.pop a:hover{background:var(--panel-2);text-decoration:none}
+.pop a[aria-current]{color:var(--accent);background:var(--accent-soft)}
+.pop form{flex-wrap:wrap;margin-top:4px;padding-top:7px;border-top:1px solid var(--border-soft)}
 
 /* ---- folders ---- */
 .folder{background:var(--panel);border:1px solid var(--border);border-radius:10px;
@@ -126,6 +152,11 @@ letter-spacing:.07em;color:var(--faint);font-weight:600;background:var(--sunk)}
 .row:hover:not(.head){background:var(--panel-2)}
 .name{display:flex;align-items:center;gap:8px;min-width:0}
 .name b{font-weight:600;letter-spacing:-.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* The folder a run's workflow lives in. It keeps its full width and the name
+   truncates beside it, because the project is the half you are scanning for;
+   and the clip keeps a long one inside its column instead of over the status. */
+.name .path{flex:none;color:var(--faint);font-family:var(--mono);font-size:12px}
+.ex .name{overflow:hidden}
 .desc{color:var(--muted);font-size:12.5px;margin-top:1px;overflow:hidden;
 text-overflow:ellipsis;white-space:nowrap}
 .off{opacity:.5}
@@ -226,6 +257,11 @@ white-space:pre-wrap;word-break:break-word}
 @media(max-width:880px){
 .wf{grid-template-columns:minmax(0,1fr) 92px 40px}
 .ex{grid-template-columns:minmax(0,1fr) 92px 90px}
+/* Too narrow for both: the name drops to a line of its own under the folder,
+   rather than the two of them sharing one and each showing three letters. */
+.ex .name:has(.path){flex-wrap:wrap}
+.ex .name .path{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ex .name .path+b{flex-basis:100%}
 .cr{grid-template-columns:minmax(0,1fr) 210px}
 .sc{grid-template-columns:minmax(0,1fr) 150px}
 .hide-sm{display:none}
@@ -289,6 +325,14 @@ const SCRIPT = (seconds: number) => `
     apply();
   });
 
+  // A <details> menu closes on its own summary and on nothing else, which is
+  // the one thing everybody expects of a menu.
+  document.addEventListener("click", function (e) {
+    document.querySelectorAll("details.menu[open]").forEach(function (d) {
+      if (!d.contains(e.target)) d.open = false;
+    });
+  });
+
   document.addEventListener("change", function (e) {
     if (e.target && e.target.matches && e.target.matches("[data-autosubmit]")) e.target.form.submit();
   });
@@ -324,6 +368,8 @@ const SCRIPT = (seconds: number) => `
     // whole page, and a half-typed date would vanish under the user's cursor.
     var el2 = document.activeElement;
     var busy = !!(el2 && el2.matches && el2.matches("input,select,textarea"));
+    // An open menu is being used too, and the swap would shut it mid-choice.
+    if (document.querySelector("details.menu[open]")) busy = true;
     if (!document.hidden && !busy) {
       try {
         var res = await fetch(location.href, { credentials: "same-origin" });
@@ -463,8 +509,8 @@ function pretty(json: string): string {
 /* ------------------------------------------------------------- workflows */
 
 /** Top-level workflows first — `""` sorts before any folder name. */
-function groupByFolder(workflows: LoadedWorkflow[]): [string, LoadedWorkflow[]][] {
-  const groups = new Map<string, LoadedWorkflow[]>();
+function groupByFolder<T extends { folder: string | null }>(workflows: T[]): [string, T[]][] {
+  const groups = new Map<string, T[]>();
   for (const w of workflows) {
     const key = w.folder ?? "";
     const list = groups.get(key);
@@ -683,12 +729,22 @@ function rangeLabel(range: RunRange) {
   ).toLowerCase();
 }
 
+/**
+ * A workflow as the executions tab needs it. The runs table stores only a
+ * name, so the folder a run came from has to be looked up from the registry.
+ */
+export interface WorkflowChoice {
+  name: string;
+  folder: string | null;
+}
+
 export function executionsPage(
   runs: RunRecord[],
-  filter: { status: string; workflow: string; range: RunRange },
+  filter: { status: string; workflow: string; folder: string; range: RunRange },
   /** Per status, over the same window and workflow as `runs`. */
   counts: Record<string, number>,
-  workflowNames: string[],
+  /** Every loaded workflow — the filter's options, and the folder each run shows. */
+  workflows: WorkflowChoice[],
   /** In-flight right now — not the same as "started in the last 24h". */
   running: number,
   window: {
@@ -704,6 +760,8 @@ export function executionsPage(
   const current = {
     status: filter.status,
     workflow: filter.workflow,
+    // `/` is the top level — the one group with no folder name to carry.
+    folder: filter.folder,
     range: filter.range.key,
     from: filter.range.from,
     to: filter.range.to,
@@ -730,6 +788,34 @@ export function executionsPage(
 
   const label = rangeLabel(filter.range);
 
+  // A run only records a workflow name, so the folder comes from the loaded
+  // workflow. A run whose file has since been deleted has no entry here and
+  // renders without a folder, the same as a top-level one.
+  const folders = new Map(workflows.map((w) => [w.name, w.folder] as const));
+  const option = (n: string) =>
+    html`<option value="${n}" ${filter.workflow === n ? raw("selected") : ""}>${n}</option>`;
+
+  // The chips come from every workflow, so the one you are filtered to is
+  // still on screen; the select is narrowed to it, because an option that can
+  // only ever return nothing is not a choice.
+  const groups = groupByFolder(workflows);
+  const inFolder = filter.folder
+    ? workflows.filter((w) => (w.folder ?? "/") === filter.folder)
+    : workflows;
+
+  // What each closed menu says it is set to. Both filters are five to ten
+  // one-word options; laid out flat they were three rows of chips above the
+  // numbers they change, which is more room than a setting you touch once
+  // deserves. The dates live inside the window menu for the same reason, and
+  // still decide on their own what a custom window is — nothing here holds a
+  // "custom" state that the fields could disagree with.
+  const windowSummary =
+    filter.range.key === "custom"
+      ? `${filter.range.from || "…"} → ${filter.range.to || "…"}`
+      : (RANGE_FILTERS.find((r) => r.value === filter.range.key)?.label ?? "All time");
+  const folderSummary =
+    filter.folder === "" ? "All folders" : filter.folder === "/" ? "Top level" : filter.folder;
+
   return layout(
     {
       title: "Executions",
@@ -738,6 +824,67 @@ export function executionsPage(
       badges: { workflows: null, failed: window.failed24h },
     },
     html`
+      <div class="toolbar">
+        <details class="menu">
+          <summary><span class="muted">Window</span> <b>${windowSummary}</b></summary>
+          <div class="pop">
+            ${RANGE_FILTERS.map(
+              (r) => html`<a href="${link({ range: r.value, from: "", to: "" })}"
+                ${filter.range.key === r.value ? raw('aria-current="true"') : ""}>${r.label}</a>`,
+            )}
+            <form method="get" action="/runs">
+              ${carry(["from", "to"])}
+              <span class="dates">
+                <input type="date" name="from" value="${filter.range.from}"
+                  aria-label="From date (UTC)" title="From — UTC, inclusive" data-autosubmit>
+                <span class="muted">→</span>
+                <input type="date" name="to" value="${filter.range.to}"
+                  aria-label="To date (UTC)" title="To — UTC, inclusive" data-autosubmit>
+              </span>
+              <noscript><button class="btn" type="submit">Apply</button></noscript>
+            </form>
+          </div>
+        </details>
+
+        ${groups.length > 1
+          ? html`<details class="menu">
+              <summary>${ICON_FOLDER} <b>${folderSummary}</b></summary>
+              <div class="pop">
+                <a href="${link({ folder: "", workflow: "" })}"
+                  ${filter.folder ? "" : raw('aria-current="true"')}>All folders</a>
+                ${groups.map(([folder]) => {
+                  // Picking a folder drops the workflow, the same way picking a
+                  // range drops the dates: the two would otherwise contradict
+                  // each other and the list would come back empty.
+                  const value = folder || "/";
+                  return html`<a href="${link({ folder: value, workflow: "" })}"
+                    ${filter.folder === value ? raw('aria-current="true"') : ""}
+                    >${folder || "Top level"}</a>`;
+                })}
+              </div>
+            </details>`
+          : ""}
+
+        <span class="grow"></span>
+
+        <form method="get" action="/runs">
+          ${carry(["workflow"])}
+          <select name="workflow" data-autosubmit>
+            <option value="">${filter.folder ? "Every workflow in the folder" : "Every workflow"}</option>
+            ${filter.folder
+              ? inFolder.map((w) => option(w.name))
+              : groups.map(([folder, group]) =>
+                  folder
+                    ? html`<optgroup label="workflows/${folder}/">
+                        ${group.map((w) => option(w.name))}
+                      </optgroup>`
+                    : html`${group.map((w) => option(w.name))}`,
+                )}
+          </select>
+          <noscript><button class="btn" type="submit">Apply</button></noscript>
+        </form>
+      </div>
+
       <div class="stats">
         <div class="stat"><b>${Object.values(counts).reduce((a, b) => a + b, 0)}</b><span>runs · ${label}</span></div>
         <div class="stat"><b class="success">${counts.success ?? 0}</b><span>succeeded · ${label}</span></div>
@@ -745,51 +892,34 @@ export function executionsPage(
         <div class="stat"><b class="${running ? "running" : ""}">${running}</b><span>running now</span></div>
       </div>
 
-      <form class="toolbar" method="get" action="/runs">
+      <div class="toolbar">
         ${STATUS_FILTERS.map(
           (f) => html`<a class="chip" href="${link({ status: f.value })}"
             ${filter.status === f.value ? raw('aria-current="true"') : ""}>${f.label}</a>`,
         )}
-        <span class="grow"></span>
-        ${carry(["workflow"])}
-        <select name="workflow" data-autosubmit>
-          <option value="">Every workflow</option>
-          ${workflowNames.map(
-            (n) => html`<option value="${n}" ${filter.workflow === n ? raw("selected") : ""}>${n}</option>`,
-          )}
-        </select>
-        <noscript><button class="btn" type="submit">Apply</button></noscript>
-      </form>
-
-      <form class="toolbar" method="get" action="/runs">
-        ${RANGE_FILTERS.map(
-          (r) => html`<a class="chip" href="${link({ range: r.value, from: "", to: "" })}"
-            ${filter.range.key === r.value ? raw('aria-current="true"') : ""}>${r.label}</a>`,
-        )}
-        <span class="grow"></span>
-        ${carry(["from", "to"])}
-        <span class="dates">
-          <input type="date" name="from" value="${filter.range.from}"
-            aria-label="From date (UTC)" title="From — UTC, inclusive" data-autosubmit>
-          <span class="muted">→</span>
-          <input type="date" name="to" value="${filter.range.to}"
-            aria-label="To date (UTC)" title="To — UTC, inclusive" data-autosubmit>
-        </span>
-        <noscript><button class="btn" type="submit">Apply</button></noscript>
-      </form>
+      </div>
 
       ${runsTable(
         runs,
         true,
         // "Nothing has run yet" is a lie once a window is on — the runs may
         // well exist a chip to the left.
-        filter.status || filter.workflow || filter.range.key
+        filter.status || filter.workflow || filter.folder || filter.range.key
           ? html`<div class="empty">
               <b>No runs in this window</b>
-              Nothing matches ${label}${filter.workflow ? html` for <code class="mono">${filter.workflow}</code>` : ""}.
+              Nothing matches ${label}${
+                filter.workflow
+                  ? html` for <code class="mono">${filter.workflow}</code>`
+                  : filter.folder === "/"
+                    ? html` at the top level`
+                    : filter.folder
+                      ? html` in <code class="mono">workflows/${filter.folder}/</code>`
+                      : ""
+              }.
               Widen the range or clear the filters.
             </div>`
           : undefined,
+        folders,
       )}
       ${runs.length >= window.limit && window.matching > runs.length
         ? html`<div class="note" style="margin:12px 0 0">
@@ -806,6 +936,8 @@ function runsTable(
   showWorkflow = true,
   /** Shown instead of the default when a filter, not an idle box, emptied it. */
   empty?: HtmlEscapedString | Promise<HtmlEscapedString>,
+  /** Workflow name → its folder, for the project label beside the name. */
+  folders?: Map<string, string | null>,
 ) {
   const cols = showWorkflow ? html`<div>Workflow</div>` : html`<div>Run</div>`;
   return html`
@@ -826,6 +958,10 @@ function runsTable(
                 <div style="min-width:0">
                   <div class="name">
                     <span class="dot ${r.status}"></span>
+                    ${showWorkflow && folders?.get(r.workflow)
+                      ? html`<span class="path" title="workflows/${folders.get(r.workflow)}/"
+                          >${folders.get(r.workflow)}/</span>`
+                      : ""}
                     <b>${showWorkflow
                       ? html`<a href="/workflows/${r.workflow}">${r.workflow}</a>`
                       : html`<a href="/runs/${r.id}" class="mono">${r.id.slice(0, 8)}</a>`}</b>

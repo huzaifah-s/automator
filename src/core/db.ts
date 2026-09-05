@@ -231,6 +231,13 @@ if (!secretColumns.has("owner")) {
 export interface RunFilter {
   status?: string;
   workflow?: string;
+  /**
+   * Restricts the result to these workflow names — how the folder chips
+   * filter, since a run records a name and the folder it came from lives in
+   * the registry. An empty array matches nothing, which is what a folder
+   * whose workflows have all been deleted should show.
+   */
+  workflows?: string[];
   since?: number;
   until?: number;
 }
@@ -283,9 +290,13 @@ const stmts = {
   // Filters are passed twice rather than as `?1`, so the binding stays
   // positional and order-independent of the driver's numbered-parameter
   // support. An empty string means "no filter".
+  // The name set arrives as a JSON array rather than a generated IN list, so
+  // this stays one prepared statement instead of one per folder size. `''`
+  // means "not filtering by folder"; `'[]'` is a folder with nothing in it.
   filteredRuns: db.prepare(
     `SELECT * FROM runs
      WHERE (? = '' OR status = ?) AND (? = '' OR workflow = ?)
+       AND (? = '' OR workflow IN (SELECT value FROM json_each(?)))
        AND started_at >= ? AND started_at <= ?
      ORDER BY started_at DESC LIMIT ?`,
   ),
@@ -294,7 +305,9 @@ const stmts = {
   // sitting above a 30-day list reads as a contradiction, not as two facts.
   statusCounts: db.prepare(
     `SELECT status, COUNT(*) AS count FROM runs
-     WHERE (? = '' OR workflow = ?) AND started_at >= ? AND started_at <= ?
+     WHERE (? = '' OR workflow = ?)
+       AND (? = '' OR workflow IN (SELECT value FROM json_each(?)))
+       AND started_at >= ? AND started_at <= ?
      GROUP BY status`,
   ),
   pruneRuns: db.prepare(`DELETE FROM runs WHERE started_at < ?`),
@@ -515,25 +528,31 @@ export const store = {
   ): RunRecord[] => {
     const status = filter.status ?? "";
     const workflow = filter.workflow ?? "";
+    const names = filter.workflows ? JSON.stringify(filter.workflows) : "";
     return stmts.filteredRuns.all(
       status,
       status,
       workflow,
       workflow,
+      names,
+      names,
       filter.since ?? 0,
       filter.until ?? TIME_MAX,
       limit,
     ) as RunRecord[];
   },
 
-  /** Runs per status in a window, optionally narrowed to one workflow. */
+  /** Runs per status in a window, optionally narrowed to a folder or workflow. */
   statusCounts: (
     range: Omit<RunFilter, "status"> = {},
   ): Record<string, number> => {
     const workflow = range.workflow ?? "";
+    const names = range.workflows ? JSON.stringify(range.workflows) : "";
     const rows = stmts.statusCounts.all(
       workflow,
       workflow,
+      names,
+      names,
       range.since ?? 0,
       range.until ?? TIME_MAX,
     ) as { status: string; count: number }[];

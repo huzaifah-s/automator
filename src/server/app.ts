@@ -321,15 +321,33 @@ export function createApp(registry: Registry): Hono {
   app.get("/runs", (c) => {
     const asked = c.req.query("status") ?? "";
     const status = RUN_STATUSES.includes(asked) ? asked : "";
-    const workflow = registry.get(c.req.query("workflow") ?? "")?.name ?? "";
     const range = resolveRange({
       range: c.req.query("range") ?? "",
       from: c.req.query("from") ?? "",
       to: c.req.query("to") ?? "",
     });
 
+    // A run stores a workflow name and not the folder it came from, so the
+    // folder filter is resolved to the names currently in it. `/` is the top
+    // level, which has no name of its own; an unknown folder widens to all,
+    // the same as an unknown status does.
+    const choices = registry.all().map((w) => ({ name: w.name, folder: w.folder }));
+    const askedFolder = c.req.query("folder") ?? "";
+    const inFolder = choices.filter((w) => (w.folder ?? "/") === askedFolder);
+    const folder = inFolder.length > 0 ? askedFolder : "";
+    // Kept only while it is inside the chosen folder. A workflow left over
+    // from another one would answer every query with nothing, which reads as
+    // a broken page rather than as two filters disagreeing.
+    const picked = registry.get(c.req.query("workflow") ?? "");
+    const workflow = picked && (!folder || (picked.folder ?? "/") === folder) ? picked.name : "";
+
     const limit = 100;
-    const window = { since: range.since, until: range.until, workflow };
+    const window = {
+      since: range.since,
+      until: range.until,
+      workflow,
+      workflows: folder ? inFolder.map((w) => w.name) : undefined,
+    };
     // Counted over the window rather than a fixed 24h, so the numbers above
     // the list describe the list. The status filter is deliberately left out —
     // the cards *are* the statuses — so the total is summed back here, and the
@@ -342,9 +360,9 @@ export function createApp(registry: Registry): Hono {
     return c.html(
       executionsPage(
         store.filteredRuns({ status, ...window }, limit),
-        { status, workflow, range },
+        { status, workflow, folder, range },
         counts,
-        registry.all().map((w) => w.name),
+        choices,
         runningCount(),
         {
           limit,

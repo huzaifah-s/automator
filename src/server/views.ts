@@ -64,12 +64,12 @@ letter-spacing:-.01em;font-size:15px}
 .mark{width:20px;height:20px;border-radius:6px;display:grid;place-items:center;
 background:var(--accent);color:#fff;font-size:11px;font-weight:700}
 .tabs{display:flex;gap:2px;margin-left:6px}
-.tab{display:flex;align-items:center;gap:7px;padding:6px 12px;border-radius:7px;
-color:var(--muted);font-weight:500;font-size:13.5px}
+.tab{display:flex;align-items:center;gap:6px;padding:5px 10px;border-radius:7px;
+color:var(--muted);font-weight:500;font-size:12.5px}
 .tab:hover{background:var(--panel-2);color:var(--fg);text-decoration:none}
 .tab[aria-current]{background:var(--accent-soft);color:var(--accent)}
-.tab .n{font-size:11px;font-variant-numeric:tabular-nums;padding:0 6px;border-radius:20px;
-background:var(--panel-2);color:var(--muted);line-height:17px}
+.tab .n{font-size:10px;font-variant-numeric:tabular-nums;padding:0 5px;border-radius:20px;
+background:var(--panel-2);color:var(--muted);line-height:15px}
 .tab[aria-current] .n{background:var(--accent);color:#fff}
 .tab .n.bad{background:var(--red);color:#fff}
 .grow{flex:1}
@@ -294,7 +294,7 @@ white-space:pre-wrap;word-break:break-word}
 .brand span:last-child{display:inline}
 .crumb{flex:1;font-size:12.5px}
 .tabs{order:3;flex:0 0 100%;gap:4px;margin:9px 0 0}
-.tab{flex:1;justify-content:center;padding:8px 4px;font-size:13px;gap:5px}
+.tab{flex:1;justify-content:center;padding:8px 4px;font-size:12.5px;gap:5px}
 .tab .n{padding:0 5px}
 
 .stats{gap:8px}

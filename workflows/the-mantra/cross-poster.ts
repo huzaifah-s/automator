@@ -570,6 +570,25 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 type Params = Record<string, string | number | boolean | undefined>;
 
 /**
+ * What each API calls the two things we need off a media container.
+ *
+ * They are not the same, and that is the whole reason this is a table rather
+ * than one string. Instagram reports `status_code` and explains itself in
+ * `status`; Threads reports `status` and explains itself in `error_message`.
+ * Asking either one for the other's field fails the entire request rather than
+ * returning null for the field it does not know.
+ */
+interface ContainerFields {
+  /** Carries FINISHED / IN_PROGRESS / ERROR / EXPIRED / PUBLISHED. */
+  status: string;
+  /** Carries the human explanation, and only read once status says ERROR. */
+  detail: string;
+}
+
+const IG_FIELDS: ContainerFields = { status: "status_code", detail: "status" };
+const TH_FIELDS: ContainerFields = { status: "status", detail: "error_message" };
+
+/**
  * Waits for a media container to finish processing.
  *
  * Instagram and Threads both answer with a status field, under different
@@ -583,7 +602,7 @@ async function awaitContainer(
   base: string,
   id: string,
   token: string,
-  field: "status_code" | "status",
+  fields: ContainerFields,
   what: string,
 ): Promise<void> {
   const deadline = Date.now() + MEDIA_POLL_MAX_MS;
@@ -593,27 +612,58 @@ async function awaitContainer(
 
     let state: Record<string, string | undefined>;
     try {
+      // Only the status field. Asking for the detail field alongside it is
+      // what broke this the first time: Instagram has no `error_message`, and
+      // Graph answers a request for one unknown field by failing the WHOLE
+      // call with "(#100) Tried accessing nonexisting field" — so a healthy,
+      // finished container looked like a hard error and the post never went
+      // out. The detail is fetched below, only once something has gone wrong.
       state = await http.get<Record<string, string | undefined>>(`${base}/${id}`, {
-        query: { fields: `${field},error_message`, access_token: token },
+        query: { fields: fields.status, access_token: token },
       });
     } catch (err) {
       throw new Error(explain(err, `${what} status check`));
     }
 
-    const status = state?.[field];
+    const status = state?.[fields.status];
     if (status === "FINISHED") return;
     // PUBLISHED means somebody got there first, which is a success we should
     // not then try to publish again.
     if (status === "PUBLISHED") return;
     if (status === "ERROR" || status === "EXPIRED") {
-      throw new Error(
-        `${what}: media ${String(status).toLowerCase()} — ` +
-          `${state.error_message ?? "no detail given"}`,
-      );
+      const detail = await describeFailure(http, base, id, token, fields);
+      throw new Error(`${what}: media ${String(status).toLowerCase()} — ${detail}`);
     }
   }
 
   throw new Error(`${what}: media still processing after ${MEDIA_POLL_MAX_MS / 1000}s`);
+}
+
+/**
+ * Why a container failed, best effort.
+ *
+ * A separate call, and one that never throws: we are already reporting a
+ * failure, and losing the *reason* to a second failure — an unsupported field,
+ * a token that just expired — would replace a useful message with a confusing
+ * one. "no detail given" is a worse answer than Meta's own words and a much
+ * better one than a different error.
+ */
+async function describeFailure(
+  http: Http,
+  base: string,
+  id: string,
+  token: string,
+  fields: ContainerFields,
+): Promise<string> {
+  try {
+    const state = await http.get<Record<string, string | undefined>>(`${base}/${id}`, {
+      query: { fields: fields.detail, access_token: token },
+    });
+    const detail = state?.[fields.detail];
+    return detail && detail.trim() ? detail : "no detail given";
+  } catch {
+    return "no detail given";
+  }
 }
 
 /** Creates a container and returns its id. Every parameter goes on the query. */
@@ -707,13 +757,13 @@ async function publishInstagram(
       share_to_feed: true,
       thumb_offset: 0,
     }, what);
-    await awaitContainer(ctx.http, ctx.signal, GRAPH_FB, creationId, token, "status_code", what);
+    await awaitContainer(ctx.http, ctx.signal, GRAPH_FB, creationId, token, IG_FIELDS, what);
   } else if (media.urls.length < CAROUSEL_MIN) {
     creationId = await createContainer(ctx.http, GRAPH_FB, igUserId, token, {
       image_url: media.urls[0],
       caption,
     }, what);
-    await awaitContainer(ctx.http, ctx.signal, GRAPH_FB, creationId, token, "status_code", what);
+    await awaitContainer(ctx.http, ctx.signal, GRAPH_FB, creationId, token, IG_FIELDS, what);
   } else {
     // Carousel children carry no caption — that lives on the parent.
     const children: string[] = [];
@@ -723,7 +773,7 @@ async function publishInstagram(
         is_carousel_item: true,
       }, `${what} image ${index + 1}`);
       await awaitContainer(
-        ctx.http, ctx.signal, GRAPH_FB, child, token, "status_code",
+        ctx.http, ctx.signal, GRAPH_FB, child, token, IG_FIELDS,
         `${what} image ${index + 1}`,
       );
       children.push(child);
@@ -733,7 +783,7 @@ async function publishInstagram(
       children: children.join(","),
       caption,
     }, what);
-    await awaitContainer(ctx.http, ctx.signal, GRAPH_FB, creationId, token, "status_code", what);
+    await awaitContainer(ctx.http, ctx.signal, GRAPH_FB, creationId, token, IG_FIELDS, what);
   }
 
   await sleep(PUBLISH_WAIT_MS, ctx.signal);
@@ -902,14 +952,14 @@ async function publishThreads(
       video_url: media.urls[0],
       text,
     }, what);
-    await awaitContainer(ctx.http, ctx.signal, GRAPH_TH, creationId, token, "status", what);
+    await awaitContainer(ctx.http, ctx.signal, GRAPH_TH, creationId, token, TH_FIELDS, what);
   } else if (media.urls.length < CAROUSEL_MIN) {
     creationId = await createContainer(ctx.http, GRAPH_TH, THREADS_USER_ID, token, {
       media_type: "IMAGE",
       image_url: media.urls[0],
       text,
     }, what);
-    await awaitContainer(ctx.http, ctx.signal, GRAPH_TH, creationId, token, "status", what);
+    await awaitContainer(ctx.http, ctx.signal, GRAPH_TH, creationId, token, TH_FIELDS, what);
   } else {
     const children: string[] = [];
     for (const [index, url] of media.urls.entries()) {
@@ -919,7 +969,7 @@ async function publishThreads(
         is_carousel_item: true,
       }, `${what} image ${index + 1}`);
       await awaitContainer(
-        ctx.http, ctx.signal, GRAPH_TH, child, token, "status",
+        ctx.http, ctx.signal, GRAPH_TH, child, token, TH_FIELDS,
         `${what} image ${index + 1}`,
       );
       children.push(child);
@@ -929,7 +979,7 @@ async function publishThreads(
       children: children.join(","),
       text,
     }, what);
-    await awaitContainer(ctx.http, ctx.signal, GRAPH_TH, creationId, token, "status", what);
+    await awaitContainer(ctx.http, ctx.signal, GRAPH_TH, creationId, token, TH_FIELDS, what);
   }
 
   await sleep(PUBLISH_WAIT_MS, ctx.signal);
@@ -1143,13 +1193,31 @@ export default defineWorkflow<DuePage[]>({
       );
     }
 
-    // A *resume* from the dashboard carries no input — only a replay does — so
-    // this is what a resumed run sees, and doing nothing is the right answer.
+    /*
+     * The trigger owns the query, so the rows arrive as input. Two ways to get
+     * here with none, and doing nothing is the right answer to both:
+     *
+     *   "Run now" on the dashboard — there is no query to run, because the
+     *   poll is what decides what is due. Making a row due in Notion is how you
+     *   force a post; this button cannot be it.
+     *
+     *   A resume — resume carries the checkpoint key and nothing else, so
+     *   ctx.input is {} the second time through.
+     *
+     * Re-deriving the due rows here would serve the first case and break the
+     * second, badly: a resumed run would post whatever is due *now* against a
+     * checkpoint key belonging to different rows, skipping steps by name and
+     * mixing two sets of pages. And the two cannot be told apart — the resume
+     * route calls the runner with trigger: "manual", exactly as the button
+     * does. So neither posts.
+     */
     const pages = Array.isArray(ctx.input) ? ctx.input : [];
     if (pages.length === 0) {
       ctx.log.info(
-        "No pages in the input — a resumed run carries none. Nothing to cross-post; the " +
-          "poll will pick up whatever is due on its next tick.",
+        "Nothing to do: this run was given no rows. Only the 5-minute poll finds due " +
+          "rows — \"Run now\" and Resume both arrive with none, by design. To force a " +
+          "post, make a row due in Notion (Status Posted, Posted (Tiktok) ticked, " +
+          "Posted (others) unticked, TikTok date 3-10 days old) and the next tick takes it.",
       );
       return { pages: 0, posted: 0, failed: 0 };
     }

@@ -224,6 +224,21 @@ export interface LoadedWorkflow extends WorkflowDef<any> {
    * global and flat; this only groups them for the eye.
    */
   folder: string | null;
+  /**
+   * SHA-256 of the file's source, as read at boot. The dashboard's "updated"
+   * time is derived from this changing — see `workflow_versions` in db.ts for
+   * why it is not the file's mtime.
+   */
+  hash: string;
+}
+
+/** When a workflow file was first seen, and when its contents last changed. */
+export interface WorkflowVersion {
+  workflow: string;
+  hash: string;
+  first_seen: number;
+  /** Equal to `first_seen` until the file is edited for the first time. */
+  updated_at: number;
 }
 
 export type RunStatus = "running" | "success" | "failed" | "skipped";

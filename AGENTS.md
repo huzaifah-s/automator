@@ -252,6 +252,15 @@ version byte and a migration, not an edit.
 and fall back to the environment on an undecryptable value. A deployment that
 rotated its key and now cannot start is worse than one running on env vars.
 
+**A workflow's "updated" time comes from a content hash, not the filesystem.**
+`loadWorkflows()` hashes each file's source; `src/index.ts` records it in
+`workflow_versions` and moves `updated_at` only when the hash changes. Do not
+"simplify" this to `statSync().mtime` — a deploy is a fresh git clone, every
+file gets the same checkout time, and the dashboard would report every workflow
+as edited at the last deploy. The write lives in `index.ts` rather than in the
+loader on purpose: loading workflows is a read, and `bun run secret` must be
+able to run before any of it.
+
 **Workflow names must match `/^[a-z0-9][a-z0-9-]*$/`** — they appear in URLs.
 
 ## Adding an integration

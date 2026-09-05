@@ -9,6 +9,7 @@ import type {
   RunStatus,
   StepRecord,
   TriggerKind,
+  WorkflowVersion,
 } from "./types.ts";
 
 const path = process.env.DATABASE_PATH ?? "./data/automator.db";
@@ -94,6 +95,19 @@ db.exec(`
   ) WITHOUT ROWID;
   CREATE INDEX IF NOT EXISTS idx_state_expires
     ON state(expires_at) WHERE expires_at IS NOT NULL;
+
+  -- When each workflow's file last *changed*, which is a different question
+  -- from when it last ran and is not answerable from the filesystem: a deploy
+  -- is a fresh git clone, so every file carries the same checkout mtime and a
+  -- dashboard built on mtime would report every workflow as updated at the
+  -- last deploy. Keyed on a hash of the file's source instead, so the time
+  -- only moves when the bytes do.
+  CREATE TABLE IF NOT EXISTS workflow_versions (
+    workflow   TEXT    PRIMARY KEY,
+    hash       TEXT    NOT NULL,
+    first_seen INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  ) WITHOUT ROWID;
 
   -- Credentials that outlive the process, so changing one is not a redeploy.
   -- The value column is always ciphertext — base64(iv + AES-256-GCM), never a
@@ -239,6 +253,20 @@ const stmts = {
     `DELETE FROM state WHERE expires_at IS NOT NULL AND expires_at <= ?`,
   ),
 
+  allWorkflowVersions: db.prepare(
+    `SELECT workflow, hash, first_seen, updated_at FROM workflow_versions`,
+  ),
+  // The WHERE on the upsert is what makes a boot that changed nothing write
+  // nothing: an identical hash leaves updated_at where it was, so restarting
+  // the server is not mistaken for editing every workflow.
+  upsertWorkflowVersion: db.prepare(
+    `INSERT INTO workflow_versions (workflow, hash, first_seen, updated_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(workflow) DO UPDATE SET
+       hash = excluded.hash, updated_at = excluded.updated_at
+     WHERE workflow_versions.hash <> excluded.hash`,
+  ),
+
   allSecrets: db.prepare(`SELECT key, value, updated_at FROM secrets ORDER BY key`),
   setSecret: db.prepare(
     `INSERT INTO secrets (key, value, updated_at) VALUES (?, ?, ?)
@@ -358,6 +386,51 @@ export const store = {
       failed: number;
       last_run: number | null;
     },
+
+  /* -------------------------------------------------- workflow versions */
+
+  /**
+   * Notes what each workflow file hashes to right now, moving `updated_at`
+   * only for the ones whose bytes actually changed. Called once at boot, from
+   * `src/index.ts` rather than from the loader — loading workflows is a read.
+   *
+   * The hash covers the workflow file alone. A workflow whose behaviour
+   * changed because `src/integrations/http.ts` did will not show as updated,
+   * which is the right answer to "when was this workflow last edited" and the
+   * wrong one to "when did this last behave differently". It answers the
+   * first question.
+   */
+  recordWorkflowVersions(
+    workflows: { name: string; hash: string }[],
+  ): { added: number; changed: number } {
+    const now = Date.now();
+    const known = new Map(
+      (stmts.allWorkflowVersions.all() as WorkflowVersion[]).map((v) => [v.workflow, v.hash]),
+    );
+
+    let added = 0;
+    let changed = 0;
+    db.transaction(() => {
+      for (const w of workflows) {
+        const previous = known.get(w.name);
+        if (previous === w.hash) continue;
+        if (previous === undefined) added++;
+        else changed++;
+        stmts.upsertWorkflowVersion.run(w.name, w.hash, now, now);
+      }
+    })();
+
+    // Rows for workflows that no longer exist are left alone. A file deleted
+    // and restored unchanged genuinely has not been edited, and keeping the
+    // row is what lets it say so.
+    return { added, changed };
+  },
+
+  /** Keyed by workflow name, for the dashboard. */
+  workflowVersions(): Map<string, WorkflowVersion> {
+    const rows = stmts.allWorkflowVersions.all() as WorkflowVersion[];
+    return new Map(rows.map((r) => [r.workflow, r]));
+  },
 
   /** Runs that were mid-flight when the process died can never complete. */
   markOrphans(): number {

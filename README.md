@@ -548,6 +548,30 @@ run away with your disk. Request *headers* are never captured at all, so
 Set `CAPTURE_DATA=false` to turn observational capture off. Step outputs are
 still stored — resume depends on them.
 
+### When a workflow last changed
+
+Each row on the **Workflows** tab carries an **Updated** time, and the workflow
+page shows it alongside a `Version` — the first twelve characters of the
+SHA-256 of the file. Both come from the same place: at boot the runner hashes
+every workflow file and compares it to what it recorded last time, moving the
+timestamp only for the ones whose bytes actually changed. Restarting the server
+does not make everything look freshly edited, and `sha256sum` on your copy of
+the file tells you whether the deploy shipped the edit you think it did.
+
+The file's mtime deliberately isn't used. A deploy is a fresh `git clone`, so
+every file carries the same checkout time and the column would report every
+workflow as updated at the last deploy.
+
+Two things it does not claim. The hash covers the workflow file alone, so a
+workflow whose behaviour changed because `src/integrations/http.ts` changed
+does not show as updated — the question being answered is "when was this
+workflow last edited". And a workflow's first boot records it as added, so a
+runner that already had workflows before this existed dates them all to the
+deploy that introduced it, once.
+
+`GET /api/workflows` carries the same three fields: `version`, `addedAt`,
+`updatedAt`.
+
 ## Secrets
 
 Secrets come from the environment. `.env` is mounted by Compose via

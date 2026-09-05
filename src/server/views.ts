@@ -7,6 +7,7 @@ import type {
   RunRecord,
   RunStatus,
   StepRecord,
+  WorkflowVersion,
 } from "../core/types.ts";
 
 /**
@@ -110,7 +111,7 @@ border-bottom:1.6px solid var(--faint);transform:rotate(-45deg);margin-left:2px;
 
 /* ---- rows ---- */
 .row{display:grid;align-items:center;gap:14px;padding:11px 14px;border-top:1px solid var(--border-soft)}
-.wf{grid-template-columns:minmax(0,1fr) 170px 92px 96px 40px}
+.wf{grid-template-columns:minmax(0,1fr) 158px 92px 84px 84px 40px}
 .ex{grid-template-columns:minmax(0,1fr) 92px 84px 104px 72px 90px}
 .row.head{padding:7px 14px;border-top:none;font-size:10.5px;text-transform:uppercase;
 letter-spacing:.07em;color:var(--faint);font-weight:600;background:var(--sunk)}
@@ -438,10 +439,24 @@ function healthStrip(pulses: RunPulse[]) {
   </span>`;
 }
 
+/**
+ * "Updated" is when the file's contents last changed, not when it last ran —
+ * absent for a workflow whose first boot has not happened yet, which only
+ * shows up in the window between adding a file and restarting.
+ */
+function updatedCell(version: WorkflowVersion | undefined) {
+  if (!version) return html`<span class="mono muted">—</span>`;
+  const added = version.updated_at === version.first_seen;
+  return html`<span class="mono muted trunc"
+    title="${added ? "Added" : "Changed"} ${fmt(version.updated_at)}"
+    >${relative(version.updated_at)}</span>`;
+}
+
 function workflowRow(
   w: LoadedWorkflow,
   nextRun: (name: string) => Date | null,
   pulses: RunPulse[],
+  version: WorkflowVersion | undefined,
 ) {
   const next = nextRun(w.name);
   const last = pulses[0];
@@ -459,6 +474,7 @@ function workflowRow(
       </div>
       <div class="mono muted trunc hide-sm" title="${triggerLabel(w)}">${triggerLabel(w)}</div>
       <div class="hide-sm">${healthStrip(pulses)}</div>
+      <div class="hide-sm">${updatedCell(version)}</div>
       <div class="mono muted trunc" title="${next ? fmt(next.getTime()) : "no schedule"}">
         ${next ? relative(next.getTime()) : "—"}
       </div>
@@ -474,6 +490,7 @@ export function workflowsPage(
   nextRun: (name: string) => Date | null,
   pulses: RunPulse[],
   counts: Record<string, number>,
+  versions: Map<string, WorkflowVersion>,
 ) {
   const byWorkflow = new Map<string, RunPulse[]>();
   for (const p of pulses) {
@@ -491,6 +508,7 @@ export function workflowsPage(
     <div>Workflow</div>
     <div class="hide-sm">Trigger</div>
     <div class="hide-sm">Health</div>
+    <div class="hide-sm">Updated</div>
     <div>Next</div>
     <div></div>
   </div>`;
@@ -531,7 +549,9 @@ export function workflowsPage(
                   <span class="tag" data-count>${group.length}</span>
                 </summary>
                 ${header}
-                ${group.map((w) => workflowRow(w, nextRun, byWorkflow.get(w.name) ?? []))}
+                ${group.map((w) =>
+                  workflowRow(w, nextRun, byWorkflow.get(w.name) ?? [], versions.get(w.name)),
+                )}
               </details>
             `,
           )}
@@ -656,6 +676,7 @@ export function workflowPage(
   next: Date | null,
   stats: { total: number; succeeded: number; failed: number },
   runs: RunRecord[],
+  version: WorkflowVersion | undefined,
 ) {
   const crumb = html`<span class="crumb">
     ${wf.folder ? html`${ICON_FOLDER} <a href="/">${wf.folder}</a> /` : ""}
@@ -683,6 +704,14 @@ export function workflowPage(
         <tr><td>On overlap</td><td class="mono">${wf.onOverlap ?? "skip"}</td></tr>
         <tr><td>Folder</td><td class="mono">${wf.folder ? `workflows/${wf.folder}/` : "workflows/ (top level)"}</td></tr>
         <tr><td>File</td><td class="mono">workflows/${wf.file}</td></tr>
+        <tr><td>Updated</td><td class="mono">${
+          version
+            ? html`${fmt(version.updated_at)} <span class="muted">(${relative(version.updated_at)}${
+                version.updated_at === version.first_seen ? ", first seen" : ""
+              })</span>`
+            : "—"
+        }</td></tr>
+        <tr><td>Version</td><td class="mono" title="${wf.hash}">${wf.hash.slice(0, 12)}</td></tr>
       </tbody></table></div>
 
       <div class="bar">

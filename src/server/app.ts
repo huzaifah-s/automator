@@ -184,6 +184,7 @@ export function createApp(registry: Registry): Hono {
         nextRunFor,
         store.recentRunsPerWorkflow(12),
         store.statusCountsSince(Date.now() - 86_400_000),
+        store.workflowVersions(),
       ) as any,
     ),
   );
@@ -219,6 +220,7 @@ export function createApp(registry: Registry): Hono {
         nextRunFor(wf.name),
         store.statsForWorkflow(wf.name),
         store.runsForWorkflow(wf.name, 40),
+        store.workflowVersions().get(wf.name),
       ) as any,
     );
   });
@@ -277,18 +279,28 @@ export function createApp(registry: Registry): Hono {
 
   /* ---------------------------------------------------------------- API */
 
-  app.get("/api/workflows", (c) =>
-    c.json(
-      registry.all().map((w) => ({
-        name: w.name,
-        description: w.description ?? null,
-        trigger: w.trigger,
-        enabled: w.enabled !== false,
-        file: w.file,
-        nextRun: nextRunFor(w.name)?.toISOString() ?? null,
-      })),
-    ),
-  );
+  app.get("/api/workflows", (c) => {
+    const versions = store.workflowVersions();
+    return c.json(
+      registry.all().map((w) => {
+        const version = versions.get(w.name);
+        return {
+          name: w.name,
+          description: w.description ?? null,
+          trigger: w.trigger,
+          enabled: w.enabled !== false,
+          file: w.file,
+          // The file's own history: `version` is a hash of its source, and
+          // `updatedAt` moves only when that hash does. Neither says anything
+          // about runs — /api/runs is the place for those.
+          version: w.hash,
+          addedAt: version ? new Date(version.first_seen).toISOString() : null,
+          updatedAt: version ? new Date(version.updated_at).toISOString() : null,
+          nextRun: nextRunFor(w.name)?.toISOString() ?? null,
+        };
+      }),
+    );
+  });
 
   app.post("/api/workflows/:name/run", async (c) => {
     const wf = registry.get(c.req.param("name"));

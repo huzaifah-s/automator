@@ -45,6 +45,15 @@ const registry = new Registry(
   }),
 );
 
+// When each workflow file last changed, for the dashboard's "updated" column.
+// Here rather than inside loadWorkflows(): loading is a read, this is a write.
+const versions = store.recordWorkflowVersions(registry.all());
+if (versions.added || versions.changed) {
+  log.info(
+    `Workflow files: ${versions.added} new, ${versions.changed} changed since the last boot`,
+  );
+}
+
 // ctx.run() resolves workflow names through this. Set before the CLI section
 // runs, so `bun run trigger` can drive a workflow that calls another one.
 setRegistry(registry);

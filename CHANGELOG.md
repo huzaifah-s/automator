@@ -8,6 +8,52 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### A workflow's "updated" time is a content hash, not a file mtime
+
+The dashboard could say when a workflow last *ran* and never when it last
+*changed*, which is the question you actually have when a deploy lands and you
+want to know what moved. The **Workflows** tab now has an **Updated** column,
+the workflow page has `Updated` and `Version` rows, and `/api/workflows`
+carries `version`, `addedAt` and `updatedAt`.
+
+**The obvious implementation is `statSync(file).mtime`, and it is wrong here.**
+A deploy is a fresh `git clone` into the build context, so every file lands
+with the same checkout time; a Docker `COPY` faithfully preserves it. The
+column would have read "updated 2m ago" for every workflow after every deploy —
+worse than not having it, because it looks like an answer. So the runner hashes
+each workflow file at boot and keeps `(hash, first_seen, updated_at)` in a new
+`workflow_versions` table, moving `updated_at` only when the hash moves. A
+restart that changed nothing writes nothing.
+
+**Decided along the way:**
+
+- **The write lives in `src/index.ts`, not in `loadWorkflows()`.** Loading
+  workflows is a read, and the loader is already load-bearing for a boot that
+  has to fail cleanly on a missing secret. One line after the registry is
+  built is easier to reason about than a side effect inside the import loop.
+
+- **The upsert has a `WHERE hash <> excluded.hash` on its `DO UPDATE`**, so an
+  unchanged workflow is a no-op at the SQL level rather than a rewrite with a
+  fresh timestamp. `first_seen` survives because `DO UPDATE SET` never names
+  it, which is what lets the view distinguish "added" from "changed".
+
+- **Rows for deleted workflows are left in place.** Pruning them looks tidier
+  and loses the truth: a file deleted and restored unchanged genuinely has not
+  been edited, and the orphan row is what lets it say so. The cost is a stale
+  row per renamed workflow, which is bytes.
+
+- **The hash covers the workflow file only** — not `src/`, not its imports. A
+  workflow whose behaviour changed because the HTTP client changed will not
+  show as updated. That is the right answer to "when was this workflow last
+  edited" and the wrong one to "when did this last behave differently"; the
+  column is labelled for the first question and README says so.
+
+- **No migration for existing databases.** `CREATE TABLE IF NOT EXISTS` plus
+  an empty table means the first boot records every workflow as added, dating
+  them all to that deploy. One-off and self-correcting, against a migration
+  that would have to invent a date it does not have.
+
+
 ### The dashboard is two tabs, and folders are the shape of the first one
 
 One page listing every workflow above every run stopped scaling the moment

@@ -68,7 +68,17 @@ export async function loadWorkflows(dir = "./workflows"): Promise<LoadedWorkflow
     }
 
     const slash = rel.lastIndexOf("/");
-    workflows.push({ ...def, file: rel, folder: slash === -1 ? null : rel.slice(0, slash) });
+    // Hashed here because this is the one place that already has the path.
+    // What it is for lives in db.ts, above `workflow_versions`.
+    const hash = new Bun.CryptoHasher("sha256")
+      .update(await Bun.file(file).text())
+      .digest("hex");
+    workflows.push({
+      ...def,
+      file: rel,
+      folder: slash === -1 ? null : rel.slice(0, slash),
+      hash,
+    });
   }
 
   const secretProblems = collectSecretProblems();

@@ -150,6 +150,17 @@ const PEOPLE: Record<PersonId, { label: string; notionUser: string; chat: () => 
 /** Where the handshake token is parked for the operator to collect. */
 const TOKEN_STATE_KEY = "notion:the-mantra-contents:verification-token";
 
+/**
+ * The command the nudge hands over, as one pasteable line. Single-quoted for
+ * the shell, so everything inside it has to be double quotes.
+ */
+const TOKEN_READER =
+  `'import{Database}from"bun:sqlite";` +
+  `const r=new Database(process.env.DATABASE_PATH??"/data/automator.db",{readonly:true})` +
+  `.query("select value from state where namespace=? and key=?")` +
+  `.get("@shared","${TOKEN_STATE_KEY}");` +
+  `console.log(r?JSON.parse(r.value):"(not found - click Resend token in Notion)")'`;
+
 /* ------------------------------------------------------------------ payload */
 
 /**
@@ -384,8 +395,14 @@ export default defineWorkflow<Payload>({
           "🔗 <b>Notion webhook verification</b>\n\n" +
             "Notion sent the verification token for <code>the-mantra/notion-contents</code>. " +
             "Read it on the server:\n\n" +
-            "<pre>sqlite3 data/automator.db \"select value from state " +
-            `where namespace='@shared' and key='${TOKEN_STATE_KEY}'"</pre>\n` +
+            // Deliberately not `sqlite3 …`: the runtime image is bun:1-alpine
+            // plus tini, and the sqlite3 CLI is not in it. Bun ships its own
+            // driver, so this runs anywhere the app itself runs, and takes the
+            // database path from the same variable the app does rather than
+            // guessing between ./data and /data.
+            `<pre>docker compose exec -T automator bun -e ${TOKEN_READER}</pre>\n` +
+            "(drop the <code>docker compose exec -T automator</code> prefix if you run it " +
+            "without Docker)\n\n" +
             "Paste it into Notion's verification modal, then store the same value as " +
             "<code>NOTION_WEBHOOK_TOKEN</code> on the dashboard. Until you do, every real " +
             "event on this route is rejected.",

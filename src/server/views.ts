@@ -95,7 +95,11 @@ border-radius:8px;padding:7px 11px;font:13px var(--sans);min-width:0}
 input[type=search]{flex:1;max-width:320px}
 input[type=date]{font:12.5px var(--mono);color-scheme:dark light}
 /* The pair travels as one unit, so a narrow screen never strands the arrow. */
-.dates{display:flex;gap:8px;align-items:center}
+.dates{display:flex;gap:8px;align-items:end}
+.dates label{display:flex;flex-direction:column;gap:3px;min-width:0}
+.dates label>span{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.dates .arrow{padding-bottom:7px}
+.pop .apply{align-self:flex-start;margin-top:2px}
 input[type=search]:focus,input[type=date]:focus,select:focus{outline:none;border-color:var(--accent)}
 .chip{padding:6px 11px;border-radius:8px;border:1px solid var(--border);background:var(--panel);
 color:var(--muted);font-size:12.5px;white-space:nowrap}
@@ -105,6 +109,12 @@ color:var(--muted);font-size:12.5px;white-space:nowrap}
    without these it decides the toolbar's width and hangs off a phone. */
 .toolbar form{display:flex;gap:8px;align-items:center;min-width:0;max-width:100%}
 .toolbar select{max-width:100%}
+.pick{position:relative;display:flex;min-width:0;max-width:100%}
+.pick select{appearance:none;-webkit-appearance:none;width:100%;
+padding-right:30px;font-weight:600;text-overflow:ellipsis}
+.pick::after{content:"";position:absolute;right:12px;top:50%;margin-top:-4px;
+width:5px;height:5px;pointer-events:none;
+border-right:1.6px solid var(--faint);border-bottom:1.6px solid var(--faint);transform:rotate(45deg)}
 
 /* ---- menus ---- */
 /* A filter whose options do not earn a permanent chip row: closed it is one
@@ -218,12 +228,15 @@ padding:11px 13px;font-size:12.5px;color:var(--muted);margin-bottom:14px}
 .flash{border-radius:9px;padding:10px 13px;font-size:12.5px;margin-bottom:14px;
 border:1px solid color-mix(in srgb,var(--red) 35%,var(--border));
 background:color-mix(in srgb,var(--red) 9%,var(--panel));color:var(--red)}
-.pick{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
-.pick a{display:block;background:var(--panel);border:1px solid var(--border);border-radius:10px;
+/* Named for the cards, not for the picking: ".pick" is the select wrapper up
+   in the toolbar rules, and two components under one class meant this grid
+   silently won and laid that select out as a 230px grid column. */
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+.tiles a{display:block;background:var(--panel);border:1px solid var(--border);border-radius:10px;
 padding:13px 15px;color:var(--fg)}
-.pick a:hover{border-color:var(--accent);text-decoration:none}
-.pick b{display:block;font-weight:600;margin-bottom:3px}
-.pick span{color:var(--muted);font-size:12.5px}
+.tiles a:hover{border-color:var(--accent);text-decoration:none}
+.tiles b{display:block;font-weight:600;margin-bottom:3px}
+.tiles span{color:var(--muted);font-size:12.5px}
 .detail{font-size:12px;color:var(--muted);margin-top:2px;overflow:hidden;
 text-overflow:ellipsis;white-space:nowrap}
 
@@ -293,7 +306,9 @@ white-space:pre-wrap;word-break:break-word}
 .topbar .grow{display:none}
 .brand span:last-child{display:inline}
 .crumb{flex:1;font-size:12.5px}
-.tabs{order:3;flex:0 0 100%;gap:4px;margin:9px 0 0}
+/* The bottom margin is the point: without it the row sits directly on the
+   sticky bar's border and reads as if it were part of it. */
+.tabs{order:3;flex:0 0 100%;gap:4px;margin:9px 0 9px}
 .tab{flex:1;justify-content:center;padding:8px 4px;font-size:12.5px;gap:5px}
 .tab .n{padding:0 5px}
 
@@ -332,7 +347,24 @@ input[type=search]{max-width:none}
    read — a popover sized to its own list of links left them 55px each. It
    also means the panel cannot hang off whichever edge it opened near. */
 .toolbar>.menu{flex:1 1 100%}
-.menu>summary{justify-content:space-between}
+/* The form around the workflow select is the third of those controls and has to
+   match them, or it stops short of both edges. The spacer that positions it on
+   one row has nothing to push against once the row has wrapped, so it only
+   steals width — the same reason the topbar drops its own. */
+.toolbar>form{flex:1 1 100%}
+.toolbar>.grow{display:none}
+.toolbar form .pick{flex:1}
+.menu>summary b{margin-left:auto;text-align:right;min-width:0;
+overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* All three filters are one full-width control each here, so they have to read
+   as the same control — one size for the menus and the select alike. This was
+   16px, which is the size that stops a phone browser zooming the page in when
+   the select takes focus. 13px was asked for and accepts that zoom; a
+   pointer:coarse guard around the old value would have kept both, but a narrow
+   desktop window reports coarse too, so it would have meant no change at all
+   for the case this was changed for. Restoring it is this one number. */
+.menu>summary b,.pick select{font-size:13px}
+.dates label>span{font-size:11px}
 .pop{left:0;right:0;min-width:0;max-width:none}
 .dates{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr)}
 .dates input[type=date]{min-width:0}
@@ -817,17 +849,16 @@ const STATUS_FILTERS = [
 // is not a chip, it is the state the two date fields put the page into.
 //
 // The spans live here rather than in the server so that a chip and the window
-// it selects cannot drift apart. "All time" carries a key instead of the empty
-// string because an absent `?range=` now means the default, not everything —
-// without a name of its own, asking for all time would be indistinguishable
-// from not asking at all and would bounce straight back to 7 days.
+// it selects cannot drift apart.
 //
-// The widest chip stops at 14 days because `RUN_RETENTION_DAYS` prunes there.
-// A longer chip could only ever return the same rows as this one while quietly
-// implying there were older ones to find. Raising retention is what earns a
-// wider chip; add it back here and it works, spans and all.
+// There is no "All time" chip, because with `RUN_RETENTION_DAYS` pruning at 14
+// days the widest chip *is* every run that exists. One promising more would
+// return the same rows while implying there were older ones to find, and it
+// cost a second concept — the empty string could not mean "everything" once an
+// absent `?range=` started meaning the default. Raising retention is what earns
+// a wider chip; add it here and it works, span and all. A span of 0 still means
+// "no lower bound" if a chip ever wants it again.
 const RANGE_FILTERS = [
-  { value: "all", label: "All time", span: 0 },
   { value: "24h", label: "24 hours", span: 86_400_000 },
   { value: "7d", label: "7 days", span: 7 * 86_400_000 },
   { value: "14d", label: "14 days", span: 14 * 86_400_000 },
@@ -847,6 +878,9 @@ export function rangeSpan(key: string): number | undefined {
 
 /** The default window in milliseconds, for pages that cannot choose another. */
 export const DEFAULT_RANGE_MS = rangeSpan(DEFAULT_RANGE)!;
+
+/** The widest window on offer — everything retention has kept. */
+const WIDEST_RANGE = RANGE_FILTERS[RANGE_FILTERS.length - 1]!.value;
 
 /** What the pages without chips call the window their numbers cover. */
 const DEFAULT_RANGE_LABEL = RANGE_FILTERS.find((r) => r.value === DEFAULT_RANGE)!.label;
@@ -982,13 +1016,19 @@ export function executionsPage(
             <form method="get" action="/runs">
               ${carry(["from", "to"])}
               <span class="dates">
-                <input type="date" name="from" value="${filter.range.from}"
-                  aria-label="From date (UTC)" title="From — UTC, inclusive" data-autosubmit>
-                <span class="muted">→</span>
-                <input type="date" name="to" value="${filter.range.to}"
-                  aria-label="To date (UTC)" title="To — UTC, inclusive" data-autosubmit>
+                <label>
+                  <span>From</span>
+                  <input type="date" name="from" value="${filter.range.from}"
+                    aria-label="From date (UTC)" title="From — UTC, inclusive">
+                </label>
+                <span class="arrow muted">→</span>
+                <label>
+                  <span>To</span>
+                  <input type="date" name="to" value="${filter.range.to}"
+                    aria-label="To date (UTC)" title="To — UTC, inclusive">
+                </label>
               </span>
-              <noscript><button class="btn" type="submit">Apply</button></noscript>
+              <button class="btn apply" type="submit">Apply dates</button>
             </form>
           </div>
         </details>
@@ -1016,7 +1056,7 @@ export function executionsPage(
 
         <form method="get" action="/runs">
           ${carry(["workflow"])}
-          <select name="workflow" data-autosubmit>
+          <span class="pick"><select name="workflow" data-autosubmit>
             <option value="">${filter.folder ? "Every workflow in the folder" : "Every workflow"}</option>
             ${filter.folder
               ? inFolder.map((w) => option(w.name))
@@ -1027,7 +1067,7 @@ export function executionsPage(
                       </optgroup>`
                     : html`${group.map((w) => option(w.name))}`,
                 )}
-          </select>
+          </select></span>
           <noscript><button class="btn" type="submit">Apply</button></noscript>
         </form>
       </div>
@@ -1051,7 +1091,7 @@ export function executionsPage(
         true,
         // "Nothing has run yet" is a lie once a window is on — the runs may
         // well exist a chip to the left.
-        filter.status || filter.workflow || filter.folder || filter.range.key !== "all"
+        filter.status || filter.workflow || filter.folder || filter.range.key !== WIDEST_RANGE
           ? html`<div class="empty">
               <b>No runs in this window</b>
               Nothing matches ${label}${
@@ -1209,10 +1249,11 @@ export function workflowPage(
         <form method="post" action="/workflows/${wf.name}/run">
           <button class="btn" type="submit">${ICON_PLAY} Run now</button>
         </form>
-        <!-- Spelled out because the tab now opens on 7 days: a link that says
+        <!-- Spelled out because the tab opens on 7 days: a link that says
              "all" and lands on a week is the kind of small lie you only catch
-             by counting rows. -->
-        <a class="chip" href="/runs?workflow=${wf.name}&range=all">All executions →</a>
+             by counting rows. The widest window is all of them, since anything
+             older than it has been pruned. -->
+        <a class="chip" href="/runs?workflow=${wf.name}&range=${WIDEST_RANGE}">All executions →</a>
       </div>
 
       ${rejections.length > 0 ? rejectionsSection(wf, rejections) : ""}
@@ -1785,7 +1826,7 @@ export function providerPickerPage(providers: ProviderView[]) {
     },
     html`
       <h2>Pick a platform</h2>
-      <div class="pick">
+      <div class="tiles">
         ${providers.map(
           (p) => html`
             <a href="/credentials/new/${p.id}">

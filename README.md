@@ -20,7 +20,7 @@ Four small pieces:
 | **Loader** | Imports `workflows/**/*.ts`, validates everything at boot |
 | **Triggers** | cron (croner), webhooks (Hono), manual |
 | **Runner** | Retries, timeouts, overlap control, run history in SQLite |
-| **Dashboard** | Read-only view of workflows, runs, and logs |
+| **Dashboard** | Two tabs — workflows by folder, and every execution |
 
 Everything else is just TypeScript — which is the point.
 
@@ -80,8 +80,12 @@ checkpoint resume, `ctx.state`, and polling.
 ### Folders
 
 Subdirectories are filing, nothing more. The loader recurses, so
-`workflows/pblsh/send-signed-agreement.ts` loads exactly like a top-level file,
-and the dashboard groups its table by folder once there is more than one.
+`workflows/pblsh/send-signed-agreement.ts` loads exactly like a top-level file.
+The dashboard's **Workflows** tab is organised around them: one collapsible
+section per folder, each with the health strip of its workflows' recent runs.
+Which sections you collapse is remembered in the browser, and the filter box
+searches names, descriptions and paths — so typing a folder name narrows the
+page to it.
 
 Names stay global and flat — a folder is **not** a namespace. A workflow in
 `workflows/pblsh/` still has to pick a `name` no other workflow uses, and the

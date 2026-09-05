@@ -168,6 +168,29 @@ const stmts = {
        MAX(started_at)                                       AS last_run
      FROM runs WHERE workflow = ?`,
   ),
+  // The workflows tab shows a health strip per workflow, so it needs the last
+  // handful of runs for *every* workflow — one windowed query rather than one
+  // query per row, which on a folder full of workflows is the difference
+  // between a page render and a page render times N.
+  recentRunsPerWorkflow: db.prepare(
+    `SELECT workflow, status, started_at, duration_ms, id FROM (
+       SELECT workflow, status, started_at, duration_ms, id,
+              ROW_NUMBER() OVER (PARTITION BY workflow ORDER BY started_at DESC) AS rn
+       FROM runs
+     ) WHERE rn <= ?
+     ORDER BY workflow, started_at DESC`,
+  ),
+  // Filters are passed twice rather than as `?1`, so the binding stays
+  // positional and order-independent of the driver's numbered-parameter
+  // support. An empty string means "no filter".
+  filteredRuns: db.prepare(
+    `SELECT * FROM runs
+     WHERE (? = '' OR status = ?) AND (? = '' OR workflow = ?)
+     ORDER BY started_at DESC LIMIT ?`,
+  ),
+  statusCountsSince: db.prepare(
+    `SELECT status, COUNT(*) AS count FROM runs WHERE started_at > ? GROUP BY status`,
+  ),
   pruneRuns: db.prepare(`DELETE FROM runs WHERE started_at < ?`),
   pruneSteps: db.prepare(
     `DELETE FROM steps WHERE run_id NOT IN (SELECT id FROM runs)`,
@@ -298,6 +321,36 @@ export const store = {
   recentRuns: (limit = 50) => stmts.recentRuns.all(limit) as RunRecord[],
   runsForWorkflow: (name: string, limit = 20) =>
     stmts.runsForWorkflow.all(name, limit) as RunRecord[],
+
+  /** The last `perWorkflow` runs of every workflow, newest first within each. */
+  recentRunsPerWorkflow: (perWorkflow = 12) =>
+    stmts.recentRunsPerWorkflow.all(perWorkflow) as Pick<
+      RunRecord,
+      "workflow" | "status" | "started_at" | "duration_ms" | "id"
+    >[],
+
+  filteredRuns: (
+    filter: { status?: string; workflow?: string } = {},
+    limit = 100,
+  ): RunRecord[] => {
+    const status = filter.status ?? "";
+    const workflow = filter.workflow ?? "";
+    return stmts.filteredRuns.all(
+      status,
+      status,
+      workflow,
+      workflow,
+      limit,
+    ) as RunRecord[];
+  },
+
+  statusCountsSince: (since: number): Record<string, number> => {
+    const rows = stmts.statusCountsSince.all(since) as {
+      status: string;
+      count: number;
+    }[];
+    return Object.fromEntries(rows.map((r) => [r.status, r.count]));
+  },
   statsForWorkflow: (name: string) =>
     stmts.statsForWorkflow.get(name) as {
       total: number;

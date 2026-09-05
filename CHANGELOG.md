@@ -8,6 +8,63 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### The dashboard is two tabs, and folders are the shape of the first one
+
+One page listing every workflow above every run stopped scaling the moment
+`workflows/` had subdirectories: folders were a single grey separator row, and
+the run list was a fixed last-40 with no way to ask it a question. Split into
+**Workflows** (`/`) and **Executions** (`/runs`).
+
+**Folders are now the structure, not a caption.** Each is a collapsible
+section with its own count, and which ones you collapse is kept in
+`localStorage` rather than on the server — it is a per-eyeball preference, and
+persisting it server-side would have meant a table and a notion of *whose*
+preference on a dashboard with exactly one shared basic-auth login.
+
+**Decided along the way:**
+
+- **No CSS or client framework.** The obvious move for "make it look better"
+  is Tailwind or a component library, and both were rejected: this project has
+  no build step and no bundler, and a CDN stylesheet means the dashboard stops
+  looking like itself on a box with no outbound network — which is the box it
+  runs on. The whole front end is still one inlined `<style>` and one inlined
+  `<script>` — 9.2 KB and 3.2 KB, a ten-workflow page 30 KB total and 6 KB
+  gzipped, with zero external requests. Dark and light both come from the same
+  token block via `prefers-color-scheme`.
+
+- **The health strip is one windowed query, not one query per row.** A folder
+  of twenty workflows would otherwise be twenty round trips to render a page;
+  `recentRunsPerWorkflow` returns the last twelve runs of everything in one go
+  and the view groups them in memory. Bar *height* carries duration, so a run
+  that suddenly takes far longer than its neighbours is visible without
+  opening it.
+
+- **Filter state survives the background refresh; the refresh does not fight
+  the user.** The 15s poll replaces `.wrap` wholesale, which throws away typed
+  text, listeners and open/closed state. So the filter lives in a closure and
+  the folder state in `localStorage`, both re-applied to the replacement,
+  listeners are delegated off `document`, and the poll skips a beat entirely
+  while the filter box has focus.
+
+- **Collapse is persisted from the summary's `click`, not from `toggle`.** A
+  search opens the folders it matched into, which fires `toggle` and is
+  indistinguishable from the user opening them — persisting on `toggle` erased
+  what they had collapsed the moment they typed. A click on a summary is only
+  ever the user.
+
+- **An unknown `?status=` widens to everything.** Validated in the route rather
+  than the view, so a typo shows every run instead of rendering a tab that can
+  only ever be empty.
+
+- **Chrome is sentence case; stored values are verbatim.** Page titles, row
+  labels, badges and filter chips are written text and read as written text.
+  Statuses, log levels, trigger kinds, cron expressions, file paths and
+  workflow names are echoed exactly as stored, which for this project means
+  lowercase. So a `Status` row holds a `failed` pill — the pill is the string
+  you would grep the database for, the label is not. The rule is written down
+  next to the formatters in `views.ts` so it does not drift.
+
+
 ### Compose is the deploy path, and the compose file is Coolify-correct
 
 The compose file had three things in it that a Coolify deployment trips over,

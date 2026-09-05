@@ -18,7 +18,15 @@ import {
 } from "../core/secret-store.ts";
 import type { Registry } from "../core/loader.ts";
 import type { LoadedWorkflow, RunRecord } from "../core/types.ts";
-import { indexPage, runPage, unauthorizedPage, workflowPage } from "./views.ts";
+import {
+  executionsPage,
+  runPage,
+  unauthorizedPage,
+  workflowPage,
+  workflowsPage,
+} from "./views.ts";
+
+const RUN_STATUSES = ["success", "failed", "running", "skipped"];
 
 export function createApp(registry: Registry): Hono {
   const app = new Hono();
@@ -158,7 +166,11 @@ export function createApp(registry: Registry): Hono {
       }
     };
 
-    for (const p of ["/", "/runs/*", "/workflows/*", "/api/*"]) app.use(p, auth);
+    // "/runs" and "/workflows" are listed alongside their wildcards: a bare
+    // "/runs/*" does not match "/runs" itself, and the executions tab lives
+    // there.
+    for (const p of ["/", "/runs", "/runs/*", "/workflows", "/workflows/*", "/api/*"])
+      app.use(p, auth);
   } else {
     log.warn("DASHBOARD_USER / DASHBOARD_PASS are not set — the dashboard is public");
   }
@@ -166,8 +178,37 @@ export function createApp(registry: Registry): Hono {
   /* ---------------------------------------------------------- dashboard */
 
   app.get("/", (c) =>
-    c.html(indexPage(registry.all(), nextRunFor, store.recentRuns(40)) as any),
+    c.html(
+      workflowsPage(
+        registry.all(),
+        nextRunFor,
+        store.recentRunsPerWorkflow(12),
+        store.statusCountsSince(Date.now() - 86_400_000),
+      ) as any,
+    ),
   );
+
+  // The executions tab. Both filters are optional and validated here rather
+  // than in the view, so an unknown ?status= widens to "everything" instead of
+  // rendering a tab that can only ever be empty.
+  app.get("/runs", (c) => {
+    const asked = c.req.query("status") ?? "";
+    const status = RUN_STATUSES.includes(asked) ? asked : "";
+    const workflow = registry.get(c.req.query("workflow") ?? "")?.name ?? "";
+
+    return c.html(
+      executionsPage(
+        store.filteredRuns({ status, workflow }, 100),
+        { status, workflow },
+        store.statusCountsSince(Date.now() - 86_400_000),
+        registry.all().map((w) => w.name),
+        runningCount(),
+      ) as any,
+    );
+  });
+
+  // "/workflows" is not a page of its own — the workflows tab is the index.
+  app.get("/workflows", (c) => c.redirect("/", 302));
 
   app.get("/workflows/:name", (c) => {
     const wf = registry.get(c.req.param("name"));

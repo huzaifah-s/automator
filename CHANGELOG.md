@@ -8,6 +8,117 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### Threads posts itself, and three n8n graphs became one workflow
+
+Ported the n8n graphs "The Mantra - Threads - Checker", "The Mantra - Notion
+(Threads) - Founder's Contents" and its "- Error Handler" into a single file,
+`workflows/the-mantra/threads-poster.ts`. Every four minutes it takes the
+Approved rows whose Post Date has arrived, turns each Notion page into a chain
+of Threads posts, and writes Status, Log and Thread URL back to the row.
+
+**Three graphs became one because all three splits were n8n mechanics.** The
+checker existed so the poster's execution list stayed readable — n8n records a
+run per trigger, and 360 empty runs a day buries it. That is what `poll()`
+already is: its `fetch` runs outside a run, and a tick that finds nothing due
+creates no run record. The "do the Notion query exactly once" property the
+checker's sticky note was proud of stops being a convention two graphs have to
+honour and becomes structural. The error handler was `errorTrigger`, which has
+no equivalent here because `onFailure` is a property of the workflow that
+failed — it cannot be wired to the wrong graph or left unwired in Settings.
+
+The alternative was a faithful three-workflow port with `ctx.run()` in place of
+Execute Workflow. Rejected: it would have reproduced n8n's shape and n8n's
+sharpest edge with it — the poster had no query of its own, so pressing play on
+it threw, and the two files had to agree about a database id neither of them
+owned.
+
+**A failed row makes the run red.** n8n's Code node caught everything and
+returned a status string, so the execution went green and the whole story lived
+in a Telegram message. This throws at the end of the batch, after every row has
+been attempted and alerted individually. The error carries a flag so
+`onFailure` knows not to send a second, vaguer message about the same failures;
+`onFailure` therefore only ever speaks about a genuine crash.
+
+**And therefore `retries: 0`, which is the one setting worth arguing about.**
+Everything worth retrying is already retried closer to the failure: the http
+client retries a 429 or a 5xx, the chain retries a container three times, and a
+row this run never claimed is still Approved and comes back in four minutes.
+What a whole-run retry would add is the one outcome nobody wants — re-running a
+run that posted half a thread. The run going red is the alert, not the trigger
+for another go.
+
+**The lock changed jobs.** In n8n, flipping the row to Posting before
+publishing was the only thing preventing a double post, because two executions
+could overlap freely. Here `onOverlap: "skip"` and the poll's seen-set already
+make that nearly impossible — but the lock is still load-bearing, for a better
+reason: the poll's filter is `Status = Approved`, so flipping the row is what
+takes it out of the query. A run that dies after publishing leaves the row on
+Posting, and a row on Posting is never picked up again. That is the whole
+no-double-post guarantee, verified by running two polls against a Notion mock
+that honours the writes: the second found nothing and published nothing.
+
+**A backlog no longer becomes one enormous run.** n8n handed over every due row
+and worked the lot in a single execution — thirty overdue threads is well over
+half an hour of API sleeps under one timeout. The query is capped at five rows,
+oldest first, so a backlog drains a few per tick. The cap lives in the *query*
+rather than in a slice afterwards, and that is not a detail: `poll` marks
+everything it emitted as seen, so a row trimmed after emission would never be
+offered again.
+
+**No rollback, still.** The token has no `threads_delete` scope, so a chain that
+breaks half way leaves what is already live. Asking for delete scope so an
+automation can remove published posts unattended is a much larger blast radius
+than a half thread somebody deletes by hand. The row goes Failed, the Log lists
+the ids, and the Telegram alert carries the permalink.
+
+**The token never reaches the run record.** n8n kept it in a data table and
+passed it downstream as item data, so it sat in plain text in every execution.
+It is read from `defineOAuth` outside any step — a step result is checkpointed
+to disk — and reaches the run page only as the `access_token` query parameter
+of the captured Threads calls, where the redactor scrubs it. Verified: after a
+full run, `strings` over the database and its `-wal` found zero plaintext hits
+for the Threads token, the Notion token or the bot token.
+
+`defineOAuth("threads-huzaifah", …)` is declared a second time here rather than
+imported from the refresher, which `defineOAuth` supports on purpose and which
+is the lesser of two evils. A shared module cannot live under `workflows/` —
+the loader imports every `.ts` there and fails one with no `defineWorkflow`
+default export — and importing the refresher's module from this file would run
+its `defineCredential` calls while the loader thinks it is loading *this* one,
+attributing its Telegram credential here and leaving the refresher recorded as
+needing nothing. An unconnected credential would then stop blocking it.
+
+Seven other things the n8n version got wrong, fixed rather than reproduced:
+
+- A publish that answered `200` with no id was retried. It should not have
+  been: Threads answered, so it almost certainly published. It is now treated
+  the same as a 5xx — ambiguous, not retried, and said so in the Log.
+- The title was read as `properties.Name.title[0]`, so renaming that column in
+  Notion would have quietly turned every alert into "Untitled". It is found by
+  property *type* now.
+- A Telegram outage could take the batch down. n8n needed
+  `onError: continueRegularOutput` for the same reason; here the send is caught
+  and logged, so the message is what is lost, not the rows still to post.
+- Running the poster by hand threw "No pages were passed in". There is nothing
+  to press play on now, and a *resume* from the dashboard — which carries no
+  input — does nothing rather than re-posting.
+- `HttpError` is re-exported from `define.ts`, because a Graph API error's
+  status and body are the answer rather than the noise: the code, subcode and
+  `fbtrace_id` go into the Log, and the status is what tells a definitive 4xx
+  from an ambiguous 5xx on a call that must not be retried.
+- `firstRun: "emit"` rather than the default. Baselining would mark every
+  already-overdue row as seen without posting it, and those rows would then sit
+  there until they aged out of the remembered window hours later and posted all
+  at once — worse than either outcome.
+- The image-processing poll, the settle waits and the container retries all
+  respect `ctx.signal` now, so a run that times out unwinds instead of sleeping
+  through it.
+
+**Deploying this while the n8n checker is still active posts everything
+twice.** Unlike the Telegram bot, which physically cannot deliver to two
+places, this reads Notion on a timer. Deactivate the n8n workflow first.
+
+
 ### The Mantra's Telegram bot answers /content_id
 
 Ported the n8n graph "Notion - Get contents from Telegram commands" —

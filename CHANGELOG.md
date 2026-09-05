@@ -8,6 +8,33 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### notionSignature trims its key
+
+The verification token travels through a chat message and is pasted into a web
+form that stores exactly what it is given — `PUT /api/secrets/:key` does not
+trim, deliberately, because an empty value has a meaning there and trimming is
+not the store's call to make for every credential.
+
+For an HMAC key that is the wrong trade. A trailing newline off the end of a
+copy produces a wrong digest, which is indistinguishable from a forged request:
+a 401 at the door, no run created, nothing on the dashboard, and Notion showing
+a growing pile of failed deliveries with no reason attached. Whitespace around
+an HMAC key is never intentional, so the verifier trims.
+
+Narrow on purpose — `notionSignature` only, not `hmacSignature` and not the
+store. This is the one credential in the system whose delivery path is a human
+copying out of a chat window.
+
+Verified: a token stored with a trailing newline now verifies and its event
+routes; a genuinely wrong token still 401s.
+
+Also worth writing down, because it cost time: the two ways this route can
+reject differ in the log and can be told apart from a browser. "Verifier …
+threw — token is not set" plus no `NOTION_WEBHOOK_TOKEN` in the Secrets tab
+means step 4 of the setup was never done. Only "failed verification", with the
+key listed as present, means the stored value is wrong.
+
+
 ### The Notion verification token is handed over on Telegram, not through a shell
 
 Setting this webhook up used to end with a `docker compose exec … bun -e …`

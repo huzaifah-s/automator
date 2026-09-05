@@ -134,7 +134,13 @@ export function notionSignature(
   return async ({ body, headers }) => {
     if (isNotionHandshake(body)) return true;
 
-    const key = resolve();
+    // Trimmed, and this is not defensive noise. The token reaches the operator
+    // through a chat message and is pasted into a web form that stores what it
+    // is given, so a trailing newline is the single most likely way to get this
+    // wrong — and it fails as a signature mismatch, indistinguishable from a
+    // forged request, on a route where nothing else says why. Whitespace around
+    // an HMAC key is never intentional.
+    const key = resolve()?.trim();
     // Thrown rather than returned false: app.ts logs the reason, and "no token
     // yet" is a different thing to be told than "that signature is wrong".
     if (!key) {

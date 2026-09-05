@@ -150,16 +150,6 @@ const PEOPLE: Record<PersonId, { label: string; notionUser: string; chat: () => 
 /** Where the handshake token is parked for the operator to collect. */
 const TOKEN_STATE_KEY = "notion:the-mantra-contents:verification-token";
 
-/**
- * The command the nudge hands over, as one pasteable line. Single-quoted for
- * the shell, so everything inside it has to be double quotes.
- */
-const TOKEN_READER =
-  `'import{Database}from"bun:sqlite";` +
-  `const r=new Database(process.env.DATABASE_PATH??"/data/automator.db",{readonly:true})` +
-  `.query("select value from state where namespace=? and key=?")` +
-  `.get("@shared","${TOKEN_STATE_KEY}");` +
-  `console.log(r?JSON.parse(r.value):"(not found - click Resend token in Notion)")'`;
 
 /* ------------------------------------------------------------------ payload */
 
@@ -386,29 +376,51 @@ export default defineWorkflow<Payload>({
     });
 
     if (decision.kind === "handshake") {
-      // The token itself is not in this message. It is in state, and state is
-      // the one thing this project never renders — so the nudge says where to
-      // read it rather than carrying it through Telegram's request body onto
-      // the run page.
-      await ctx.step("ask for the token to be filed", () =>
-        ctx.telegram.send(
-          "🔗 <b>Notion webhook verification</b>\n\n" +
-            "Notion sent the verification token for <code>the-mantra/notion-contents</code>. " +
-            "Read it on the server:\n\n" +
-            // Deliberately not `sqlite3 …`: the runtime image is bun:1-alpine
-            // plus tini, and the sqlite3 CLI is not in it. Bun ships its own
-            // driver, so this runs anywhere the app itself runs, and takes the
-            // database path from the same variable the app does rather than
-            // guessing between ./data and /data.
-            `<pre>docker compose exec -T automator bun -e ${TOKEN_READER}</pre>\n` +
-            "(drop the <code>docker compose exec -T automator</code> prefix if you run it " +
-            "without Docker)\n\n" +
-            "Paste it into Notion's verification modal, then store the same value as " +
-            "<code>NOTION_WEBHOOK_TOKEN</code> on the dashboard. Until you do, every real " +
-            "event on this route is rejected.",
-          { token: telegram.token, chatId: PEOPLE.huzaifah.chat(), parseMode: "HTML" },
-        ),
-      );
+      await ctx.step("send the token to be pasted", async () => {
+        // Read back from state rather than closed over from the step above:
+        // that step is checkpointed, so on a retry it comes back from the
+        // checkpoint and the in-memory copy is long gone.
+        const token = await ctx.state.shared.get<string>(TOKEN_STATE_KEY);
+        if (!token) throw new Error("The verification token is no longer in state");
+
+        const text =
+          "\u{1F517} <b>Notion webhook verification</b>\n\n" +
+          "Notion sent the verification token for <code>the-mantra/notion-contents</code>:\n\n" +
+          `<code>${esc(token)}</code>\n\n` +
+          "1. Paste it into Notion's verification modal — the subscription goes Active.\n" +
+          "2. Paste the same value on the dashboard under <b>Secrets → New</b>, named " +
+          "<code>NOTION_WEBHOOK_TOKEN</code>.\n\n" +
+          "Until step 2, every real event on this route is rejected. Lost this message? " +
+          "Click <b>Resend token</b> in Notion and it comes again.";
+
+        // Plain fetch rather than ctx.telegram.send, and that is the whole
+        // reason the token can be in the message at all.
+        //
+        // Every call through ctx.http is captured to the run page, redacted
+        // against the secrets this process knows about — and this token is
+        // arriving for the first time, so the redactor has never heard of it
+        // and would write it out verbatim. Uncaptured, the only copy on disk
+        // stays the one in ctx.state, which nothing renders.
+        //
+        // The trade, plainly: this one call does not appear on the run page, so
+        // a failure is the step's error and nothing more. Worth it — the
+        // alternative was a `docker compose exec` one-liner in a chat window,
+        // which is not something a teammate can be handed.
+        const res = await fetch(`https://api.telegram.org/bot${telegram.token}/sendMessage`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            chat_id: PEOPLE.huzaifah.chat(),
+            text,
+            parse_mode: "HTML",
+          }),
+          signal: ctx.signal,
+        });
+        // Status only, never the body: Telegram echoes the request back on some
+        // failures, and the bot token is in the URL besides.
+        if (!res.ok) throw new Error(`Telegram answered ${res.status} to the token handoff`);
+        return { delivered: true };
+      });
       return { handshake: true };
     }
 

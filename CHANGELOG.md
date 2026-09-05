@@ -8,6 +8,38 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### The Notion verification token is handed over on Telegram, not through a shell
+
+Setting this webhook up used to end with a `docker compose exec … bun -e …`
+one-liner in a chat message, because the token could not go in the message
+itself: `ctx.telegram.send` goes through the captured HTTP client, and a token
+arriving for the very first time is one the redactor has never heard of, so the
+message body would have written it verbatim onto the run page.
+
+That reasoning was right and the conclusion was wrong. The handshake nudge now
+carries the token and posts it with a plain `fetch` instead of `ctx.telegram`.
+Nothing captures a bare fetch, so the only copy on disk is still the one in
+`ctx.state`, which nothing renders — the invariant is unchanged and the setup
+is now a Telegram message, Notion's modal, and one dashboard form.
+
+The losing options were both worse. Rendering state on the dashboard breaks a
+settled rule for one screen. Having the workflow write `NOTION_WEBHOOK_TOKEN`
+into the secret store itself adds a fourth write surface to the store — also
+settled — and would not have helped anyway, since Notion requires a human to
+paste the token into its modal regardless.
+
+What it costs: that one call does not appear on the run page, so a failed
+handoff shows up as the step's error and nothing else. Worth it. The people who
+will run this setup next are not the people with SSH, and an instruction only
+one person can follow is an instruction that comes back to that person every
+time.
+
+Verified by triggering a real handshake and sweeping: the token appears in
+exactly one database row (`state`), zero times in stdout, and zero times across
+every dashboard and API route — while an ordinary event still captures all four
+of its HTTP calls with the bot token redacted in the URL.
+
+
 ### A step's error message is redacted on the way into SQLite
 
 `recordRun` redacted its error. `saveStep` did not — it redacted the step's

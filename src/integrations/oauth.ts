@@ -31,7 +31,7 @@ import { log } from "../core/logger.ts";
  * there is no client secret and no separate refresh token, just one token that
  * you trade for a later-expiring copy of itself:
  *
- *   const threads = defineOAuth("threads-the-mantra", {
+ *   const threads = defineOAuth("threads-huzaifah", {
  *     tokenUrl: "https://graph.threads.net/refresh_access_token",
  *     flow: "self",
  *     grantType: "th_refresh_token",

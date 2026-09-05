@@ -830,7 +830,7 @@ hold for a later-expiring copy of itself, and *that copy* is what you send next
 time. `flow: "self"` speaks it:
 
 ```ts
-const threads = defineOAuth("threads-the-mantra", {
+const threads = defineOAuth("threads-huzaifah", {
   tokenUrl: "https://graph.threads.net/refresh_access_token",
   flow: "self",
   grantType: "th_refresh_token",   // "ig_refresh_token" for Instagram

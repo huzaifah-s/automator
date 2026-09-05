@@ -34,7 +34,7 @@ import {
  *    returned `ok: false`, so the execution went green and only Telegram knew.
  *    Here the run goes red, retries, and `onFailure` sends the message.
  * 4. **Re-auth is a paste, not a schema.** When the token does die, pasting a
- *    new one into OAUTH_THREADS_THE_MANTRA_REFRESH_TOKEN changes the seed hash
+ *    new one into OAUTH_THREADS_HUZAIFAH_REFRESH_TOKEN changes the seed hash
  *    and the stored chain is abandoned on the next run — see oauth.ts.
  */
 
@@ -43,19 +43,24 @@ import {
  * no separate refresh token: you trade the token you hold for a
  * later-expiring copy of itself, and that copy is what you send next time.
  *
- * The seed lives under OAUTH_THREADS_THE_MANTRA_REFRESH_TOKEN — the env var,
+ * The seed lives under OAUTH_THREADS_HUZAIFAH_REFRESH_TOKEN — the env var,
  * or the secret store, which is the better home because it can be set before
  * this file is ever deployed:
  *
- *     bun run secret set OAUTH_THREADS_THE_MANTRA_REFRESH_TOKEN
+ *     bun run secret -- set OAUTH_THREADS_HUZAIFAH_REFRESH_TOKEN
  *
  * Set it *first*. Unlike the runway alert's credentials, a missing secret
  * aborts the boot rather than marking one workflow blocked.
  *
- * The name carries the brand because a second Threads account is a matter of
- * time, and workflow-adjacent names are global and flat.
+ * The name identifies the *account*, not the brand or the workflow, because
+ * that is what a token belongs to: this is the Threads account the founder
+ * content posts from, carried over from n8n's THREADS_TOKEN_HUZAIFAH_S. A
+ * second account — a brand one, or another person's — gets its own credential
+ * and its own seed, and the two never share a stored token. The workflow lives
+ * under the-mantra/ because that is the content operation it serves; those two
+ * facts are allowed to differ.
  */
-const threads = defineOAuth("threads-the-mantra", {
+const threads = defineOAuth("threads-huzaifah", {
   tokenUrl: "https://graph.threads.net/refresh_access_token",
   flow: "self",
   grantType: "th_refresh_token",
@@ -208,12 +213,12 @@ export default defineWorkflow({
         "Left unrefreshed past that date it dies permanently, and there is no " +
           "recovery — only a full manual re-auth: a new long-lived token, with the " +
           "<code>threads_delete</code> scope again, pasted into " +
-          "<code>OAUTH_THREADS_THE_MANTRA_REFRESH_TOKEN</code>.",
+          "<code>OAUTH_THREADS_HUZAIFAH_REFRESH_TOKEN</code>.",
       );
     } else {
       lines.push(
         "Nothing has been stored yet, so the token in " +
-          "<code>OAUTH_THREADS_THE_MANTRA_REFRESH_TOKEN</code> is still the one in play, " +
+          "<code>OAUTH_THREADS_HUZAIFAH_REFRESH_TOKEN</code> is still the one in play, " +
           "expiring whenever it was originally issued to.",
         "",
         "A Threads token that goes 60 days without a refresh dies permanently, and " +

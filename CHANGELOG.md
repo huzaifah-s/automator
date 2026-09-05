@@ -8,6 +8,36 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-06
 
+### The dashboard reads on a phone, and the rows stop being columns
+
+Below 560px every `.row` grid becomes a wrapping flex line: the name takes the
+first line to itself and everything still worth showing wraps under it. The
+880px layout narrows the same grids instead, and on a 375px screen that is
+what the columns were eating — the credentials tab rendered rows whose name
+was squeezed to nothing while a 210px button column kept its width, so the
+page said `● Brevo Primary` and never said *which* credential.
+
+**A stacked row shows more, not less.** Three cells that the 880px grid drops
+come back on the second line — a run's start time, a credential's connection
+pill, a secret's last update — marked `keep-sm`. The tablet grid still hides
+them because it has nowhere to put them; a stacked row has a whole line spare.
+
+**The tabs take a line of their own.** Brand, three tabs and their badges have
+never fitted across a phone: "Credentials" was cut off at the right edge, and
+the breadcrumb that follows them was off-screen entirely, so a run page
+arrived with nothing on it naming the run. The tabs now split a second row
+evenly and the breadcrumb sits beside the brand on the first.
+
+**A filter menu opens the width of the toolbar.** The two date fields inside
+the window menu were 55px each in a popover sized to its own list of links.
+Full-width also means the panel cannot hang off whichever edge it opened near,
+which the folder menu did.
+
+Text inputs go to 16px on a phone, because anything smaller makes the browser
+zoom the page in when the field takes focus and leaves it there. Log lines put
+the timestamp and level on one line and give the message the full width — held
+to a 110px column, a JSON payload was a stripe of punctuation.
+
 ### Content cross-posts itself, and three more graphs became one
 
 `workflows/the-mantra/cross-poster.ts` replaces the n8n "Cross-post Checker",

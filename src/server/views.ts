@@ -75,7 +75,7 @@ background:var(--panel-2);color:var(--muted);line-height:17px}
 .grow{flex:1}
 .crumb{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:13px;
 min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-.crumb b{color:var(--fg);font-weight:600}
+.crumb b{color:var(--fg);font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis}
 
 /* ---- stats ---- */
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:20px}
@@ -253,6 +253,8 @@ details.item>summary::before{content:"\\25B8";color:var(--faint);font-size:10px;
 details.item[open]>summary::before{content:"\\25BE"}
 details.item>summary:hover{background:var(--panel-2)}
 .payload{padding:0 14px 12px 34px;display:grid;gap:8px}
+/* A URL is the one summary line with no natural break in it. */
+.item .url{flex:1;word-break:break-all}
 .payload h4{margin:0;font-size:10px;text-transform:uppercase;letter-spacing:.07em;
 color:var(--faint);font-weight:600}
 .payload pre,.blob{margin:0;background:var(--sunk);border:1px solid var(--border);border-radius:8px;
@@ -272,6 +274,82 @@ white-space:pre-wrap;word-break:break-word}
 .hide-sm{display:none}
 .stats{grid-template-columns:repeat(2,1fr)}
 .brand span:last-child{display:none}}
+
+/* ---- phone ----
+   Narrower than this the row grids stop being columns at all. A three-column
+   grid takes its width from the first column, and the first column is the
+   name — the one thing you opened the page to read. So the name gets a line
+   of its own and everything still worth showing wraps onto a second one,
+   which is also where the cells that were dropped at 880px come back. */
+@media(max-width:560px){
+.wrap{padding:0 14px 56px}
+.top{margin:0 -14px 16px;padding:0 14px}
+
+/* The tabs take a line of their own and split it evenly. Across one row a
+   brand, three tabs and their badges did not fit: "Credentials" was cut off
+   at the right edge, and a breadcrumb sitting after them was off-screen
+   entirely — which is how a run page arrived with nothing naming it. */
+.topbar{flex-wrap:wrap;height:auto;gap:0 10px;padding:9px 0 0}
+.topbar .grow{display:none}
+.brand span:last-child{display:inline}
+.crumb{flex:1;font-size:12.5px}
+.tabs{order:3;flex:0 0 100%;gap:4px;margin:9px 0 0}
+.tab{flex:1;justify-content:center;padding:8px 4px;font-size:13px;gap:5px}
+.tab .n{padding:0 5px}
+
+.stats{gap:8px}
+.stat{padding:11px 12px}
+.stat b{font-size:19px}
+h2{margin:20px 0 8px}
+
+.row{display:flex;flex-wrap:wrap;align-items:center;gap:7px 10px;padding:12px 14px}
+.row>:first-child{flex:1 1 100%;min-width:0}
+.keep-sm{display:block}
+/* A stacked row is not a table any more, so a header of column names is one
+   too, and it keeps only its first cell — which is still what says whether
+   the rows under it are credentials or secrets. */
+.row.head>:not(:first-child){display:none}
+.row form,.row .actions{margin-left:auto}
+/* The column header it stood under is gone, so the cell says what it is. */
+.wf .next::before{content:"next ";color:var(--faint)}
+.actions{gap:8px}
+/* Two lines of it, now that nothing is racing it for the width: one line of
+   a failure is never the half that says what failed. */
+.desc,.detail{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+/* The folder and the name share one line again — and the folder keeps its
+   width while the name truncates, the way it does on a wide screen. */
+.ex .name:has(.path){flex-wrap:nowrap}
+.ex .name .path{flex:none}
+.ex .name .path+b{flex-basis:auto;min-width:0}
+
+/* 16px, or a phone browser zooms the page in when the field takes focus and
+   leaves it that way. */
+input[type=search],input[type=date],input[type=text],input[type=password],select,textarea{font-size:16px}
+input[type=search]{max-width:none}
+.toolbar input[type=search]{flex:1 1 100%}
+/* A menu takes the toolbar's whole width and drops a panel the same width,
+   which is the only way the two date fields inside one are wide enough to
+   read — a popover sized to its own list of links left them 55px each. It
+   also means the panel cannot hang off whichever edge it opened near. */
+.toolbar>.menu{flex:1 1 100%}
+.menu>summary{justify-content:space-between}
+.pop{left:0;right:0;min-width:0;max-width:none}
+.dates{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr)}
+.dates input[type=date]{min-width:0}
+.btn{padding:8px 12px}
+.btn.icon{padding:8px 10px}
+.kv td:first-child{width:96px}
+
+/* Squeezed between a status and a duration there was no width left for it. */
+details.item>summary{flex-wrap:wrap}
+.item .url{flex:1 1 100%}
+
+/* Time and level, then the message across the full width. Held to a 110px
+   column the message wrapped every three words and a JSON payload was a
+   stripe of punctuation. */
+.logline{display:flex;flex-wrap:wrap;gap:2px 9px;padding:7px 14px}
+.logline>:last-child{flex:1 1 100%}
+}
 `;
 
 /**
@@ -617,7 +695,7 @@ function workflowRow(
       <div class="mono muted trunc hide-sm" title="${triggerLabel(w)}">${triggerLabel(w)}</div>
       <div class="hide-sm">${healthStrip(pulses)}</div>
       <div class="hide-sm">${updatedCell(version)}</div>
-      <div class="mono muted trunc" title="${next ? fmt(next.getTime()) : "no schedule"}">
+      <div class="mono muted trunc next" title="${next ? fmt(next.getTime()) : "no schedule"}">
         ${next ? relative(next.getTime()) : "—"}
       </div>
       <form method="post" action="/workflows/${w.name}/run">
@@ -1008,7 +1086,7 @@ function runsTable(
                 </div>
                 <div>${statusPill(r.status)}</div>
                 <div class="mono muted hide-sm">${r.trigger}</div>
-                <div class="mono muted hide-sm" title="${fmt(r.started_at)}">${relative(r.started_at)}</div>
+                <div class="mono muted hide-sm keep-sm" title="${fmt(r.started_at)}">${relative(r.started_at)}</div>
                 <div class="mono muted hide-sm">${dur(r.duration_ms)}</div>
                 <div class="mono"><a href="/runs/${r.id}"
                   >${showWorkflow ? r.id.slice(0, 8) : "Open →"}</a></div>
@@ -1147,7 +1225,7 @@ function rejectionsSection(wf: LoadedWorkflow, rejections: RejectionRecord[]) {
           started, the last of them ${relative(newest)}. A delivery has got through since
           (${relative(resolvedAt)}), so this is history — kept until you clear it.
         </p>`}
-    <div class="card"><table class="kv"><tbody>
+    <div class="card"><table><tbody>
       ${rejections.map(
         (r) => html`<tr>
           <td>
@@ -1301,8 +1379,7 @@ export function runPage(
                     <summary>
                       <span class="mono ${call.status && call.status < 400 ? "success" : "failed"}"
                         >${call.status ?? "ERR"}</span>
-                      <span class="mono" style="flex:1;word-break:break-all"
-                        >${call.method} ${call.url}</span>
+                      <span class="mono url">${call.method} ${call.url}</span>
                       <span class="mono muted">${dur(call.duration_ms)}</span>
                     </summary>
                     <div class="payload">
@@ -1453,7 +1530,7 @@ function credentialRow(c: CredentialView, writable: boolean) {
           ? html`<div class="detail">Used by ${c.requiredBy.join(", ")}</div>`
           : ""}
       </div>
-      <div class="hide-sm">${connectionPill(c)}</div>
+      <div class="hide-sm keep-sm">${connectionPill(c)}</div>
       <div class="mono muted trunc hide-sm" title="${c.testedAt ? fmt(c.testedAt) : "never tested"}">
         ${c.testedAt ? relative(c.testedAt) : "—"}
       </div>
@@ -1481,7 +1558,7 @@ function secretRow(secret: SecretView, writable: boolean) {
       <div class="name" style="min-width:0">
         ${ICON_KEY}<b class="mono trunc">${secret.key}</b>
       </div>
-      <div class="mono muted trunc hide-sm" title="${fmt(secret.updatedAt)}">
+      <div class="mono muted trunc hide-sm keep-sm" title="${fmt(secret.updatedAt)}">
         ${relative(secret.updatedAt)}
       </div>
       <div class="actions">
@@ -1585,7 +1662,7 @@ export function credentialsPage(args: {
                       </div>
                       <div class="detail">Needed by ${w.requiredBy.join(", ")}</div>
                     </div>
-                    <div class="hide-sm">
+                    <div class="hide-sm keep-sm">
                       ${w.known
                         ? html`<span class="pill failed">missing</span>`
                         : html`<span class="pill skipped">unknown platform</span>`}

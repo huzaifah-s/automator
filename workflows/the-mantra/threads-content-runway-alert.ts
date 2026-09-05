@@ -1,5 +1,4 @@
-import { z } from "zod";
-import { cron, defineSecrets, defineWorkflow } from "../../src/core/define.ts";
+import { cron, defineCredential, defineWorkflow } from "../../src/core/define.ts";
 
 /**
  * The Mantra — Threads — Content Runway Alert.
@@ -27,13 +26,21 @@ import { cron, defineSecrets, defineWorkflow } from "../../src/core/define.ts";
  *    a buffer of 1 when it was 0. An empty array is just an empty array.
  */
 
-const secrets = defineSecrets({
-  // Internal integration token — `ntn_…`, or `secret_…` for one issued before
-  // the rename. Only checked for length: which token shapes Notion issues is
-  // their call, and a boot that fails on a valid one is worse than one that
-  // does not.
-  NOTION_API_KEY: z.string().min(20),
-});
+/**
+ * The Notion internal integration this alert reads with, connected on the
+ * Credentials tab rather than declared as an environment variable.
+ *
+ * "mantra" is a slot, not a value. Revoking the integration in Notion and
+ * pasting a new token into the same credential leaves this line alone — which
+ * is the whole reason the reference is a name you chose and not an id the
+ * database made up. Deleting the credential and creating another called
+ * "mantra" also works.
+ *
+ * The cost, and it is the deliberate one: this alert no longer stops the boot
+ * when the token is missing. It is marked blocked on the dashboard and refuses
+ * to run instead — see AGENTS.md.
+ */
+const notion = defineCredential("notion", "mantra");
 
 /* ---------------------------------------------------------- configuration */
 
@@ -167,7 +174,7 @@ export default defineWorkflow({
             },
             {
               headers: {
-                authorization: `Bearer ${secrets.NOTION_API_KEY}`,
+                authorization: `Bearer ${notion.token}`,
                 "Notion-Version": NOTION_VERSION,
               },
             },

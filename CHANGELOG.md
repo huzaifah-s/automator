@@ -8,6 +8,37 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### The Mantra's Notion token is a credential, not an env var
+
+First workflow moved onto `defineCredential`. `NOTION_API_KEY` is gone from the
+environment; the alert now reads Notion through the credential named **mantra**,
+connected on the Credentials tab.
+
+The reason to move this one and not the others is what it buys: a Test button
+for the token the alert actually uses, and rotation without touching `.env` or
+redeploying. `BREVO_API_KEY` and `TALLY_SIGNING_SECRET` stay as `defineSecrets`
+— Brevo could have become a credential, but the pblsh workflow reads it through
+`defineSecrets` and a primary Brevo credential already satisfies that name
+without any code change, so editing a working production workflow would have
+bought nothing.
+
+**The reference is a name you chose, not an id the database made up.** This was
+the question worth settling: `defineCredential("notion", "mantra")` names a
+*slot*. Revoke the integration in Notion and paste a new token into the same
+credential and the file is untouched; delete the credential entirely and create
+another called "mantra" and it reconnects on its own. A UUID would have inverted
+that — every delete-and-recreate would mean editing the workflow to chase a new
+id, which is exactly the coupling the store exists to remove. Names can collide
+where uuids cannot; that is handled by refusing a colliding name at save time,
+which is a better trade than making every reference opaque.
+
+**What it costs.** This alert no longer stops the boot when its token is
+missing — that is the documented credential rule, not a regression, and the
+compensation is that the workflow is marked blocked and its runs are refused
+rather than sending an alert computed from a failed Notion call. Deploy order
+matters: connect the credential first, then deploy, or the alert sits blocked
+until you do.
+
 ### Credentials, folders, and a dashboard that writes
 
 A credential is now a first-class thing: several fields for one platform, kept

@@ -204,6 +204,11 @@ export async function saveCredential(input: CredentialInput): Promise<Credential
     updated_at: now,
   });
 
+  // Every field row carries the folder too, and an edit that only changes the
+  // folder writes no values — so without this the credential would move and
+  // its own secrets would stay behind in the old one.
+  store.secretSetFolderByOwner(ref, input.folder?.trim() || null);
+
   // Exactly one credential per provider feeds the built-in integration. Two
   // claiming it would make "which one is live" a coin toss.
   if (input.primary) store.credentialClearPrimary(providerId, id);

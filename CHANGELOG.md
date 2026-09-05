@@ -29,6 +29,17 @@ The one thing lost is the ability to blank a loose secret from this form, which
 was never available anyway: `setSecret` has always refused an empty value with
 "delete it instead", and Delete is the button for that.
 
+### A credential now takes its own field rows with it when it moves
+
+`saveCredential` applies the folder to every secret it owns, not just the
+fields the submission carried values for. A folder-only credential edit sends
+no values — the password boxes come back blank on purpose — so the credential
+row moved and the rows holding its actual fields stayed behind in the old
+folder. Nothing broke, because lookup is by owner and never by folder, but the
+Credentials tab builds its folder list from both tables, so the old folder
+lingered with invisible members in it. `setCredentialFolder` had the right
+behaviour; `saveCredential` just was not doing the same thing.
+
 ### Each brand pings from its own Telegram bot
 
 `ctx.telegram.send` takes a `token` override, the way `ctx.discord.send`

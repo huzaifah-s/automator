@@ -581,9 +581,9 @@ export default defineWorkflow<Payload>({
     const link = page.url ?? `https://app.notion.com/p/${bare(pageId)}`;
 
     const lines = [
-      `📋 <b>${esc(title)}</b>`,
+      `ID: <code>${esc(pageId)}</code> 📋`,
+      `Title: <b>${esc(title)}</b>`,
       `Status: <b>${esc(status)}</b>`,
-      `ID: <code>${esc(pageId)}</code>`,
     ];
     if (needsReassign) lines.push(`Assigned to ${esc(person.label)}`);
     if (comments.length) {

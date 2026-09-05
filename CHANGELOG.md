@@ -8,6 +8,37 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-06
 
+### Content cross-posts itself, and three more graphs became one
+
+`workflows/the-mantra/cross-poster.ts` replaces the n8n "Cross-post Checker",
+"Cross-post (IG, FB & Threads)" and "Cross-post Error Handler". The collapse is
+the same one the Threads poster made and for the same two reasons — `poll()`
+files no run on a quiet tick, so the checker has nothing left to do, and
+`onFailure` is a property of the workflow that failed, so the error handler
+cannot be wired to the wrong graph.
+
+**The Postings checklist is the design, and it is kept as-is.** Three platforms
+are three independent chances to fail, and a row that reached Instagram must not
+restart at Instagram. Each platform is ticked in the Notion page the moment it
+lands, the row is released back to `Posted` if anything failed, and the next
+tick re-posts only what is still unticked. It was the best idea in the n8n
+version and it is ported unchanged.
+
+**A failed row now makes the run red.** n8n caught everything and returned a
+status string, so the execution went green and only Telegram knew. That also
+buys the retry for free: a poll marks its items seen only after a *successful*
+run, so a red run is what puts the row back in the queue.
+
+**The window stayed as it was, and the rows it drops are now reported.** It only
+sees rows whose TikTok post date is 3–10 days old. Widening it would have
+silently back-posted a pile of old content on the first deploy, so the fix went
+the other way — see the stale alert below.
+
+**The Facebook page token was in the workflow.** n8n had it pasted literally
+into two HTTP nodes, which put it in its database, in every execution record and
+in the exported JSON. It is now a `meta` credential. The old token has to be
+treated as compromised and rotated by hand — nothing in this repo can do that.
+
 ### ctx.drive and ctx.s3, because media has to be somewhere Meta can fetch it
 
 Instagram, Facebook and Threads all publish by URL: you hand Meta a link and it

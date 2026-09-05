@@ -315,6 +315,37 @@ about it — which it does, on every boot, naming the id. To clean up properly,
 put the file back with `enabled: false` for one boot; the subscription is then
 deleted and the warning stops.
 
+## Rejected deliveries
+
+A webhook turned away at the door — a bad secret, a signature that did not
+check out, a body that would not parse, a payload the schema refused — never
+becomes a run. So it used to leave nothing behind but a warn line on stdout,
+and the dashboard showed a workflow that looked as though nobody had ever
+called it. That is the wrong picture, and it is the one you get on the day a
+provider is retrying against a route that is quietly 401ing.
+
+Those attempts are now counted per workflow and shown on its page, above the
+run table, with the reason and — where the check had something to say — why:
+
+```
+Rejected deliveries
+  failed verification   3×   Notion webhook verification token is not set
+```
+
+A **Clear counters** button zeroes them once the route is fixed, and
+`GET /api/workflows/<name>/rejections` has the same thing as JSON.
+`GET /api/workflows` carries a `rejected` summary per workflow.
+
+**Counted, not logged per attempt.** A public endpoint is exactly what gets
+hammered, and a row per rejection is a way to fill a disk from outside. The key
+is `(workflow, path, reason)`, which bounds the table at a handful of rows, and
+a path no workflow claims is a 404 that records nothing at all — otherwise a
+scanner walking URLs would write a row per guess.
+
+**The request body is never stored.** A rejected call is by definition one
+nobody authenticated. What it sent is whatever a stranger chose to send, and a
+wrong secret is still somebody's guess at a secret.
+
 ## Calling one workflow from another
 
 `ctx.run(name, input)` runs another workflow and returns its result. The child

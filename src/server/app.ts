@@ -139,6 +139,15 @@ export function createApp(registry: Registry): Hono {
       return c.json({ error: `No workflow handles ${method} /hooks/${path}` }, 404);
     }
 
+    /**
+     * Counts a delivery that will never become a run, so the dashboard can say
+     * why a webhook workflow looks like it was never called. Only reachable
+     * once `wf` resolved — an unclaimed path is a 404 above and is recorded
+     * nowhere, which is what keeps a URL scanner from writing a row per guess.
+     */
+    const reject = (reason: string, detail?: string | null) =>
+      store.recordRejection({ workflow: wf.name, path, reason, detail });
+
     // Read the body once, as text. A verifier recomputes an HMAC over exactly
     // the bytes that arrived, so parsing first and re-serialising would never
     // match; the parse below works from this same string.
@@ -147,23 +156,30 @@ export function createApp(registry: Registry): Hono {
       try {
         raw = await c.req.raw.text();
       } catch {
+        reject("unreadable body");
         return c.json({ error: "Could not read request body" }, 400);
       }
     }
 
     if (wf.trigger.verify) {
       let ok = false;
+      let thrown: string | null = null;
       try {
         ok = await wf.trigger.verify({ body: raw, headers: c.req.raw.headers });
       } catch (err) {
         // A verifier that throws is a failed check, not a 500: the caller
         // gets the same 401 either way, and the reason is ours to read.
-        log.warn(
-          `Verifier for ${wf.name} threw — ${err instanceof Error ? err.message : err}`,
-        );
+        thrown = err instanceof Error ? err.message : String(err);
+        log.warn(`Verifier for ${wf.name} threw — ${thrown}`);
       }
       if (!ok) {
         log.warn(`Rejected webhook for ${wf.name}: failed verification`);
+        // The thrown message is the whole diagnostic where there is one — "the
+        // token is not set" and "that signature is wrong" are the same 401 to
+        // the caller and completely different problems to the operator. A
+        // verifier that simply returned false has nothing to add, and saying
+        // more would be inventing it.
+        reject("failed verification", thrown);
         return c.json({ error: "Unauthorized" }, 401);
       }
     } else {
@@ -182,6 +198,9 @@ export function createApp(registry: Registry): Hono {
           "";
         if (!timingSafeEqual(provided, expected)) {
           log.warn(`Rejected webhook for ${wf.name}: bad secret`);
+          // No detail: the only thing there is to say is what was sent, and
+          // that is a guess at a secret, which is not going in the database.
+          reject(provided === "" ? "no secret supplied" : "bad secret");
           return c.json({ error: "Unauthorized" }, 401);
         }
       }
@@ -191,12 +210,22 @@ export function createApp(registry: Registry): Hono {
     try {
       input = method === "GET" ? c.req.query() : await parseBody(raw, c.req.raw);
     } catch {
+      reject("unparseable body", c.req.header("content-type") ?? null);
       return c.json({ error: "Could not parse request body" }, 400);
     }
 
     if (wf.trigger.schema) {
       const parsed = wf.trigger.schema.safeParse(input);
       if (!parsed.success) {
+        // Which fields, not what was in them. A caller controls both, and only
+        // one of the two is a thing worth keeping.
+        reject(
+          "validation failed",
+          parsed.error.issues
+            .slice(0, 8)
+            .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+            .join("; "),
+        );
         return c.json({ error: "Validation failed", issues: parsed.error.issues }, 422);
       }
       input = parsed.data;
@@ -311,6 +340,7 @@ export function createApp(registry: Registry): Hono {
         store.statusCountsSince(Date.now() - 86_400_000),
         store.workflowVersions(),
         blockedWorkflows(),
+        store.rejectionTotals(),
       ) as any,
     ),
   );
@@ -387,8 +417,22 @@ export function createApp(registry: Registry): Hono {
         store.runsForWorkflow(wf.name, 40),
         store.workflowVersions().get(wf.name),
         blockedWorkflows().get(wf.name) ?? [],
+        store.rejectionsFor(wf.name),
       ) as any,
     );
+  });
+
+  /**
+   * Zeroes a workflow's rejection counters. Not gated behind DASHBOARD_WRITE:
+   * this is observational data like a run record, not a credential, and the
+   * button exists so a fixed route stops showing red forever.
+   */
+  app.post("/workflows/:name/rejections/clear", (c) => {
+    const wf = registry.get(c.req.param("name"));
+    if (!wf) return c.notFound();
+    const cleared = store.clearRejections(wf.name);
+    log.info(`Cleared ${cleared} rejection counter(s) for ${wf.name}`);
+    return c.redirect(`/workflows/${wf.name}`, 303);
   });
 
   app.post("/workflows/:name/run", async (c) => {
@@ -779,6 +823,7 @@ export function createApp(registry: Registry): Hono {
 
   app.get("/api/workflows", (c) => {
     const versions = store.workflowVersions();
+    const rejected = store.rejectionTotals();
     return c.json(
       registry.all().map((w) => {
         const version = versions.get(w.name);
@@ -795,8 +840,32 @@ export function createApp(registry: Registry): Hono {
           addedAt: version ? new Date(version.first_seen).toISOString() : null,
           updatedAt: version ? new Date(version.updated_at).toISOString() : null,
           nextRun: nextRunFor(w.name)?.toISOString() ?? null,
+          // Deliveries turned away before a run existed, which is why they
+          // cannot be counted from /api/runs. Null, not 0, when there have
+          // never been any: "none ever" and "cleared" read the same otherwise.
+          rejected: rejected.has(w.name)
+            ? {
+                count: rejected.get(w.name)!.count,
+                lastAt: new Date(rejected.get(w.name)!.last_at).toISOString(),
+              }
+            : null,
         };
       }),
+    );
+  });
+
+  /** Why a workflow's hook is turning callers away, reason by reason. */
+  app.get("/api/workflows/:name/rejections", (c) => {
+    const wf = registry.get(c.req.param("name"));
+    if (!wf) return c.json({ error: "Unknown workflow" }, 404);
+    return c.json(
+      store.rejectionsFor(wf.name).map((r) => ({
+        reason: r.reason,
+        detail: r.detail,
+        count: r.count,
+        firstAt: new Date(r.first_at).toISOString(),
+        lastAt: new Date(r.last_at).toISOString(),
+      })),
     );
   });
 

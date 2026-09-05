@@ -8,6 +8,47 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-05
 
+### Webhook deliveries turned away at the door now show on the dashboard
+
+A webhook rejected before a run exists — bad secret, failed signature,
+unparseable body, schema refusal — left nothing behind but a warn line on
+stdout. The dashboard showed a workflow that looked as though it had simply
+never been called, which is the most misleading thing it could have said: the
+one case where you go looking is the case where the runs you expected are
+missing.
+
+Found the hard way. A Notion subscription accumulated seven failed deliveries
+against a route that was 401ing because its verification token had not been
+stored yet, and the only way to learn that was the container log — on a
+deployment whose whole point is that a teammate without SSH can operate it.
+
+Counted per `(workflow, path, reason)` rather than logged per attempt. A public
+endpoint is precisely what gets hammered, so a row per rejection is a way to
+fill a disk from outside; the key bounds the table at a handful of rows. A path
+no workflow claims records nothing at all — a 404, as before — or a scanner
+walking URLs would write a row per guess.
+
+The request body is never stored, and that is not a size decision. A rejected
+call is by definition one nobody authenticated, so its body is whatever a
+stranger chose to send, and a wrong secret is still somebody's guess at a
+secret. What is kept is the reason, plus the verifier's own message where there
+is one — which is the entire diagnostic, because "the token is not set" and
+"that signature is wrong" are the same 401 to the caller and completely
+different problems to the operator.
+
+Shown on the workflow page above the run table, badged on the workflows list,
+cleared by a button, and mirrored at `GET /api/workflows/<name>/rejections`.
+The clear button is not behind `DASHBOARD_WRITE`: this is observational data
+like a run record, not a credential, and the alternative is a route that reads
+red forever after it was fixed.
+
+Verified against all five reasons — bad secret, no secret supplied, failed
+verification, unparseable body, validation failed — including that five
+requests to unclaimed paths wrote no rows, that a wrong secret's value appears
+nowhere in the database, that clearing one workflow leaves another's counters
+alone, and that a successful delivery adds nothing.
+
+
 ### notionSignature trims its key
 
 The verification token travels through a chat message and is pasted into a web

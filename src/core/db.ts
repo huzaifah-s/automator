@@ -7,6 +7,7 @@ import type {
   CredentialRow,
   InboxRecord,
   LogRecord,
+  RejectionRecord,
   RunRecord,
   RunStatus,
   StepRecord,
@@ -15,6 +16,10 @@ import type {
 } from "./types.ts";
 
 const path = process.env.DATABASE_PATH ?? "./data/automator.db";
+
+/** Ceiling on a rejection's `detail`. Long enough for a sentence or a field list. */
+const REJECTION_DETAIL_MAX = 500;
+
 mkdirSync(dirname(path), { recursive: true });
 
 export const db = new Database(path, { create: true });
@@ -112,6 +117,38 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_inbox_pending ON inbox(status, received_at);
   CREATE INDEX IF NOT EXISTS idx_inbox_print   ON inbox(fingerprint, received_at DESC);
+
+  -- Webhook deliveries turned away at the door: a bad secret, a signature that
+  -- did not check out, a body that would not parse, a payload the schema
+  -- refused. None of those reach a run, so until this table existed the only
+  -- record of them was a warn line on stdout — and the dashboard, which is
+  -- where somebody looks, showed a workflow that was simply never called. A
+  -- Notion subscription piling up failed deliveries against a route that was
+  -- silently 401ing is what prompted it.
+  --
+  -- Counted, not logged one row per attempt. An unauthenticated public endpoint
+  -- is exactly the thing that gets hammered, and a row per rejection is a way
+  -- to fill a disk from outside. The primary key bounds the table at
+  -- (workflows × reasons), which is a handful, and nothing is recorded at all
+  -- for a path no workflow claims — otherwise a scanner walking URLs would
+  -- write a row per guess.
+  --
+  -- The detail column is the reason the check failed where there is one to give: a
+  -- verifier's thrown message, or which fields the schema rejected. Redacted
+  -- and capped on the way in like everything else observational. The request
+  -- body is deliberately absent — a rejected call is by definition one nobody
+  -- authenticated, and storing what it sent is storing whatever a stranger
+  -- chose to send.
+  CREATE TABLE IF NOT EXISTS rejections (
+    workflow TEXT    NOT NULL,
+    path     TEXT    NOT NULL,
+    reason   TEXT    NOT NULL,
+    detail   TEXT,
+    count    INTEGER NOT NULL DEFAULT 0,
+    first_at INTEGER NOT NULL,
+    last_at  INTEGER NOT NULL,
+    PRIMARY KEY (workflow, path, reason)
+  ) WITHOUT ROWID;
 
   -- Durable key/value state — the one table here that deliberately outlives
   -- run history: polling cursors, rotating OAuth tokens, cross-run handoffs.
@@ -442,6 +479,25 @@ const stmts = {
   pendingDeliveryCount: db.prepare(
     `SELECT COUNT(*) AS count FROM inbox WHERE status = 'pending'`,
   ),
+  // One row per (workflow, path, reason), incremented. `detail` takes the
+  // newest value rather than the first: a route that was failing for one reason
+  // and is now failing for another should say the current one.
+  bumpRejection: db.prepare(
+    `INSERT INTO rejections (workflow, path, reason, detail, count, first_at, last_at)
+     VALUES (?, ?, ?, ?, 1, ?, ?)
+     ON CONFLICT(workflow, path, reason) DO UPDATE SET
+       count    = count + 1,
+       detail   = excluded.detail,
+       last_at  = excluded.last_at`,
+  ),
+  rejectionsFor: db.prepare(
+    `SELECT * FROM rejections WHERE workflow = ? ORDER BY last_at DESC`,
+  ),
+  rejectionTotals: db.prepare(
+    `SELECT workflow, SUM(count) AS count, MAX(last_at) AS last_at
+     FROM rejections GROUP BY workflow`,
+  ),
+  clearRejections: db.prepare(`DELETE FROM rejections WHERE workflow = ?`),
   // Settled rows only: a pending one is work that has not happened yet, and
   // age is exactly what makes it interesting rather than disposable.
   pruneInbox: db.prepare(
@@ -671,6 +727,49 @@ export const store = {
 
   pendingDeliveries: () => stmts.pendingDeliveries.all() as InboxRecord[],
   pendingDeliveryCount: () => (stmts.pendingDeliveryCount.get() as { count: number }).count,
+
+  /* -------------------------------------------------------- rejections */
+
+  /**
+   * Counts one webhook delivery that never became a run. Only ever called for
+   * a path some workflow claims — see the table comment for why an unclaimed
+   * path is not recorded.
+   */
+  recordRejection(entry: {
+    workflow: string;
+    path: string;
+    reason: string;
+    detail?: string | null;
+  }): void {
+    const now = Date.now();
+    stmts.bumpRejection.run(
+      entry.workflow,
+      redact(entry.path),
+      entry.reason,
+      // A verifier's message is arbitrary text from workflow code, and a
+      // schema's issue list names fields a caller controls. Both go through the
+      // same treatment as any other observational string, and both are capped
+      // so a pathological one cannot grow the row without bound.
+      entry.detail == null ? null : redact(entry.detail).slice(0, REJECTION_DETAIL_MAX),
+      now,
+      now,
+    );
+  },
+
+  rejectionsFor: (workflow: string) =>
+    stmts.rejectionsFor.all(workflow) as RejectionRecord[],
+
+  /** Totals per workflow, for the badge on the list. */
+  rejectionTotals(): Map<string, { count: number; last_at: number }> {
+    const rows = stmts.rejectionTotals.all() as Array<{
+      workflow: string;
+      count: number;
+      last_at: number;
+    }>;
+    return new Map(rows.map((r) => [r.workflow, { count: r.count, last_at: r.last_at }]));
+  },
+
+  clearRejections: (workflow: string) => stmts.clearRejections.run(workflow).changes,
 
   /* ------------------------------------------------------------- steps */
 

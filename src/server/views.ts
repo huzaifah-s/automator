@@ -4,6 +4,7 @@ import type {
   CallRecord,
   LoadedWorkflow,
   LogRecord,
+  RejectionRecord,
   RunRecord,
   RunStatus,
   StepRecord,
@@ -561,6 +562,8 @@ function workflowRow(
   version: WorkflowVersion | undefined,
   /** Credentials this workflow declared that are not connected yet. */
   blocked: string[],
+  /** How many deliveries this workflow's hook turned away, if any. */
+  rejected: { count: number; last_at: number } | undefined,
 ) {
   const next = nextRun(w.name);
   const last = pulses[0];
@@ -576,6 +579,11 @@ function workflowRow(
           ${blocked.length > 0
             ? html`<a class="tag failed" href="/credentials"
                       title="Runs are refused until ${blocked.join(", ")} is connected">Blocked</a>`
+            : ""}
+          ${rejected
+            ? html`<a class="tag failed" href="/workflows/${w.name}"
+                      title="${rejected.count} call(s) turned away before a run started, last ${relative(rejected.last_at)}"
+                      >${rejected.count} rejected</a>`
             : ""}
         </div>
         ${blocked.length > 0
@@ -605,6 +613,8 @@ export function workflowsPage(
   versions: Map<string, WorkflowVersion>,
   /** Workflow name → the credentials it declared that are not connected. */
   blocked: Map<string, string[]>,
+  /** Workflow name → deliveries its hook turned away. Absent for most. */
+  rejected: Map<string, { count: number; last_at: number }> = new Map(),
 ) {
   const byWorkflow = new Map<string, RunPulse[]>();
   for (const p of pulses) {
@@ -673,6 +683,7 @@ export function workflowsPage(
                     byWorkflow.get(w.name) ?? [],
                     versions.get(w.name),
                     blocked.get(w.name) ?? [],
+                    rejected.get(w.name),
                   ),
                 )}
               </details>
@@ -995,6 +1006,8 @@ export function workflowPage(
   runs: RunRecord[],
   version: WorkflowVersion | undefined,
   blocked: string[],
+  /** Deliveries turned away before a run existed. Empty for most workflows. */
+  rejections: RejectionRecord[] = [],
 ) {
   const crumb = html`<span class="crumb">
     ${wf.folder ? html`${ICON_FOLDER} <a href="/">${wf.folder}</a> /` : ""}
@@ -1054,10 +1067,52 @@ export function workflowPage(
         <a class="chip" href="/runs?workflow=${wf.name}">All executions →</a>
       </div>
 
+      ${rejections.length > 0 ? rejectionsSection(wf, rejections) : ""}
+
       <h2>Recent runs</h2>
       ${runsTable(runs, false)}
     `,
   );
+}
+
+/**
+ * Deliveries that never became runs. Rendered only when there are any, and
+ * above the run table on purpose: the reason somebody is on this page is that
+ * the run table is emptier than they expected, and this is the answer.
+ */
+function rejectionsSection(wf: LoadedWorkflow, rejections: RejectionRecord[]) {
+  const total = rejections.reduce((n, r) => n + r.count, 0);
+  const newest = Math.max(...rejections.map((r) => r.last_at));
+
+  return html`
+    <h2>Rejected deliveries</h2>
+    <div class="flash">
+      <b>${total} ${total === 1 ? "call was" : "calls were"} turned away</b> before a run
+      started, most recently ${relative(newest)}. These never appear in the run history —
+      there was no run — so this is the only place they show.
+    </div>
+    <div class="card"><table class="kv"><tbody>
+      ${rejections.map(
+        (r) => html`<tr>
+          <td>
+            <span class="tag failed">${r.reason}</span>
+            ${r.detail ? html`<div class="desc mono">${r.detail}</div>` : ""}
+          </td>
+          <td class="mono">
+            ${r.count}&times;
+            <span class="muted">
+              first ${relative(r.first_at)}, last ${relative(r.last_at)}
+            </span>
+          </td>
+        </tr>`,
+      )}
+    </tbody></table></div>
+    <div class="bar">
+      <form method="post" action="/workflows/${wf.name}/rejections/clear">
+        <button class="btn" type="submit">Clear counters</button>
+      </form>
+    </div>
+  `;
 }
 
 /* -------------------------------------------------------------------- run */

@@ -284,6 +284,22 @@ export interface InboxRecord {
   run_id: string | null;
 }
 
+/**
+ * A webhook delivery that was turned away before any run existed, counted per
+ * (workflow, path, reason) rather than stored per attempt — see the table
+ * comment in db.ts for why.
+ */
+export interface RejectionRecord {
+  workflow: string;
+  path: string;
+  reason: string;
+  /** Why the check failed, where there is something to say. Redacted, capped. */
+  detail: string | null;
+  count: number;
+  first_at: number;
+  last_at: number;
+}
+
 export interface LogRecord {
   id: number;
   run_id: string;

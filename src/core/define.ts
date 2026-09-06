@@ -1,6 +1,7 @@
 import type {
   PollCtx,
   Trigger,
+  WebhookHandshake,
   WebhookRegistration,
   WebhookVerifier,
   WorkflowDef,
@@ -49,6 +50,8 @@ export function webhook(
     secret?: string | false;
     /** Authenticates from the raw request instead of a shared secret. */
     verify?: WebhookVerifier;
+    /** Answers a provider's URL-verification request — see types.ts. */
+    handshake?: WebhookHandshake;
     /** Creates and deletes the subscription at the provider — see README. */
     register?: WebhookRegistration;
   } = {},
@@ -110,6 +113,8 @@ export type { ProviderId } from "./providers.ts";
 export {
   hmacSignature,
   isNotionHandshake,
+  metaVerification,
+  mondayChallenge,
   notionSignature,
   tallySignature,
   telegramSecretToken,
@@ -121,7 +126,7 @@ export {
  * relayed into a Telegram alert.
  */
 export { redact } from "./redact.ts";
-export type { WebhookVerifier } from "./types.ts";
+export type { HandshakeReply, WebhookHandshake, WebhookVerifier } from "./types.ts";
 export { defineOAuth } from "../integrations/oauth.ts";
 export type {
   Ctx,

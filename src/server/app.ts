@@ -134,7 +134,15 @@ export function createApp(registry: Registry): Hono {
   app.all("/hooks/:path{.*}", async (c) => {
     const path = c.req.param("path");
     const method = c.req.method;
-    const wf = registry.byHook(path, method === "HEAD" ? "GET" : method);
+    const matched = registry.byHook(path, method === "HEAD" ? "GET" : method);
+    // A handshake answers on any method on its path, because Meta verifies a
+    // callback URL with a GET and then delivers events to the same URL with a
+    // POST. Only consulted when nothing claimed this exact method — an exact
+    // match always wins, so this can never divert a real delivery.
+    const wf = matched ?? registry.byHandshake(path);
+    // What that fallback is allowed to do: answer a handshake, and nothing
+    // else. A request that turns out not to be one is still unhandled.
+    const handshakeOnly = !matched;
 
     if (!wf || wf.trigger.kind !== "webhook") {
       return c.json({ error: `No workflow handles ${method} /hooks/${path}` }, 404);
@@ -166,6 +174,42 @@ export function createApp(registry: Registry): Hono {
         reject("unreadable body");
         return c.json({ error: "Could not read request body" }, 400);
       }
+    }
+
+    // Before the auth gate, and it has to be: a handshake is by definition the
+    // request that arrives before the shared secret exists on the far side.
+    // The hole that opens is closed by the handshake function itself — see
+    // WebhookHandshake in types.ts, and metaVerification/mondayChallenge for
+    // what "authenticates itself" means in each case.
+    if (wf.trigger.handshake) {
+      let reply: string | Record<string, unknown> | undefined;
+      try {
+        reply = await wf.trigger.handshake({
+          method,
+          query: c.req.query(),
+          body: raw,
+          headers: c.req.raw.headers,
+        });
+      } catch (err) {
+        // Same treatment as a verifier that throws: the caller gets a 401
+        // either way, and the reason is ours to read.
+        const why = err instanceof Error ? err.message : String(err);
+        log.warn(`Handshake for ${wf.name} threw — ${why}`);
+        reject("handshake failed", why);
+        return c.json({ error: "Unauthorized" }, 401);
+      }
+
+      if (reply !== undefined) {
+        log.info(`Answered a ${method} verification handshake for ${wf.name}`);
+        // Verbatim, with nothing wrapped around it. That is the entire point:
+        // Meta compares the body to the challenge it sent, byte for byte.
+        return typeof reply === "string" ? c.text(reply) : c.json(reply);
+      }
+    }
+
+    // Not a handshake, and nothing else on this path handles this method.
+    if (handshakeOnly) {
+      return c.json({ error: `No workflow handles ${method} /hooks/${path}` }, 404);
     }
 
     if (wf.trigger.verify) {

@@ -17,6 +17,49 @@ export type WebhookVerifier = (req: {
   headers: Headers;
 }) => boolean | Promise<boolean>;
 
+/**
+ * What a handshake sends back. A string is returned as `text/plain` verbatim —
+ * Meta's URL verification wants the bare challenge and rejects anything that
+ * wraps it — and an object as JSON.
+ */
+export type HandshakeReply = string | Record<string, unknown>;
+
+/**
+ * Answers a provider's URL-verification request itself, with no run and no
+ * envelope around the reply.
+ *
+ * This exists because neither response mode can do it. `respond: "async"`
+ * answers `{accepted:true}` with a 202, and `"sync"` answers
+ * `{runId,status,result}` — but a provider checking that its callback URL is
+ * really ours is looking for *exactly* the value it sent, at the top level.
+ * Meta wants the bare string, Monday.com wants `{"challenge":"…"}` back.
+ *
+ * Returning `undefined` means "this was not a handshake", and the request
+ * carries on through the route's normal checks. Anything else is sent with a
+ * 200 and nothing runs.
+ *
+ * It is evaluated **before** `secret`/`verify`, and so must authenticate
+ * itself where there is anything to authenticate. That is not a hole so much
+ * as an acknowledgement of what a handshake is: the request that arrives
+ * before the shared secret exists on the far side. Meta's is a GET with no
+ * body, so `x-hub-signature-256` cannot exist on it — `metaVerification`
+ * constant-time compares `hub.verify_token` instead. Monday's echoes back a
+ * string the caller already had, which is why it needs no check at all. Both
+ * helpers are deliberately strict about what they will treat as a handshake,
+ * so a real event can never take this path and skip the route's checks.
+ *
+ * A handshake also answers on **any** method on its path, not just the
+ * trigger's — Meta verifies with GET and then delivers with POST, to one URL.
+ */
+export type WebhookHandshake = (req: {
+  method: string;
+  /** Parsed query string. Empty object when there is none. */
+  query: Record<string, string>;
+  /** The raw body, untouched. Empty for a GET. */
+  body: string;
+  headers: Headers;
+}) => HandshakeReply | undefined | Promise<HandshakeReply | undefined>;
+
 export type Trigger =
   | {
       kind: "cron";
@@ -56,6 +99,13 @@ export type Trigger =
        * a guess. See hmacSignature() and tallySignature().
        */
       verify?: WebhookVerifier;
+      /**
+       * Answers a provider's URL-verification handshake without starting a
+       * run — see WebhookHandshake above for why neither response mode can.
+       * Composes with `secret` and `verify` rather than replacing them: it
+       * only ever claims the one request that is a handshake.
+       */
+      handshake?: WebhookHandshake;
       /**
        * Creates and deletes the subscription at the provider, so a webhook is
        * not a URL somebody pasted into a dashboard once and has to remember.

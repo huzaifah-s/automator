@@ -1,4 +1,4 @@
-import type { WebhookVerifier } from "./types.ts";
+import type { WebhookHandshake, WebhookVerifier } from "./types.ts";
 
 /**
  * Constant-time compare so a wrong secret or digest can't be recovered byte
@@ -219,5 +219,87 @@ export function telegramSecretToken(
     const provided = headers.get("x-telegram-bot-api-secret-token");
     if (!provided) return false;
     return timingSafeEqual(provided, key);
+  };
+}
+
+/* ------------------------------------------------------------- handshakes */
+
+/**
+ * Meta's webhook URL verification — the GET it sends once, when a callback URL
+ * is saved in the app dashboard:
+ *
+ *   GET /hooks/…?hub.mode=subscribe&hub.verify_token=…&hub.challenge=1158201444
+ *
+ * The reply has to be `hub.challenge` **as a bare string**, not wrapped in
+ * anything, which is the whole reason `handshake` exists — see the note on it
+ * in types.ts.
+ *
+ * This authenticates itself rather than relying on the route's verifier, and
+ * has to: there is no body to sign, so `x-hub-signature-256` cannot exist on
+ * this request. The token comparison is the check, and it is constant-time for
+ * the same reason the shared-secret path is.
+ *
+ *   handshake: metaVerification(() => secrets.WHATSAPP_VERIFY_TOKEN)
+ *
+ * A getter, for the same reason as hmacSignature: the trigger is built once at
+ * import, so a bare string freezes the value that existed at boot.
+ */
+export function metaVerification(
+  token: string | (() => string | undefined),
+): WebhookHandshake {
+  const resolve = typeof token === "function" ? token : () => token;
+
+  return ({ method, query }) => {
+    // Only ever the setup GET. A POST carrying these parameters is somebody
+    // probing, and it gets nothing.
+    if (method !== "GET") return undefined;
+    if (query["hub.mode"] !== "subscribe") return undefined;
+
+    const challenge = query["hub.challenge"];
+    const provided = query["hub.verify_token"];
+    if (!challenge || !provided) return undefined;
+
+    // Trimmed for the same reason Notion's token is: this value is generated
+    // with `openssl rand`, pasted into the Meta dashboard *and* into the
+    // secret store, and a trailing newline on either side fails as a mismatch
+    // with nothing on the route to say why.
+    const expected = resolve()?.trim();
+    if (!expected) {
+      throw new Error(
+        "Meta webhook verify token is not set — cannot check a verification request",
+      );
+    }
+
+    // Returning undefined rather than throwing: a wrong token is
+    // indistinguishable from a request that was never a handshake, and both
+    // should fall through to the route's normal rejection path.
+    return timingSafeEqual(provided, expected) ? challenge : undefined;
+  };
+}
+
+/**
+ * Monday.com's webhook challenge — the `{"challenge":"…"}` POST it sends when
+ * a subscription is created, expecting the same object straight back.
+ *
+ * Unauthenticated by design, and safe to leave so: the only thing this can be
+ * made to do is echo a string the caller already had. It reads nothing, writes
+ * nothing, and starts no run. Deliberately strict about what counts — exactly
+ * one key, and it is the challenge — so a real event can never take this path
+ * and skip the route's own checks. That is the same bound `isNotionHandshake`
+ * draws, for the same reason.
+ */
+export function mondayChallenge(): WebhookHandshake {
+  return ({ method, body }) => {
+    if (method !== "POST") return undefined;
+    try {
+      const parsed: unknown = JSON.parse(body);
+      if (typeof parsed !== "object" || parsed === null) return undefined;
+      const keys = Object.keys(parsed);
+      if (keys.length !== 1 || keys[0] !== "challenge") return undefined;
+      const challenge = (parsed as { challenge: unknown }).challenge;
+      return typeof challenge === "string" ? { challenge } : undefined;
+    } catch {
+      return undefined;
+    }
   };
 }

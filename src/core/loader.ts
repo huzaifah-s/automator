@@ -166,4 +166,17 @@ export class Registry {
         (w.trigger.method ?? "POST") === method,
     );
   }
+
+  /**
+   * The workflow that answers a URL-verification handshake on this path,
+   * whatever method it arrives on. Meta verifies a callback URL with a GET and
+   * then delivers events to it with POST, so the handshake cannot be bound to
+   * the trigger's own method the way everything else is. Only ever consulted
+   * when `byHook` found nothing — an exact match always wins.
+   */
+  byHandshake(path: string): LoadedWorkflow | undefined {
+    return this.enabled().find(
+      (w) => w.trigger.kind === "webhook" && w.trigger.path === path && w.trigger.handshake,
+    );
+  }
 }

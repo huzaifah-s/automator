@@ -110,9 +110,17 @@ export interface MondayClient {
  * `change_specific_column_value` needs a `columnId` and is worth the extra
  * config: `change_column_value` fires on every edit to every column, so a
  * corrected address or an added note wakes a workflow that then does nothing.
+ *
+ * **`create_item`, not `create_pulse`.** Monday has two vocabularies for the
+ * same event and they do not match: you *subscribe* with `create_item`, and
+ * the payload that arrives says `"type": "create_pulse"`. The old name is
+ * still all over Monday's own sample payloads, which is how it got in here —
+ * and it is not a silent mismatch, `create_webhook` refuses it outright with
+ * `Value "create_pulse" does not exist in "WebhookEventType" enum`. The
+ * receiving side keeps reading `create_pulse`, because that is what is sent.
  */
 export type MondayWebhookEvent =
-  | "create_pulse"
+  | "create_item"
   | "change_column_value"
   | "change_specific_column_value"
   | "change_status_column_value";

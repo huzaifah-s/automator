@@ -38,7 +38,8 @@ export default defineWorkflow<MondayEvent>({
     // unset, this URL is pasted into Monday by hand and nothing breaks.
     register: mondayWebhook({
       boardId: process.env.STUDENTQR_BOARD_ISSUES,
-      event: "create_pulse",
+      // Monday subscribes with create_item and then sends "create_pulse".
+      event: "create_item",
     }),
   }),
   onOverlap: "queue",

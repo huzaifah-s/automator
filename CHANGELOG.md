@@ -8,6 +8,23 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-06
 
+### Five-piece and magnetic badges stay unconfirmed, as they were in n8n
+
+The port routed PRODUCT indices 2 ("Lencana QR (5 Keping)") and 7 ("Lencana QR
+Magnetik") to the badges branch, on the reading that n8n's `[0,1] / [3,4,5] /
+6` mapping had simply missed two live options — index 5 does not exist on that
+board, and five-piece is one of the commonest choices on the form. That was
+raised as the one behavioural change in the port worth signing off, and the
+answer is no: the silence was intended. Both entries are gone and the two
+products fall through to the unrouted branch again.
+
+What is not restored is the *manner* of the silence. n8n's fall-through was an
+unhandled branch and looked identical to a successful run; here it warns on the
+run page, naming the product and its index. So the outcome matches n8n — no
+message to the school — while the reason is visible to whoever goes looking.
+The cost is that a genuinely unmapped new board option now looks the same as
+these two deliberate ones; the comment on `FAMILY` is what tells them apart.
+
 ### A WhatsApp message that fails to send is now an alert, not a silence
 
 Meta reports the fate of every message the StudentQR number sends to the same

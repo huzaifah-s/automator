@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { log } from "./logger.ts";
 import { collectSecretProblems } from "./secrets.ts";
@@ -30,6 +30,16 @@ export async function loadWorkflows(dir = "./workflows"): Promise<LoadedWorkflow
   const glob = new Bun.Glob("**/*.{ts,js}");
   const files = (await Array.fromAsync(glob.scan({ cwd: root, absolute: true })))
     .filter((f) => !/\.(test|spec|d)\.(ts|js)$/.test(f))
+    // An underscore prefix means "this is not a workflow" — shared code for a
+    // folder of related ones, which otherwise has nowhere to live: every other
+    // file here must default-export a workflow, and src/ is for things the
+    // whole runner uses, not one client's message catalogue.
+    //
+    // An explicit opt-out rather than "quietly skip anything without a default
+    // export", because that guard is what catches a typo'd export and is worth
+    // keeping. Renaming a file to _thing.ts is a decision; forgetting to
+    // export is not.
+    .filter((f) => !basename(f).startsWith("_"))
     .sort();
 
   for (const file of files) {

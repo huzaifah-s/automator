@@ -100,7 +100,14 @@ export async function reconcileWebhooks(registry: Registry): Promise<void> {
     } catch (err) {
       // Left exactly as it was, so the next boot tries the same thing again.
       const message = err instanceof Error ? err.message : String(err);
-      logger.error(`webhook registration failed: ${message}`);
+      // Naming the URL matters most on the path where it did *not* work: the
+      // success line below prints it, so a failure was the one case where the
+      // address nobody can see is also the likeliest thing to be wrong. A
+      // provider that answers "internal error" while it is really failing to
+      // reach you is unreadable without it. Safe to print — this is the bare
+      // URL, and a provider that needs the shared secret appends it inside its
+      // own create(), which is why that one is never logged.
+      logger.error(`webhook registration failed for ${url}: ${message}`);
       // A subscription that never got created means the provider is calling
       // nobody. Nothing fails, no run is recorded, and the workflow simply
       // never fires — the exact shape of problem this is here to catch.

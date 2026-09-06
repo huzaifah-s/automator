@@ -135,7 +135,7 @@ the next boot if a restart landed in between — see
 | `retries` | `2` | Extra attempts, exponential backoff with jitter |
 | `timeoutMs` | `300_000` | Per attempt |
 | `onOverlap` | `"skip"` | `"skip"` drops the new run, `"queue"` serialises it |
-| `enabled` | `true` | Keep the file, stop scheduling it |
+| `enabled` | `true` | Keep the file, stop scheduling it. The dashboard can switch a workflow off but never on — see [Pausing a workflow](#pausing-a-workflow-from-the-dashboard) |
 | `onFailure` | — | Runs once after every attempt has failed |
 | `checkpoint` | `true` | Memoise successful `ctx.step` results (see below) |
 | `checkpointTtlHours` | `24` | Checkpoints older than this are ignored on resume |
@@ -746,6 +746,55 @@ run away with your disk. Request *headers* are never captured at all, so
 Set `CAPTURE_DATA=false` to turn observational capture off. Step outputs are
 still stored — resume depends on them.
 
+### Pausing a workflow from the dashboard
+
+Every row on the **Workflows** tab has a pause button, and so does the workflow
+page — where there is also a box for a one-line reason. Pausing takes effect
+immediately, with no restart, and survives one: it is a row in the database,
+not a variable in the process.
+
+A paused workflow stops firing **by itself**. Its cron or poll timer is taken
+down, so the *Next* column goes to `—` rather than showing a time it will not
+honour. Its webhook route stops matching and answers 404. `ctx.run()` from
+another workflow refuses it, and the caller sees why. A delivery it accepted but
+never ran is dropped at the next boot instead of being replayed, and a
+provider-side subscription it registered with `register` is deleted at the next
+boot too, so a long pause does not leave a provider posting into a 404.
+
+Two things it deliberately does **not** do:
+
+- **Run now still works** — from the button, and from `bun run trigger`. "Off"
+  means it stops firing on its own, not that you cannot test it before switching
+  it back on. That is what `enabled: false` has always meant here, and pausing
+  does not invent a second meaning. The run is recorded as `manual`, so nobody
+  has to guess later.
+- **Nothing is caught up when it comes back.** A cron that would have fired
+  four times while it was paused fires once, next time it is due. There is no
+  backlog and no queue; pausing drops those triggers rather than deferring them.
+  A poll picks up whatever is new when it resumes, which for most sources means
+  the items that arrived meanwhile are still there.
+
+**The switch can only ever turn a workflow off.** A workflow whose file says
+`enabled: false` shows as *Disabled* with no pause button, and no amount of
+clicking will start it — that answer belongs to the code, and a dashboard that
+could overrule it would make the repo a lie about what is running. Resuming does
+not override the file either; it removes the pause and lets the file answer
+again. So the two states read differently on purpose: **Disabled** means change
+the file, **Paused** means click Resume.
+
+It is not gated behind `DASHBOARD_WRITE`. That flag decides whether a browser
+may put a *credential* into the encrypted store; this stores no value and
+configures nothing, and it is the same kind of control as Run now and Resume,
+which have never been gated. If you do not want passers-by touching any of
+them, set `DASHBOARD_USER` and `DASHBOARD_PASS` — that covers all three, and a
+dashboard without them is public. Every pause and resume is logged, a pause is
+warned about again at the next boot, and `/healthz` reports how many are in
+effect, so one cannot be quietly forgotten.
+
+`GET /api/workflows` reports all of it: `enabled` is what the file says,
+`paused` and `pausedAt` and `pauseNote` are what an operator did, and `active`
+is whether it fires on its own right now.
+
 ### When a workflow last changed
 
 Each row on the **Workflows** tab carries an **Updated** time, and the workflow
@@ -1300,6 +1349,10 @@ docker compose logs -f automator
   (default 10, `0` = unlimited). Runs past the cap **queue** — a webhook that
   arrives during a burst is slow, never lost. `/healthz` reports `running` and
   `queued`, which is the only way to see a queue that isn't draining.
+- A workflow can be switched off from the dashboard without a deploy, and back
+  on again — see [Pausing a workflow](#pausing-a-workflow-from-the-dashboard).
+  `bun run list` marks the three states: `●` running, `◐` paused, `○` disabled
+  in its file.
 - Set `ALERT_CHANNEL` to be told when something breaks — see
   [Alerts](#alerts--being-told-when-something-breaks) just below.
 
@@ -1562,12 +1615,14 @@ Worth knowing before you commit:
   code sandbox to secure. Credentials are the exception and no longer need any
   of this — see the
   [secret store](#the-secret-store--changing-a-credential-without-a-redeploy).
-- **The dashboard is read-only, except for credentials.** Everything else is a
-  view: no workflow editor, no way to change what runs from a browser.
-  Credentials are the deliberate hole in that, and `DASHBOARD_WRITE=0` closes it
-  again for a deployment that would rather keep the old guarantee. See
-  [Credentials](#credentials--several-values-that-only-work-together) for why
-  the hole is worth having.
+- **The dashboard is read-only about what a workflow *is*.** No workflow editor,
+  no way to change what one does from a browser. There are two deliberate holes
+  and they are different sizes. Credentials get a real form, closed again by
+  `DASHBOARD_WRITE=0` — see
+  [Credentials](#credentials--several-values-that-only-work-together). And any
+  workflow can be **paused**, which changes nothing about what it does and only
+  ever subtracts: the switch cannot start something the file turned off. See
+  [Pausing a workflow](#pausing-a-workflow-from-the-dashboard).
 - **Single process, no external queue.** Fine for hundreds of runs a day.
   Concurrency is capped in-process (`MAX_CONCURRENT_RUNS`) and the queue lives
   in memory, so a restart mid-burst loses what hadn't started — those runs are
@@ -1583,7 +1638,8 @@ Worth knowing before you commit:
   [Approval gates](#approval-gates) for the pattern and what it costs.
 - **No visual editor.** That's the entire 1.9GB you're not shipping. The
   Credentials tab is the only page with a form on it, and it edits credentials —
-  never what runs.
+  never what a workflow does. The pause switch is the one other control that
+  writes, and all it writes is "off".
 
 ## For AI agents
 

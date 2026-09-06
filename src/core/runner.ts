@@ -5,6 +5,7 @@ import { alertBlocked, alertFailure } from "./alerts.ts";
 import { buildIntegrations } from "../integrations/index.ts";
 import { capture, MAX_CHECKPOINT_BYTES } from "./capture.ts";
 import { createState } from "./state.ts";
+import { isEnabled, isPaused, pausedInfo } from "./pause.ts";
 import type { Ctx, LoadedWorkflow, RunStatus, TriggerKind } from "./types.ts";
 import type { Registry } from "./loader.ts";
 
@@ -140,6 +141,39 @@ export async function runWorkflow(
 ): Promise<RunOutcome> {
   if (shuttingDown) {
     return { runId: "", status: "skipped", error: new Error("Shutting down") };
+  }
+
+  /*
+   * A paused or disabled workflow does not fire on its own.
+   *
+   * The scheduler already took its timer down and the webhook routes already
+   * stopped matching it, so nothing should reach here — this is the backstop
+   * for the gap between the two, which is real: a cron tick that fired the
+   * instant before somebody clicked pause is already on its way, and a poll
+   * mid-fetch will call this when it finishes. One skipped run beats one run
+   * that was switched off.
+   *
+   * `manual` is deliberately let through. That is what "off" has always meant
+   * for `enabled: false` — the dashboard's Run now button works on those today
+   * — and it is the useful meaning: pausing stops a workflow firing by itself,
+   * it does not take away the ability to test it before switching it back on.
+   * A person clicking Run now is not the workflow running; it is them running
+   * it, and the run record says `manual` so nobody has to guess later.
+   */
+  if (opts.trigger !== "manual" && !isEnabled(wf)) {
+    const runId = crypto.randomUUID();
+    const paused = pausedInfo(wf.name);
+    const why = paused
+      ? `Paused from the dashboard${paused.note ? ` — ${paused.note}` : ""}`
+      : "Disabled in its workflow file (enabled: false)";
+    const message = `Not started: ${why}`;
+    store.startRun(runId, wf.name, opts.trigger, {
+      parentRun: opts.parent?.runId ?? null,
+      input: capture(opts.input).json,
+    });
+    store.finishRun(runId, "skipped", 0, message, null);
+    createLogger(wf.name, runId).warn(message);
+    return { runId, status: "skipped" };
   }
 
   /*
@@ -505,7 +539,13 @@ async function runChild(
   // workflow answers to it. A row for a name with no page beats no row: the
   // typo is the thing you need to see, and it is on the caller's run too.
   if (!child) throw refuse(`ctx.run("${name}"): no workflow by that name`);
-  if (child.enabled === false) throw refuse(`ctx.run("${name}"): that workflow is disabled`);
+  if (!isEnabled(child)) {
+    throw refuse(
+      isPaused(name)
+        ? `ctx.run("${name}"): that workflow is paused from the dashboard`
+        : `ctx.run("${name}"): that workflow is disabled`,
+    );
+  }
 
   logger.info(`→ ${name}`);
   const outcome = await runWorkflow(child, {

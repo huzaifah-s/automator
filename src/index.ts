@@ -28,6 +28,7 @@ import {
   initCredentials,
 } from "./core/credentials.ts";
 import { alertBoot, describeAlertChannel } from "./core/alerts.ts";
+import { isPaused, reportPauses } from "./core/pause.ts";
 import { runSecretCli } from "./cli/secrets.ts";
 import { runVariableCli } from "./cli/variables.ts";
 
@@ -106,6 +107,11 @@ if (versions.added || versions.changed) {
   );
 }
 
+// Pauses survive restarts, and something that quietly stops running after a
+// deploy is the failure this line exists to prevent. Before the CLI section so
+// `bun run list` says it too.
+reportPauses(registry.all().map((w) => w.name));
+
 // ctx.run() resolves workflow names through this. Set before the CLI section
 // runs, so `bun run trigger` can drive a workflow that calls another one.
 setRegistry(registry);
@@ -128,9 +134,11 @@ if (args[0] === "--list") {
           : w.trigger.kind === "webhook"
             ? `${w.trigger.method ?? "POST"} /hooks/${w.trigger.path}`
             : "manual";
-    console.log(
-      `${w.enabled === false ? "○" : "●"} ${w.name.padEnd(28)} ${trigger.padEnd(34)} ${w.file}`,
-    );
+    // Three states, because there are three: running, switched off by an
+    // operator, and switched off by the file. A paused workflow that printed
+    // the same "○" as a disabled one would send you to the wrong fix.
+    const mark = w.enabled === false ? "○" : isPaused(w.name) ? "◐" : "●";
+    console.log(`${mark} ${w.name.padEnd(28)} ${trigger.padEnd(34)} ${w.file}`);
   }
   process.exit(0);
 }

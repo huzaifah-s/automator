@@ -1,6 +1,7 @@
 import { createLogger, log } from "./logger.ts";
 import { alertBoot } from "./alerts.ts";
 import { createState, type StateClient } from "./state.ts";
+import { isEnabled } from "./pause.ts";
 import { buildIntegrations } from "../integrations/index.ts";
 import type { LoadedWorkflow, RegisterCtx } from "./types.ts";
 import type { Registry } from "./loader.ts";
@@ -135,7 +136,10 @@ export async function reconcileWebhooks(registry: Registry): Promise<void> {
 
     try {
       const current = await state.get<Subscription>(SUBSCRIPTION_KEY);
-      const wanted = wf.enabled !== false;
+      // isEnabled(), not wf.enabled: a workflow paused from the dashboard has
+      // its provider-side subscription taken down at the next boot too, so a
+      // long pause does not leave a provider posting into a 404 forever.
+      const wanted = isEnabled(wf);
 
       if (current && current.url === url && wanted) {
         logger.debug(`webhook subscription ${current.id} already registered`);
@@ -153,7 +157,7 @@ export async function reconcileWebhooks(registry: Registry): Promise<void> {
         logger.info(
           wanted
             ? `webhook subscription ${current.id} removed — its URL changed`
-            : `webhook subscription ${current.id} removed — workflow is disabled`,
+            : `webhook subscription ${current.id} removed — workflow is switched off`,
         );
       }
 

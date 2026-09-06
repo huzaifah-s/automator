@@ -10,7 +10,8 @@ import { acceptDelivery, deliver } from "../core/inbox.ts";
 import { alertRejection } from "../core/alerts.ts";
 import { queuedCount, runningCount, runWorkflow } from "../core/runner.ts";
 import { timingSafeEqual } from "../core/verify.ts";
-import { nextRunFor } from "../core/scheduler.ts";
+import { nextRunFor, scheduleWorkflow, unscheduleWorkflow } from "../core/scheduler.ts";
+import { allPauses, isEnabled, isPaused, pause, pausedInfo, resume } from "../core/pause.ts";
 import {
   deleteSecret,
   secretStoreReady,
@@ -122,7 +123,11 @@ export function createApp(registry: Registry): Hono {
   app.get("/healthz", (c) =>
     c.json({
       ok: true,
+      // Counted the way everything else counts them: what actually runs on its
+      // own right now, which is neither the number of files nor the number the
+      // files enable.
       workflows: registry.enabled().length,
+      paused: allPauses().size,
       uptime: process.uptime(),
       // The concurrency cap is invisible from the outside otherwise: a queue
       // that never drains looks exactly like a quiet runner.
@@ -449,6 +454,7 @@ export function createApp(registry: Registry): Hono {
         store.workflowVersions(),
         blockedWorkflows(),
         store.rejectionTotals(),
+        allPauses(),
       ) as any,
     ),
   );
@@ -531,6 +537,7 @@ export function createApp(registry: Registry): Hono {
         store.rejectionsFor(wf.name),
         store.lastPoll(wf.name),
         store.ignoredFor(wf.name),
+        pausedInfo(wf.name),
       ) as any,
     );
   });
@@ -546,6 +553,64 @@ export function createApp(registry: Registry): Hono {
     const cleared = store.clearRejections(wf.name);
     log.info(`Cleared ${cleared} rejection counter(s) for ${wf.name}`);
     return c.redirect(`/workflows/${wf.name}`, 303);
+  });
+
+  /*
+   * The pause switch: stop this workflow firing on its own, and start it again.
+   *
+   * Not gated behind DASHBOARD_WRITE, and the reason is what that flag is
+   * actually for. It decides whether a *browser* may put a credential into the
+   * encrypted store — a value, typed by a person, that outlives the process.
+   * This writes no value and configures nothing; it is the same category as
+   * Run now and Resume, which have never been gated: operational control over
+   * whether runs happen, expressed as a row that says "off". A deployment that
+   * does not want strangers touching either of those wants
+   * DASHBOARD_USER/DASHBOARD_PASS, which covers both — see README.
+   *
+   * The scheduler is updated here rather than being made to consult the pause
+   * on every tick, so that a paused workflow has no timer at all and the "next
+   * run" on the page is the truth. Both calls are idempotent.
+   */
+  /**
+   * Where a switch sends you back to. The form carries it, because the same
+   * two buttons appear on the list and on the workflow page and each should
+   * leave you where you were — and only these two destinations exist, so an
+   * unrecognised value goes to the list rather than anywhere a caller chose.
+   */
+  const switchedBack = (body: Record<string, unknown>, name: string) =>
+    body["back"] === "workflow" ? `/workflows/${name}` : "/";
+
+  app.post("/workflows/:name/pause", async (c) => {
+    const wf = registry.get(c.req.param("name"));
+    if (!wf) return c.notFound();
+
+    const body = await c.req.parseBody();
+    // Trimmed to nothing when the box was left empty; db.ts redacts and caps it.
+    const note = ((body["note"] as string | undefined) ?? "").trim() || null;
+    if (!pause(wf, note)) {
+      // enabled: false in the file. There is nothing for a pause to subtract
+      // from, and writing a row that changes nothing would be a button that
+      // lies about what it did.
+      return c.text(
+        `${wf.name} is already disabled in workflows/${wf.file} (enabled: false). ` +
+          `The dashboard can switch a workflow off, never on — change the file.`,
+        409,
+      );
+    }
+    unscheduleWorkflow(wf.name);
+    return c.redirect(switchedBack(body, wf.name), 303);
+  });
+
+  app.post("/workflows/:name/resume", async (c) => {
+    const wf = registry.get(c.req.param("name"));
+    if (!wf) return c.notFound();
+    const body = await c.req.parseBody();
+    resume(wf.name);
+    // Only if the file agrees. Resuming restores what the file says rather
+    // than overriding it, so one that reads enabled: false stays without a
+    // timer — and the page keeps saying so.
+    if (isEnabled(wf)) scheduleWorkflow(wf);
+    return c.redirect(switchedBack(body, wf.name), 303);
   });
 
   app.post("/workflows/:name/run", async (c) => {
@@ -1006,7 +1071,18 @@ export function createApp(registry: Registry): Hono {
           name: w.name,
           description: w.description ?? null,
           trigger: w.trigger,
+          // Three fields rather than one, because there are genuinely two
+          // switches and the interesting answer is the AND of them.
+          // `enabled` is what the file says; `paused` is what an operator did
+          // on the dashboard; `active` is whether it fires on its own now.
           enabled: w.enabled !== false,
+          paused: isPaused(w.name),
+          pausedAt: (() => {
+            const p = pausedInfo(w.name);
+            return p ? new Date(p.paused_at).toISOString() : null;
+          })(),
+          pauseNote: pausedInfo(w.name)?.note ?? null,
+          active: isEnabled(w),
           file: w.file,
           // The file's own history: `version` is a hash of its source, and
           // `updatedAt` moves only when that hash does. Neither says anything

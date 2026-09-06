@@ -14,6 +14,7 @@ import type {
   RunStatus,
   StepRecord,
   TriggerKind,
+  WorkflowPause,
   WorkflowVersion,
 } from "./types.ts";
 
@@ -24,6 +25,12 @@ const REJECTION_DETAIL_MAX = 500;
 
 /** Ceiling on a poll tick's `error`. Same reasoning as a rejection's detail. */
 const POLL_ERROR_MAX = 500;
+
+/**
+ * Ceiling on the note left with a paused workflow. A sentence saying why, not
+ * an incident report — the run history is where the detail already lives.
+ */
+const PAUSE_NOTE_MAX = 200;
 
 /**
  * Ceiling on an ignore reason. Short on purpose: it is a label for a category
@@ -257,6 +264,26 @@ db.exec(`
     hash       TEXT    NOT NULL,
     first_seen INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
+  ) WITHOUT ROWID;
+
+  -- Workflows an operator paused from the dashboard. A row is the pause; no
+  -- row is the normal state, which is what keeps this table empty on almost
+  -- every deployment and makes "is anything switched off" one COUNT.
+  --
+  -- Deliberately not the same thing as "enabled: false" in a workflow file.
+  -- That flag is the code's answer and belongs to the repo; this table is the
+  -- operator's, and it can only ever subtract — see src/core/pause.ts. Keeping
+  -- them apart is what stops the dashboard from contradicting the file, which
+  -- is the drift this project exists to avoid.
+  --
+  -- The note column is operator-typed text that the dashboard renders, so it
+  -- is redacted and capped on the way in like every other observational
+  -- string. Rows for workflows that no longer exist are left alone: a file
+  -- deleted and restored was still paused, and resuming it is a click.
+  CREATE TABLE IF NOT EXISTS workflow_pauses (
+    workflow  TEXT    PRIMARY KEY,
+    paused_at INTEGER NOT NULL,
+    note      TEXT
   ) WITHOUT ROWID;
 
   -- Credentials that outlive the process, so changing one is not a redeploy.
@@ -517,6 +544,14 @@ const stmts = {
        hash = excluded.hash, updated_at = excluded.updated_at
      WHERE workflow_versions.hash <> excluded.hash`,
   ),
+
+  allPauses: db.prepare(`SELECT workflow, paused_at, note FROM workflow_pauses`),
+  pauseWorkflow: db.prepare(
+    `INSERT INTO workflow_pauses (workflow, paused_at, note)
+     VALUES (?, ?, ?)
+     ON CONFLICT(workflow) DO UPDATE SET note = excluded.note`,
+  ),
+  resumeWorkflow: db.prepare(`DELETE FROM workflow_pauses WHERE workflow = ?`),
 
   allSecrets: db.prepare(`SELECT key, value, updated_at FROM secrets ORDER BY key`),
   // Metadata without the ciphertext, for the dashboard and the folder view.
@@ -835,6 +870,36 @@ export const store = {
   workflowVersions(): Map<string, WorkflowVersion> {
     const rows = stmts.allWorkflowVersions.all() as WorkflowVersion[];
     return new Map(rows.map((r) => [r.workflow, r]));
+  },
+
+  /* --------------------------------------------------------- pauses */
+
+  /**
+   * Every paused workflow, keyed by name. Read whole rather than one row at a
+   * time: this is consulted on the hot path — every webhook match, every
+   * scheduler tick — and the table is empty on a healthy deployment.
+   */
+  pauses(): Map<string, WorkflowPause> {
+    const rows = stmts.allPauses.all() as WorkflowPause[];
+    return new Map(rows.map((r) => [r.workflow, r]));
+  },
+
+  /**
+   * Records a pause. Pausing something already paused only updates the note —
+   * `paused_at` is when it was switched off, and re-clicking a button that is
+   * already down is not a new decision.
+   */
+  pauseWorkflow(workflow: string, note: string | null): void {
+    // Operator-typed and rendered on the workflow page, so it goes through the
+    // same door as every other observational string.
+    const trimmed = note?.trim() ?? "";
+    const clean = trimmed === "" ? null : redact(trimmed).slice(0, PAUSE_NOTE_MAX);
+    stmts.pauseWorkflow.run(workflow, Date.now(), clean);
+  },
+
+  /** Lifts a pause. False when there was nothing to lift. */
+  resumeWorkflow(workflow: string): boolean {
+    return stmts.resumeWorkflow.run(workflow).changes > 0;
   },
 
   /** Runs that were mid-flight when the process died can never complete. */

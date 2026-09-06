@@ -8,6 +8,7 @@ import {
   credentialReady,
   setLoadingFile,
 } from "./credentials.ts";
+import { isEnabled } from "./pause.ts";
 import type { LoadedWorkflow, WorkflowDef } from "./types.ts";
 
 /**
@@ -160,8 +161,15 @@ export class Registry {
     return this.workflows;
   }
 
+  /**
+   * The workflows that run on their own right now — the file allows it and
+   * nobody has paused it from the dashboard. Read live rather than filtered
+   * once at boot, because a pause is a click and takes effect immediately:
+   * everything downstream of this (webhook routing, the handshake fallback,
+   * /healthz) asks again on every request and gets the current answer.
+   */
   enabled(): LoadedWorkflow[] {
-    return this.workflows.filter((w) => w.enabled !== false);
+    return this.workflows.filter(isEnabled);
   }
 
   get(name: string): LoadedWorkflow | undefined {

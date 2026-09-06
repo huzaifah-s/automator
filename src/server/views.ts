@@ -10,6 +10,7 @@ import type {
   RunRecord,
   RunStatus,
   StepRecord,
+  WorkflowPause,
   WorkflowVersion,
 } from "../core/types.ts";
 
@@ -157,7 +158,7 @@ border-bottom:1.6px solid var(--faint);transform:rotate(-45deg);margin-left:2px;
 
 /* ---- rows ---- */
 .row{display:grid;align-items:center;gap:14px;padding:11px 14px;border-top:1px solid var(--border-soft)}
-.wf{grid-template-columns:minmax(0,1fr) 158px 92px 84px 84px 40px}
+.wf{grid-template-columns:minmax(0,1fr) 158px 92px 84px 84px 68px}
 .ex{grid-template-columns:minmax(0,1fr) 92px 84px 104px 72px 90px}
 .cr{grid-template-columns:minmax(0,1fr) 120px 96px 210px}
 .sc{grid-template-columns:minmax(0,1fr) 96px 150px}
@@ -180,6 +181,10 @@ letter-spacing:.07em;color:var(--faint);font-weight:600;background:var(--sunk)}
 .desc{color:var(--muted);font-size:12.5px;margin-top:1px;overflow:hidden;
 text-overflow:ellipsis;white-space:nowrap}
 .off{opacity:.5}
+/* Paused is not a failure and must not read as one, but it is also not
+   nothing: a workflow that is switched off looks switched off from across the
+   room, which is the whole point of putting the switch on the list. */
+.tag.paused{color:var(--yellow);border-color:var(--yellow)}
 .dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--faint)}
 .dot.success{background:var(--green)}.dot.failed{background:var(--red)}
 .dot.running{background:var(--accent);animation:pulse 1.4s ease-in-out infinite}
@@ -211,6 +216,14 @@ font:12px/1.4 var(--sans);cursor:pointer}
 .btn.primary:hover{color:#fff;filter:brightness(1.08)}
 .btn.danger:hover{border-color:var(--red);color:var(--red)}
 .bar{display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap}
+/* A form on the bar is a row of controls, not a block: the pause form is a
+   note box and a button and they belong side by side. */
+.bar form{display:flex;gap:8px;align-items:center}
+/* Deliberately not ".note": that class is already the muted explanation box
+   further down, and borrowing it here inherited its 14px bottom margin and
+   pushed this input out of line with the button beside it. */
+.bar input.why{width:auto;min-width:180px;padding:5px 9px;border-radius:7px;
+font:12px/1.4 var(--sans)}
 .actions{display:flex;gap:6px;justify-content:flex-end}
 .actions form{display:contents}
 
@@ -233,6 +246,11 @@ padding:11px 13px;font-size:12.5px;color:var(--muted);margin-bottom:14px}
 .flash{border-radius:9px;padding:10px 13px;font-size:12.5px;margin-bottom:14px;
 border:1px solid color-mix(in srgb,var(--red) 35%,var(--border));
 background:color-mix(in srgb,var(--red) 9%,var(--panel));color:var(--red)}
+/* A workflow that is switched off is not broken, and a red box saying so
+   sends people looking for a failure that is not there. Same shape, the
+   colour of a skipped run. */
+.flash.quiet{border-color:color-mix(in srgb,var(--yellow) 35%,var(--border));
+background:color-mix(in srgb,var(--yellow) 9%,var(--panel));color:var(--yellow)}
 /* Named for the cards, not for the picking: ".pick" is the select wrapper up
    in the toolbar rules, and two components under one class meant this grid
    silently won and laid that select out as a 230px grid column. */
@@ -280,7 +298,7 @@ padding:10px 12px;overflow-x:auto;font-family:var(--mono);font-size:11.5px;max-h
 white-space:pre-wrap;word-break:break-word}
 
 @media(max-width:880px){
-.wf{grid-template-columns:minmax(0,1fr) 92px 40px}
+.wf{grid-template-columns:minmax(0,1fr) 92px 68px}
 .ex{grid-template-columns:minmax(0,1fr) 92px 90px}
 /* Too narrow for both: the name drops to a line of its own under the folder,
    rather than the two of them sharing one and each showing three letters. */
@@ -561,6 +579,14 @@ const ICON_FOLDER = raw(
 const ICON_HOME = raw(
   `<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M8 .5 15 6v9.5H9.75V10.5h-3.5V15.5H1V6L8 .5Z"/></svg>`,
 );
+/** Two bars — the switch that stops a workflow firing on its own. */
+const ICON_PAUSE = raw(
+  `<svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-hidden="true"><rect x="4" y="3" width="3" height="10" rx="1"/><rect x="9" y="3" width="3" height="10" rx="1"/></svg>`,
+);
+/** A play inside a ring — resume, which is not the same act as Run now. */
+const ICON_RESUME = raw(
+  `<svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="8" cy="8" r="6.4"/><path d="M6.6 5.6v4.8l4-2.4Z" fill="currentColor" stroke="none"/></svg>`,
+);
 const ICON_PLAY = raw(
   `<svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-hidden="true"><path d="M4.6 3.1v9.8c0 .4.45.65.79.43l7.7-4.9a.5.5 0 0 0 0-.86l-7.7-4.9a.5.5 0 0 0-.79.43Z"/></svg>`,
 );
@@ -752,18 +778,34 @@ function workflowRow(
   blocked: string[],
   /** How many deliveries this workflow's hook turned away, if any. */
   rejected: { count: number; last_at: number } | undefined,
+  /** Set when an operator switched this one off from here. */
+  paused: WorkflowPause | undefined,
 ) {
   const next = nextRun(w.name);
   const last = pulses[0];
-  const search = `${w.name} ${w.description ?? ""} ${w.file} ${w.trigger.kind}`.toLowerCase();
+  const disabled = w.enabled === false;
+  const off = disabled || paused !== undefined;
+  // The state words are in the filter text so "paused" narrows the list to the
+  // switched-off ones — which is the question somebody types that word to ask.
+  const search = (
+    `${w.name} ${w.description ?? ""} ${w.file} ${w.trigger.kind}` +
+    `${paused ? " paused" : ""}${disabled ? " disabled" : ""}`
+  ).toLowerCase();
   return html`
-    <div class="row wf ${w.enabled === false ? "off" : ""}" data-search="${search}">
+    <div class="row wf ${off ? "off" : ""}" data-search="${search}">
       <div style="min-width:0">
         <div class="name">
           <span class="dot ${last?.status ?? ""}"
                 title="${last ? `last run ${last.status} · ${relative(last.started_at)}` : "never run"}"></span>
           <b><a href="/workflows/${w.name}">${w.name}</a></b>
-          ${w.enabled === false ? html`<span class="tag">Disabled</span>` : ""}
+          ${disabled ? html`<span class="tag">Disabled</span>` : ""}
+          <!-- Both can never show at once: pausing something the file already
+               disabled is refused, because there would be nothing to subtract. -->
+          ${paused
+            ? html`<span class="tag paused"
+                     title="Paused ${relative(paused.paused_at)}${paused.note ? ` — ${paused.note}` : ""}"
+                     >Paused</span>`
+            : ""}
           ${blocked.length > 0
             ? html`<a class="tag failed" href="/credentials"
                       title="Runs are refused until ${blocked.join(", ")} is connected">Blocked</a>`
@@ -786,9 +828,28 @@ function workflowRow(
       <div class="mono muted trunc next" title="${next ? fmt(next.getTime()) : "no schedule"}">
         ${next ? relative(next.getTime()) : "—"}
       </div>
-      <form method="post" action="/workflows/${w.name}/run">
-        <button class="btn icon" type="submit" title="Run now">${ICON_PLAY}</button>
-      </form>
+      <div class="actions">
+        <!-- Run now stays available while paused, deliberately: "off" means it
+             stops firing by itself, not that you cannot try it. -->
+        <form method="post" action="/workflows/${w.name}/run">
+          <button class="btn icon" type="submit" title="Run now">${ICON_PLAY}</button>
+        </form>
+        ${disabled
+          ? ""
+          : paused
+            ? html`<form method="post" action="/workflows/${w.name}/resume">
+                <input type="hidden" name="back" value="list">
+                <button class="btn icon" type="submit" title="Resume — let it fire on its own again">
+                  ${ICON_RESUME}
+                </button>
+              </form>`
+            : html`<form method="post" action="/workflows/${w.name}/pause">
+                <input type="hidden" name="back" value="list">
+                <button class="btn icon" type="submit" title="Pause — stop it firing on its own">
+                  ${ICON_PAUSE}
+                </button>
+              </form>`}
+      </div>
     </div>
   `;
 }
@@ -804,6 +865,8 @@ export function workflowsPage(
   blocked: Map<string, string[]>,
   /** Workflow name → deliveries its hook turned away. Absent for most. */
   rejected: Map<string, { count: number; last_at: number }> = new Map(),
+  /** Workflow name → the pause an operator put on it. Empty for most. */
+  paused: Map<string, WorkflowPause> = new Map(),
 ) {
   const byWorkflow = new Map<string, RunPulse[]>();
   for (const p of pulses) {
@@ -813,7 +876,10 @@ export function workflowsPage(
   }
 
   const groups = groupByFolder(workflows);
-  const active = workflows.filter((w) => w.enabled !== false).length;
+  // What actually fires on its own: neither the file count nor the enabled
+  // count, once a pause can subtract from both.
+  const active = workflows.filter((w) => w.enabled !== false && !paused.has(w.name)).length;
+  const pausedHere = workflows.filter((w) => paused.has(w.name)).length;
   const runsInWindow = Object.values(counts).reduce((a, b) => a + b, 0);
   const failedInWindow = counts.failed ?? 0;
 
@@ -836,6 +902,9 @@ export function workflowsPage(
     html`
       <div class="stats">
         <div class="stat"><b>${active}</b><span>active workflows</span></div>
+        ${pausedHere > 0
+          ? html`<div class="stat"><b class="skipped">${pausedHere}</b><span>paused</span></div>`
+          : ""}
         <div class="stat"><b>${groups.length}</b><span>folder${groups.length === 1 ? "" : "s"}</span></div>
         <div class="stat"><b>${runsInWindow}</b><span>runs · ${DEFAULT_RANGE_LABEL}</span></div>
         ${blocked.size > 0
@@ -873,6 +942,7 @@ export function workflowsPage(
                     versions.get(w.name),
                     blocked.get(w.name) ?? [],
                     rejected.get(w.name),
+                    paused.get(w.name),
                   ),
                 )}
               </details>
@@ -1241,7 +1311,10 @@ export function workflowPage(
   lastPoll: PollRecord | null = null,
   /** Deliveries this workflow's own filter declined to run. Usually empty. */
   ignored: IgnoredRecord[] = [],
+  /** The pause an operator put on this one, or null. */
+  paused: WorkflowPause | null = null,
 ) {
+  const disabled = wf.enabled === false;
   const polls = wf.trigger.kind === "poll";
   const filters = wf.trigger.kind === "webhook" && wf.trigger.filter !== undefined;
   const ignoredTotal = ignored.reduce((n, r) => n + r.count, 0);
@@ -1283,10 +1356,42 @@ export function workflowPage(
           </div>`
         : ""}
 
+      <!-- Says what is still true while it is off, not just that it is off:
+           the question somebody arrives on this page with is "so what happens
+           to the 9am cron now", and the honest answer is "nothing, and nothing
+           is queueing up for later either". -->
+      ${paused
+        ? html`<div class="flash quiet">
+            <!-- The note is quoted rather than dropped into the sentence: it is
+                 somebody else's words, of unknown length and punctuation, and
+                 unquoted it reads as the start of ours. -->
+            <b>Paused ${relative(paused.paused_at)}${paused.note ? html` — “${paused.note}”` : ""}.</b>
+            Nothing triggers it — no schedule, no webhook, no other workflow calling it —
+            and missed triggers are not caught up when it comes back.
+            <b>Run now</b> below still works.
+          </div>`
+        : disabled
+          ? html`<div class="flash quiet">
+              <b>Disabled in the file.</b> <code class="mono">workflows/${wf.file}</code> sets
+              <code class="mono">enabled: false</code>, so nothing triggers it. The dashboard can
+              switch a workflow off but never on — change the file and deploy to bring it back.
+            </div>`
+          : ""}
+
       ${wf.description ? html`<p class="muted" style="margin:0 0 4px">${wf.description}</p>` : ""}
 
       <h2>Definition</h2>
       <div class="card"><table class="kv"><tbody>
+        <tr><td>Status</td><td class="mono">${
+          paused
+            ? html`<span class="tag paused">Paused</span>
+                <span class="muted">since ${fmt(paused.paused_at)}${
+                  paused.note ? html` · “${paused.note}”` : ""
+                }</span>`
+            : disabled
+              ? html`<span class="tag">Disabled</span> <span class="muted">enabled: false in the file</span>`
+              : html`<span class="success">Active</span>`
+        }</td></tr>
         <tr><td>Trigger</td><td class="mono">${triggerLabel(wf)}</td></tr>
         <tr><td>Next run</td><td class="mono">${next ? fmt(next.getTime()) : "—"}</td></tr>
         ${polls
@@ -1323,6 +1428,21 @@ export function workflowPage(
         <form method="post" action="/workflows/${wf.name}/run">
           <button class="btn" type="submit">${ICON_PLAY} Run now</button>
         </form>
+        <!-- Nothing to offer for a workflow the file disabled: a pause can
+             only subtract, and there is nothing left to subtract from. -->
+        ${disabled
+          ? ""
+          : paused
+            ? html`<form method="post" action="/workflows/${wf.name}/resume">
+                <input type="hidden" name="back" value="workflow">
+                <button class="btn" type="submit">${ICON_RESUME} Resume</button>
+              </form>`
+            : html`<form method="post" action="/workflows/${wf.name}/pause">
+                <input type="hidden" name="back" value="workflow">
+                <input class="why" type="text" name="note" maxlength="200" autocomplete="off"
+                       placeholder="Why (optional)">
+                <button class="btn" type="submit">${ICON_PAUSE} Pause</button>
+              </form>`}
         <!-- Spelled out because the tab opens on 7 days: a link that says
              "all" and lands on a week is the kind of small lie you only catch
              by counting rows. The widest window is all of them, since anything

@@ -28,7 +28,7 @@ There is no test suite. Verify by running the thing (see **Verifying** below).
 ```
 src/core/          define · loader · runner · scheduler · poll · db · secrets
                    secret-store · credentials · providers · crypto · redact
-                   capture · state · logger · alerts · types
+                   capture · state · pause · logger · alerts · types
 src/cli/           secrets — the write side of the store, run before the loader
 src/integrations/  index (barrel + lazy ctx clients) · http · messaging
                    ai · email · sql · sheets · scrape · oauth
@@ -139,6 +139,41 @@ retried, and checkpointed.
 this into marking them up front — a failed run would then silently drop its
 items. The seen-set lives in the workflow's own state namespace under the
 reserved `@poll:` prefix.
+
+**"Is this workflow on" has two answers, and `wf.enabled` is only one of
+them.** The file's `enabled: false` is the code's answer; a row in
+`workflow_pauses` is an operator's, put there by the dashboard's pause button.
+Ask `isEnabled(wf)` from `src/core/pause.ts` — never `wf.enabled !== false` —
+anywhere you are deciding whether something may fire. Both are already wired
+into `Registry.enabled()`, the scheduler, the webhook routes, inbox recovery,
+webhook reconciliation and `ctx.run()`; a new trigger path that checks only the
+field would run a workflow somebody switched off, which is the one failure this
+feature exists to prevent.
+
+**A pause can only subtract.** There is no route, and must not be one, that
+turns on a workflow whose file says `enabled: false` — `pause()` refuses it,
+and the dashboard offers no button. The asymmetry is the whole reason this is
+allowed to exist next to "the dashboard is read-only about workflows": a switch
+that could resurrect code that says it should not run makes the repo a lie
+about what is running, which is the drift n8n was left to avoid. Resuming
+removes the pause and lets the file answer again; it does not override it.
+
+**A manual run is deliberately not blocked by either of them.** The runner's
+guard exempts `trigger: "manual"`, which is what the dashboard's Run now and
+`bun run trigger` use. Off means "stops firing by itself", not "cannot be
+tested" — the same latitude `enabled: false` already had before pausing
+existed. Do not "close the hole": switching a workflow off and then being
+unable to check whether your fix worked is how a pause becomes something people
+avoid using.
+
+**The scheduler is updated when a pause changes, not consulted on every tick.**
+`scheduleWorkflow` / `unscheduleWorkflow` take the croner job up and down, so a
+paused workflow has no timer and `nextRunFor` returns null — the dashboard's
+"next run" is then the truth rather than a time it will not honour. The guard
+in `runWorkflow` is a backstop for the gap (a tick already in flight when the
+button was clicked), not the mechanism; leaving the job running and dropping
+the run at the last moment would print a next run every fifteen seconds that
+never happens.
 
 **A webhook `filter` is a shortcut, never the enforcement.** Returning a reason
 instead of `true` answers 200 and starts no run — but a manual run, a replay
@@ -523,10 +558,25 @@ These were decided deliberately. Raise a trade-off before changing any of them:
 
 - **Workflows live in the repo as files**, never rows in the database. This is
   why there is no code sandbox to secure.
-- **The dashboard is read-only about *workflows*.** No browser-based workflow
-  editor — that is the weight we left n8n to avoid. Credentials are the one
-  exception, added deliberately and gated behind `DASHBOARD_WRITE`; see the
-  entry below. Nothing else may grow a form.
+- **The dashboard is read-only about what a workflow *is*.** No browser-based
+  workflow editor — that is the weight we left n8n to avoid. There are exactly
+  two exceptions and neither may grow into one. Credentials get a real form,
+  added deliberately and gated behind `DASHBOARD_WRITE`; see the entry below.
+  And any workflow can be **paused** from the list or its own page, which is a
+  narrower hole than it first looks: it stores no configuration, changes
+  nothing about what the workflow does, and can only ever subtract — the switch
+  cannot start something whose file says `enabled: false`. So the file stays
+  the authority on what a workflow is and whether it may run at all; the
+  database only ever says "not right now". Adding a way to *turn one on* from
+  the browser, or any other form on these pages, needs this decision taken
+  again.
+
+  The pause switch is not behind `DASHBOARD_WRITE` on purpose. That flag is
+  about whether a browser may put a credential into the encrypted store; this
+  is the same category as Run now, Resume and Replay, which have never been
+  gated. `DASHBOARD_USER`/`DASHBOARD_PASS` is what covers all of them, and the
+  compensation for an unauthenticated dashboard is that a pause is loud: warned
+  on the way in, warned again at every boot, and counted on `/healthz`.
 - **Single process, SQLite only.** No Redis, no external queue, no worker pool.
   The webhook inbox is a table, not a broker, and deliberately does not try to
   be one: it makes an *accepted* webhook survive a restart. Catching what

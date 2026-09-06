@@ -288,7 +288,13 @@ export interface WorkflowDef<Input = unknown> {
   name: string;
   description?: string;
   trigger: Trigger;
-  /** Set false to keep the file but stop scheduling it. Default true. */
+  /**
+   * Set false to keep the file but stop scheduling it. Default true.
+   *
+   * This is the code's answer and the dashboard cannot argue with it: a pause
+   * switched on there can only ever subtract, so a workflow that says false
+   * here stays off until the file says otherwise. See src/core/pause.ts.
+   */
   enabled?: boolean;
   /** Extra attempts after the first failure. Default 2. */
   retries?: number;
@@ -363,6 +369,18 @@ export interface WorkflowVersion {
   first_seen: number;
   /** Equal to `first_seen` until the file is edited for the first time. */
   updated_at: number;
+}
+
+/**
+ * One row of `workflow_pauses`: a workflow an operator switched off from the
+ * dashboard. Distinct from `enabled: false` in the file — see src/core/pause.ts
+ * for why the two are kept apart.
+ */
+export interface WorkflowPause {
+  workflow: string;
+  paused_at: number;
+  /** Why, if whoever paused it said. */
+  note: string | null;
 }
 
 export type RunStatus = "running" | "success" | "failed" | "skipped";

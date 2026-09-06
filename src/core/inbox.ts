@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { capture, isTruncated, MAX_CHECKPOINT_BYTES } from "./capture.ts";
 import { store } from "./db.ts";
+import { isEnabled } from "./pause.ts";
 import { createLogger, log } from "./logger.ts";
 import { isShuttingDown, runWorkflow } from "./runner.ts";
 import type { LoadedWorkflow } from "./types.ts";
@@ -138,7 +139,10 @@ export async function recoverInbox(registry: Registry): Promise<void> {
   for (const entry of pending) {
     const wf = registry.get(entry.workflow);
 
-    if (!wf || wf.trigger.kind !== "webhook" || wf.enabled === false) {
+    // isEnabled(), not wf.enabled: a workflow paused from the dashboard is off
+    // for this too, and a delivery it never got to run is dropped rather than
+    // replayed the moment the process comes back.
+    if (!wf || wf.trigger.kind !== "webhook" || !isEnabled(wf)) {
       store.settleDelivery(entry.id, "abandoned", null);
       log.warn(
         `Inbox: dropped a delivery for ${entry.workflow} — it no longer takes webhooks`,

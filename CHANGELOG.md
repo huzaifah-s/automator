@@ -8,6 +8,62 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-06
 
+### A switch that can only ever be flicked down
+
+Turning a workflow off meant editing its file and redeploying. That is the
+right cost for changing what a workflow *does* and the wrong one for "this is
+posting nonsense, stop it now" — the moment you actually want it, a redeploy is
+the slowest tool in the room, and the workaround people reach for instead is
+deleting a credential, which breaks four other workflows and leaves a run
+history full of red that means nothing.
+
+So the Workflows tab has a pause button on every row, and the workflow page has
+one with a box for the reason. It is a row in `workflow_pauses`, so it takes
+effect immediately and survives a restart. Paused means the cron or poll timer
+is taken down, the webhook route stops matching, `ctx.run()` from another
+workflow is refused with a reason, an accepted-but-unrun delivery is dropped at
+the next boot rather than replayed, and a `register`ed provider subscription is
+deleted at the next boot too.
+
+**The switch can only ever turn a workflow off.** A file that says
+`enabled: false` shows as *Disabled*, gets no button, and cannot be started
+from the browser; resuming removes the pause and lets the file answer again
+rather than overriding it. The symmetrical version — a database column that
+wins in both directions — was the obvious design and it is the one that makes
+the repo a lie: two deployments running the same commit and doing different
+things, with the difference visible only in SQLite. That is precisely the drift
+this project left n8n to avoid, and a kill switch is the half of the feature
+that is actually wanted at 2am. The cost is one asymmetry to explain, and the
+two words on the dashboard carry it: **Disabled** means change the file,
+**Paused** means click Resume.
+
+**Run now still works while paused**, from the button and from `bun run
+trigger`. Off means "stops firing by itself", not "cannot be tested" — which is
+what `enabled: false` had always meant here, since the dashboard would happily
+run one of those. Closing that would make switching a workflow off something
+people avoid doing, because they could no longer check whether the fix worked
+before switching it back on.
+
+**The scheduler is edited when a pause changes, not consulted on every tick.**
+`scheduleWorkflow` / `unscheduleWorkflow` take the croner job up and down, so a
+paused workflow's *Next* column reads `—` instead of a time it will not honour.
+The check in `runWorkflow` stays as a backstop for the tick that was already in
+flight when the button was clicked; it is not the mechanism. Nothing is caught
+up on resume: four missed cron firings do not become four runs, they become
+none.
+
+**Not gated behind `DASHBOARD_WRITE`.** That flag is about whether a browser may
+put a credential into the encrypted store; this writes no value and configures
+nothing, and it is the same category as Run now, Resume and Replay, none of
+which have ever been gated. `DASHBOARD_USER`/`DASHBOARD_PASS` is the control
+that covers all of them. The compensation for a public dashboard is that a
+pause is loud rather than silent: warned when it happens, warned again at every
+boot, counted on `/healthz`, and marked `◐` by `bun run list`.
+
+The note field is operator-typed text rendered on a web page, so it goes
+through `redact()` and a 200-character cap at the storage boundary like every
+other observational string.
+
 ### The caption was there; nobody went looking for it
 
 The cross-poster failed a row — "Femme fatale - video" — with *Caption section

@@ -8,6 +8,44 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-06
 
+### The caption was there; nobody went looking for it
+
+The cross-poster failed a row — "Femme fatale - video" — with *Caption section
+is empty*, on a page whose caption is plainly visible in Notion. Both were
+telling the truth. The page's caption sits in two paragraphs **nested under**
+the quote block, and the quote itself holds nothing; `parsePage` read only the
+page's own children, saw an empty quote, and refused the row. Notion nests like
+this whenever an author presses Enter inside a quote instead of shift-Enter, so
+this was never about one page: every row written or edited that way would fail
+the same way, and the alert would keep pointing at the one place the caption
+already was.
+
+The page body is now read depth-first to two levels — the same
+`fetchNestedBlocks` walk the Telegram bot's page reader has always done — and
+each block keeps the depth it was found at.
+
+**The Caption section takes text from every block under it, nested children
+included.** Matching `/caption` in the bot exactly was the point: the author
+checks a caption there and expects that to be what goes out, and the two
+readers disagreeing is what this bug *was*. The stricter alternative — accept
+the quote's own text plus anything nested beneath a quote — fixes this page and
+still fails the next author who typed a caption as a plain paragraph, for a
+rule nobody can see from inside Notion.
+
+**Media links and the Postings checklist stay top-level.** That is what the
+kept depth is for. Nesting is not neutral there: File(s) carries an
+instructional callout, and the content skill deliberately hides reference
+Drive links inside quote blocks under Image Prompt(s) *because* the parser
+ignores them. Following children everywhere would publish a note as a post
+asset and let a nested to-do stand in for a platform.
+
+**Headings only mark sections at depth 0.** A heading inside a toggle or a
+column is something an author wrote, not a new section — reading it as one
+would silently end the section it appears in.
+
+Costs about four extra Notion reads per row, sequential, well inside the
+API's rate limit and the row's timeout.
+
 ### A receipt is not an execution
 
 The StudentQR relay's run list was mostly nothing. One Meta callback URL

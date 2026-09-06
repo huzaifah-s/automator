@@ -174,6 +174,24 @@ const MAX_PER_POLL = 3;
 /** Blocks in one page body. The template is nowhere near this. */
 const MAX_BLOCK_PAGES = 3;
 
+/**
+ * How far into a block's *children* the body is read, and it is not optional.
+ * Notion nests: a quote block whose author pressed Enter rather than
+ * shift-Enter keeps the rest of the text as children of the quote instead of
+ * inside it, and the quote itself is left holding nothing. A page read one
+ * level deep sees that empty quote and calls a caption that is plainly there
+ * missing. Two levels covers a caption's own paragraphs and a list nested
+ * under them; deeper than that is not a caption.
+ */
+const MAX_BLOCK_DEPTH = 2;
+
+/**
+ * Blocks whose children are a different document rather than more of this
+ * one. Following a `child_page` would pull a whole subpage into a caption.
+ * The same set `notion-contents-telegram-commands.ts` stops at.
+ */
+const OPAQUE_BLOCKS = new Set(["child_page", "child_database", "table", "synced_block"]);
+
 /** Carousel caps. Instagram's ten is the binding one, so it is the limit. */
 const CAROUSEL_MAX = 10;
 const CAROUSEL_MIN = 2;
@@ -268,6 +286,7 @@ function daysAgo(days: number): string {
 interface NotionBlock {
   id?: string;
   type?: string;
+  has_children?: boolean;
   [key: string]: unknown;
 }
 
@@ -304,6 +323,12 @@ const LINK_BEARING = new Set([
 
 const HEADINGS = new Set(["heading_1", "heading_2", "heading_3"]);
 
+/** A block and how deep it sits — 0 for the page's own children. */
+interface FlatBlock {
+  block: NotionBlock;
+  depth: number;
+}
+
 function richTextOf(block: NotionBlock, type: string): NotionTextFragment[] {
   const holder = block[type] as RichTextHolder | undefined;
   return holder?.rich_text ?? holder?.text ?? [];
@@ -318,6 +343,47 @@ function sectionKey(text: string): string {
   return text.trim().toLowerCase().replace(/\s+/g, "");
 }
 
+/** One block's children, in document order. */
+function childrenOf(ctx: Ctx<DuePage[]>, blockId: string): Promise<NotionBlock[]> {
+  return ctx.http
+    .paginate<NotionBlock>(`https://api.notion.com/v1/blocks/${blockId}/children`, {
+      headers: notionHeaders(),
+      query: { page_size: 100 },
+      items: "results",
+      next: { cursor: "next_cursor", param: "start_cursor" },
+      maxPages: MAX_BLOCK_PAGES,
+    })
+    .all();
+}
+
+/**
+ * The whole page body, depth-first, each block carrying the depth it was
+ * found at — n8n's `fetchNestedBlocks`, and what the Telegram bot's page
+ * reader already does.
+ *
+ * Reading only the page's own children is what made a caption sitting in
+ * plain sight come back empty: see `MAX_BLOCK_DEPTH`. Depth is kept rather
+ * than thrown away because only the *caption* wants the nested text — media
+ * links and the Postings checklist stay top-level, so that an instructional
+ * callout under File(s) cannot contribute a file and a nested to-do cannot
+ * become a platform.
+ */
+async function readBlocks(
+  ctx: Ctx<DuePage[]>,
+  blockId: string,
+  depth = 0,
+): Promise<FlatBlock[]> {
+  const flat: FlatBlock[] = [];
+  for (const block of await childrenOf(ctx, blockId)) {
+    flat.push({ block, depth });
+    const opaque = OPAQUE_BLOCKS.has(block.type ?? "");
+    if (block.has_children && block.id && !opaque && depth < MAX_BLOCK_DEPTH) {
+      flat.push(...(await readBlocks(ctx, block.id, depth + 1)));
+    }
+  }
+  return flat;
+}
+
 /**
  * Reads a page top to bottom and pulls out the three things a cross-post
  * needs: the caption, the media, and the Postings checklist.
@@ -326,8 +392,16 @@ function sectionKey(text: string): string {
  * which is load-bearing rather than incidental. The template also has Hook,
  * Script and Image Prompt(s) sections and an instructional callout inside
  * File(s), and none of that may reach a caption or be mistaken for media.
+ *
+ * Within the Caption section the rule is deliberately the loose one: every
+ * block that carries text, nested children included, in document order. That
+ * is the same rule the Telegram `/caption` command reads by, and the two
+ * agreeing is the point — the author checks a caption in the bot and expects
+ * that to be what goes out. It also means the caption survives however the
+ * text ended up shaped: inside the quote block, in paragraphs nested under
+ * it, or in both.
  */
-function parsePage(blocks: NotionBlock[]): ParsedPage {
+function parsePage(blocks: FlatBlock[]): ParsedPage {
   let section: string | null = null;
   let sawPostings = false;
 
@@ -336,23 +410,30 @@ function parsePage(blocks: NotionBlock[]): ParsedPage {
   const seenDrive = new Set<string>();
   const todos: Partial<Record<Platform, Todo>> = {};
 
-  for (const block of blocks) {
+  for (const { block, depth } of blocks) {
     const type = block.type;
     if (!type) continue;
 
     if (HEADINGS.has(type)) {
-      section = sectionKey(plainText(block, type));
-      if (section === "postings") sawPostings = true;
+      // Only the page's own headings mark sections. One nested inside a
+      // toggle or a column is content someone wrote, not a new section.
+      if (depth === 0) {
+        section = sectionKey(plainText(block, type));
+        if (section === "postings") sawPostings = true;
+      }
       continue;
     }
 
-    if (section === "caption" && type === "quote") {
+    // Punctuation between sections, never text.
+    if (type === "divider") continue;
+
+    if (section === "caption") {
       const text = plainText(block, type).trim();
       if (text) captionParts.push(text);
       continue;
     }
 
-    if (section === "file(s)" && LINK_BEARING.has(type)) {
+    if (section === "file(s)" && depth === 0 && LINK_BEARING.has(type)) {
       for (const fragment of richTextOf(block, type)) {
         // The link may be a real Notion link (href) or plain pasted text.
         const candidate = (
@@ -382,7 +463,7 @@ function parsePage(blocks: NotionBlock[]): ParsedPage {
       continue;
     }
 
-    if (section === "postings" && type === "to_do") {
+    if (section === "postings" && depth === 0 && type === "to_do") {
       const label = plainText(block, type).trim().toLowerCase();
       const platform = PLATFORMS.find((p) => p === label);
       if (platform && block.id) {
@@ -420,7 +501,7 @@ function driveFileId(url: string): string | null {
 /** What a page must have before anything is published from it. */
 function validate(page: DuePage, parsed: ParsedPage): void {
   if (!parsed.caption) {
-    throw new Error(`Caption section is empty — put the caption in the quote block under it`);
+    throw new Error(`Caption section has no text — write the caption under the Caption heading`);
   }
   if (parsed.driveIds.length === 0) {
     throw new Error(`No Google Drive links found under the File(s) heading`);
@@ -1410,15 +1491,7 @@ async function crossPost(
    * read that fails is a problem with Notion, and that one is allowed to throw:
    * it leaves the row on `Posting`, which is exactly what onFailure warns about.
    */
-  const blocks = await ctx.http
-    .paginate<NotionBlock>(`https://api.notion.com/v1/blocks/${page.id}/children`, {
-      headers: notionHeaders(),
-      query: { page_size: 100 },
-      items: "results",
-      next: { cursor: "next_cursor", param: "start_cursor" },
-      maxPages: MAX_BLOCK_PAGES,
-    })
-    .all();
+  const blocks = await readBlocks(ctx, page.id);
 
   const results: PlatformResult[] = [];
 

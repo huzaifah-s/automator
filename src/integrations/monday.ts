@@ -270,18 +270,27 @@ export function createMonday(http: HttpClient): MondayClient {
     },
 
     async createWebhook({ boardId, url, event, columnId }) {
+      // `config` is inlined rather than passed as a variable — the second place
+      // in this client that interpolates into a query, and for the same reason
+      // as `compare_value` below. Monday declares it as the `JSON` scalar, so a
+      // `$config: JSON` variable passes validation and then fails inside the
+      // resolver with a bare `Internal Server Error` that names nothing; every
+      // example Monday publishes writes it inline as a string literal instead.
+      // Stringifying the JSON *text* produces a correctly escaped GraphQL
+      // string literal, so this is as injection-safe as a variable would have
+      // been — and `columnId` is a board column id from a workflow file, not
+      // anything a request carries.
+      const config = columnId
+        ? `, config: ${JSON.stringify(JSON.stringify({ columnId }))}`
+        : "";
+
       const data = await client.query<{ create_webhook: { id: string } }>(
-        `mutation ($boardId: ID!, $url: String!, $event: WebhookEventType!, $config: JSON) {
-           create_webhook (board_id: $boardId, url: $url, event: $event, config: $config) {
+        `mutation ($boardId: ID!, $url: String!, $event: WebhookEventType!) {
+           create_webhook (board_id: $boardId, url: $url, event: $event${config}) {
              id
            }
          }`,
-        {
-          boardId: String(boardId),
-          url,
-          event,
-          config: columnId ? JSON.stringify({ columnId }) : undefined,
-        },
+        { boardId: String(boardId), url, event },
       );
       return { id: String(data.create_webhook.id) };
     },

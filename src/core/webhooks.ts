@@ -22,6 +22,14 @@ const DIRECTORY_KEY = "@webhook:registered";
 const CALL_TIMEOUT_MS = 30_000;
 /** Ceiling on the reachability probe. Short — it is one request to ourselves. */
 const PROBE_TIMEOUT_MS = 10_000;
+/**
+ * How long to wait for PUBLIC_URL to start answering before registering
+ * anyway. Generous, because it costs nothing: reconciliation is not awaited by
+ * boot, so the server is already serving while this waits.
+ */
+const READY_TIMEOUT_MS = 120_000;
+/** How often to re-probe while waiting. */
+const READY_INTERVAL_MS = 2_000;
 
 interface Subscription {
   id: string;
@@ -60,28 +68,61 @@ export async function reconcileWebhooks(registry: Registry): Promise<void> {
   const registered = new Set(known);
 
   /**
-   * Runs the reachability probe at most once, and only when a subscription is
-   * actually about to be created — a boot where everything is already in place
-   * makes no requests at all. The warning is inside the memoised body so seven
-   * registrations produce one line rather than seven copies of it.
+   * Waits for PUBLIC_URL to answer before the first subscription is created,
+   * and gives up rather than blocking.
+   *
+   * This is a race, not a misconfiguration, and it was the whole of the
+   * StudentQR failure: a reverse proxy does not route to a container until its
+   * healthcheck passes, so for the first several seconds of a deploy the public
+   * URL answers 503 while the process behind it is perfectly healthy. A
+   * provider asked to create a subscription in that window calls the URL,
+   * gets the 503, and refuses — Monday reports it as an internal error of its
+   * own, which names nothing. Every registration failed on a deployment whose
+   * URL was correct the entire time.
+   *
+   * Waiting is free: reconciliation is deliberately not awaited by boot, so the
+   * server is already listening and answering while this polls. The deadline is
+   * what keeps a host that genuinely cannot reach its own name — no NAT
+   * hairpin, split-horizon DNS — from waiting forever: it warns and registers
+   * anyway, because the probe is evidence and never a verdict. Ran at most once
+   * per boot, and only when something is actually about to be created.
    */
-  let probed: Promise<void> | undefined;
-  const warnIfUnreachable = (): Promise<void> =>
-    (probed ??= (async () => {
+  let ready: Promise<void> | undefined;
+  const awaitReachable = (): Promise<void> =>
+    (ready ??= (async () => {
       // Non-null: the guard above returns when a candidate needs PUBLIC_URL,
       // and this only runs from inside the candidate loop.
       const origin = publicUrl!;
-      const result = await probePublicUrl(origin);
+      const startedAt = Date.now();
+      let result = await probePublicUrl(origin);
+      let waited = false;
+
+      while (!result.ok && Date.now() - startedAt < READY_TIMEOUT_MS) {
+        if (!waited) {
+          log.info(
+            `Waiting for ${origin} to answer before registering webhooks — ${result.why}. ` +
+              `A proxy usually needs a few seconds after a deploy before it routes here.`,
+          );
+          waited = true;
+        }
+        await sleep(READY_INTERVAL_MS);
+        result = await probePublicUrl(origin);
+      }
+
+      const seconds = Math.round((Date.now() - startedAt) / 1000);
       if (result.ok) {
-        log.debug(`PUBLIC_URL reaches this server (${origin}/healthz)`);
+        if (waited) log.info(`${origin} is answering after ${seconds}s — registering now`);
+        else log.debug(`PUBLIC_URL reaches this server (${origin}/healthz)`);
         return;
       }
+
       log.warn(
-        `PUBLIC_URL may not reach this server — GET ${origin}/healthz ${result.why}. ` +
-          `A provider verifies a new subscription by calling it and reports the failure ` +
-          `as an error of its own, so check this first if the registrations below fail. ` +
-          `Not conclusive: this request left and re-entered the network, and a host that ` +
-          `cannot reach its own public name can still be perfectly reachable from outside.`,
+        `PUBLIC_URL still did not answer after ${seconds}s — GET ${origin}/healthz ` +
+          `${result.why}. Registering anyway. A provider verifies a new subscription by ` +
+          `calling it and reports the failure as an error of its own, so check this first ` +
+          `if the registrations below fail. Not conclusive: this request left and ` +
+          `re-entered the network, and a host that cannot reach its own public name can ` +
+          `still be perfectly reachable from outside.`,
       );
     })());
 
@@ -118,10 +159,10 @@ export async function reconcileWebhooks(registry: Registry): Promise<void> {
 
       if (!wanted) continue;
 
-      // Before the provider is asked to accept the URL, not after it refuses:
-      // the answer is the same either way, and a person reading the boot log
-      // top to bottom should meet the likely cause before the symptom.
-      await warnIfUnreachable();
+      // Before the provider is asked to accept the URL: it will call that URL
+      // as part of accepting it, so asking while the proxy is still returning
+      // 503 is the failure this waits out.
+      await awaitReachable();
 
       const id = await withCtx(wf, url, state, (ctx) => trigger.register!.create(ctx));
       if (typeof id !== "string" || id === "") {
@@ -253,4 +294,8 @@ async function probePublicUrl(origin: string): Promise<{ ok: true } | { ok: fals
     // is the useful half: "TimeoutError" says something "fetch failed" doesn't.
     return { ok: false, why: err instanceof Error ? `${err.name}: ${err.message}` : String(err) };
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }

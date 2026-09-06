@@ -201,15 +201,22 @@ what stops a redeploy creating a duplicate. Deleting on shutdown looks tidier
 and is wrong: every deploy would drop and recreate the subscription, and
 `SIGKILL` skips the cleanup regardless. Nothing in there may throw out to boot.
 
-**The reachability probe warns and never blocks.** Before the first
-subscription is created, `reconcileWebhooks` fetches our own `/healthz` over
-`PUBLIC_URL`, because a provider that cannot reach the URL reports it as an
-error of its own — Monday says `Internal Server Error
-[DOWNSTREAM_SERVICE_ERROR]` — and every registration then fails identically
-whatever is really wrong. A *failed* probe is evidence and not a verdict: a
-container often cannot reach its own public hostname, and the provider still
-can. Do not "improve" this into a precondition; it would turn a diagnostic into
-an outage. It runs at most once per boot, and only when something is actually
+**Registration waits for `PUBLIC_URL` to answer, then gives up rather than
+blocking.** Before the first subscription is created, `reconcileWebhooks` polls
+our own `/healthz` over `PUBLIC_URL` for up to two minutes. This is a race and
+not a misconfiguration: a reverse proxy does not route to a container until its
+healthcheck passes, so a deploy's first ten-odd seconds answer 503 while the
+process is healthy — and a provider asked to create a subscription in that
+window calls the URL, gets the 503, and refuses. Monday reports that as
+`Internal Server Error [DOWNSTREAM_SERVICE_ERROR]`, which names nothing, and
+every registration fails identically on a deployment whose URL was correct the
+whole time. Waiting is free because reconciliation is not awaited by boot.
+
+Past the deadline it warns and registers anyway. Do not "improve" that into a
+precondition: a host that cannot reach its own public name — no NAT hairpin,
+split-horizon DNS — is still perfectly reachable from outside, so the probe is
+evidence and never a verdict, and refusing on it would turn a diagnostic into
+an outage. Runs at most once per boot, and only when something is actually
 about to be registered.
 
 **`ctx.run()` never takes a second concurrency slot.** A nested run inherits

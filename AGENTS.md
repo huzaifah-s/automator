@@ -94,7 +94,7 @@ Every workflow is connected to the alert channel unless it says otherwise:
 `alerts: false` opts out, `alerts: { channel: "telegram:pblsh" }` routes its
 problems somewhere else. See README "Alerts".
 
-Triggers: `cron(expr, { tz })`, `webhook(path, { method, schema, respond, secret, verify })`,
+Triggers: `cron(expr, { tz })`, `webhook(path, { method, schema, filter, respond, secret, verify })`,
 `poll(expr, { fetch, id })`, `manual()`. On `ctx`: `http` `slack` `telegram` `discord` `ai` `email` `sql`
 `sheets` `scrape`, plus `log` `step` `run` `state` `signal` `input` `attempt` `runId`.
 Multi-page GETs go through `ctx.http.paginate(url)` rather than a hand-rolled
@@ -139,6 +139,16 @@ retried, and checkpointed.
 this into marking them up front — a failed run would then silently drop its
 items. The seen-set lives in the workflow's own state namespace under the
 reserved `@poll:` prefix.
+
+**A webhook `filter` is a shortcut, never the enforcement.** Returning a reason
+instead of `true` answers 200 and starts no run — but a manual run, a replay
+and inbox recovery all bypass it, so `run()` must still handle everything the
+filter would have turned away. Write filters to fail towards running: one that
+throws runs the workflow anyway, because a needless run costs a row and a
+wrongly-dropped delivery costs the work *and* leaves a counter claiming it was
+deliberate. Reasons are constants, not strings built from the payload — they
+are a primary key column, capped at 80 characters and bounded at 20 per
+workflow, so an interpolated id silently evicts the real reasons.
 
 **`ctx.state` is the one thing not redacted on the way to disk, and it must
 stay invisible.** Every other write to SQLite is observational, so scrubbing it

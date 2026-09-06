@@ -432,6 +432,64 @@ scanner walking URLs would write a row per guess.
 nobody authenticated. What it sent is whatever a stranger chose to send, and a
 wrong secret is still somebody's guess at a secret.
 
+## Deliveries with nothing behind them
+
+A rejection is a caller turned away at the door. This is the other half: a
+caller let all the way in who turned out to have nothing to say.
+
+One callback URL is often two things. Meta posts a teacher's WhatsApp message
+to `/hooks/studentqr/whatsapp`, and it posts a `sent`, `delivered` and `read`
+receipt to the same URL for every notification that number sends — so the
+receipts outnumber the real traffic several to one. Every one of them used to
+be a run: a row, an inbox entry, log lines, and, because that workflow is
+`onOverlap: "queue"`, a place in the queue *ahead of* the teacher waiting on
+support.
+
+A webhook trigger can now say a delivery is not worth running:
+
+```ts
+trigger: webhook("studentqr/whatsapp", {
+  schema: inbound,
+  filter: (body) => worthRunning(body) || "a delivery receipt for a message we sent",
+}),
+```
+
+Return `true` to run it. Return anything else and it is the **reason** — the
+caller gets a 200, the reason is counted against the workflow, and nothing
+starts. There is deliberately no `false`: a delivery that vanishes without a
+run has to say why, because the counter is the only trace it leaves.
+
+```
+Ignored deliveries
+  a delivery receipt for a message we sent            1,284×
+  a message with no text — a sticker, image or reaction   6×
+```
+
+This is the same idea `poll()` already has for the other kind of trigger —
+nothing new means no run at all — and it needs the same antidote: a bounded
+counter, so a quiet hook and a dead one do not look identical. The workflow
+page carries an **ignored** tile and the breakdown above the run table;
+`GET /api/workflows/<name>/ignored` has it as JSON, and `GET /api/workflows`
+carries an `ignored` summary per workflow.
+
+**A filter that throws runs the workflow anyway.** The two ways of being wrong
+are not symmetrical: a run nobody needed costs one row, and a delivery dropped
+on a broken predicate costs the work *and* leaves a counter claiming it was
+deliberate. Write filters to fail towards running, and keep the real decision
+in `run()` — a manual run, a replay, and inbox recovery do not go through the
+filter, so it is a shortcut and never the thing enforcing correctness.
+
+**Counted, not stored per delivery**, for the same reason as rejections: this
+is the high-volume path by construction. That is the honest cost — an ignored
+delivery leaves a number and no payload, so a filter that is wrong shows up as
+a count going up with nothing to inspect. Give the cases you ignore separate
+reasons where they mean different things: burying "a teacher sent a photo and
+got no answer" inside the volume of "read receipt" is exactly the mistake.
+
+The reason is workflow-authored text in a primary key, so it is redacted,
+capped at 80 characters, and the distinct reasons per workflow are bounded at
+20 — write reasons as constants, not built out of the payload.
+
 ## Calling one workflow from another
 
 `ctx.run(name, input)` runs another workflow and returns its result. The child
@@ -1258,6 +1316,7 @@ until you go looking at the dashboard.
 | A run never started | It declares a credential that is not connected. |
 | Boot | A workflow file would not load, a credential is unconnected, a webhook subscription failed to register. |
 | A delivery was rejected | A webhook arrived with a bad secret or a failed signature — see [Rejected deliveries](#rejected-deliveries). |
+| A delivery was ignored | A webhook arrived, passed every check, and the workflow's own `filter` found no work behind it — see [Deliveries with nothing behind them](#deliveries-with-nothing-behind-them). |
 
 Set one env var:
 

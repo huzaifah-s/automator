@@ -8,6 +8,59 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-06
 
+### A receipt is not an execution
+
+The StudentQR relay's run list was mostly nothing. One Meta callback URL
+receives a teacher's WhatsApp message *and* a `sent`, `delivered` and `read`
+receipt for every notification that number sends — orders, issues, card status,
+badges, welcome, all of which go out through the same number — so the receipts
+outnumbered the real traffic several to one, and each was a full run: a row, an
+inbox entry, log lines, and a concurrency slot. Because the relay is
+`onOverlap: "queue"`, a burst of read receipts also took its turn in the queue
+*ahead of* a teacher waiting on support. The workflow already knew they were
+nothing; it just knew too late, returning `relayed: false` after the
+bookkeeping was done.
+
+So a webhook trigger can now decline a delivery before any of that:
+`filter: (body) => true | "why not"`. A reason answers the caller 200, is
+counted in a new `ignored` table, and starts nothing.
+
+**Filtered at the door rather than recorded as a `noop` run.** A new run status
+was the obvious alternative and only fixes the list view — it still pays for
+the inbox row, the log lines, the slot, and the place in the queue, which was
+the half that was actually hurting. The whole value is in not starting.
+
+**No `false`, only `true` or a reason.** A delivery that vanishes without a run
+has to say why, because the counter is the only trace it leaves. It also means
+a predicate that accidentally returns a string cannot mean "yes" — the type
+fails towards recording rather than towards silence.
+
+**A filter that throws runs the workflow anyway.** The two ways of being wrong
+are not symmetrical: a needless run costs one row, and a delivery dropped on a
+broken predicate costs the work and leaves a counter claiming it was deliberate.
+Same stance as the reachability probe — a diagnostic that decides things is
+worse than the fault it diagnoses.
+
+**What was traded away:** the payload. An ignored delivery leaves a count and a
+reason and nothing else, so a filter that is wrong shows up as a number going
+up with nothing to inspect. That is why `run()` keeps every guard the filter
+duplicates — a manual run, a replay and inbox recovery all bypass the filter —
+and why the relay counts "a message with no text" separately from "a delivery
+receipt": a teacher sending a photo and getting no answer is a person being
+silently ignored, and burying it inside the receipt volume would hide it.
+
+The reason is workflow-authored text in a primary key, so it is redacted,
+capped at 80 characters, and bounded at 20 distinct reasons per workflow —
+pruned least-recently-seen, and only when a new reason first appears, so the
+high-volume path stays one upsert.
+
+Verified against a running server with signed Meta payloads: three receipts and
+a sticker were ignored with two distinct reasons and zero runs; a `failed`
+status still produced a failed run carrying `Message undeliverable (131026)`,
+which is the alert path and the expensive thing to lose; a real text message
+still ran. A probe workflow confirmed a throwing filter runs anyway, that 30
+distinct reasons prune to 20, and that a 300-character reason is cut to 80.
+
 ### Webhook registration was losing a race with the reverse proxy
 
 Every Monday subscription failed on a deployment whose URL was correct the

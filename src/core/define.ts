@@ -1,6 +1,7 @@
 import type {
   PollCtx,
   Trigger,
+  WebhookFilter,
   WebhookHandshake,
   WebhookRegistration,
   WebhookVerifier,
@@ -39,13 +40,25 @@ export function cron(expression: string, opts: { tz?: string } = {}): Trigger {
   return { kind: "cron", expression, tz: opts.tz ?? process.env.TZ };
 }
 
-/** webhook("stripe") mounts POST /hooks/stripe. */
-export function webhook(
+/**
+ * webhook("stripe") mounts POST /hooks/stripe.
+ *
+ * Generic over the schema, so `filter` is handed the payload as the schema
+ * parsed it rather than `unknown`. Nothing else needs the parameter — a
+ * workflow's own `ctx.input` type comes from defineWorkflow<T>.
+ */
+export function webhook<T = unknown>(
   path: string,
   opts: {
     method?: "GET" | "POST";
-    schema?: ZodType;
+    schema?: ZodType<T>;
     respond?: "async" | "sync";
+    /**
+     * Decides whether a delivery is worth a run. Return `true` to run it, or
+     * the reason it is being ignored — see WebhookFilter in types.ts, and
+     * write it to fail towards running.
+     */
+    filter?: WebhookFilter<T>;
     /** `false` opts out of the secret check — see types.ts. */
     secret?: string | false;
     /** Authenticates from the raw request instead of a shared secret. */
@@ -56,7 +69,16 @@ export function webhook(
     register?: WebhookRegistration;
   } = {},
 ): Trigger {
-  return { kind: "webhook", path: path.replace(/^\/+/, ""), ...opts };
+  return {
+    kind: "webhook",
+    path: path.replace(/^\/+/, ""),
+    ...opts,
+    // The trigger stores an `unknown`-taking filter, because the registry holds
+    // workflows of every payload shape side by side. The generic above is the
+    // whole point of this cast: it is what typed the function at the call site.
+    filter: opts.filter as WebhookFilter | undefined,
+    schema: opts.schema as ZodType | undefined,
+  };
 }
 
 /**
@@ -126,7 +148,13 @@ export {
  * relayed into a Telegram alert.
  */
 export { redact } from "./redact.ts";
-export type { HandshakeReply, WebhookHandshake, WebhookVerifier } from "./types.ts";
+export type {
+  HandshakeReply,
+  WebhookDecision,
+  WebhookFilter,
+  WebhookHandshake,
+  WebhookVerifier,
+} from "./types.ts";
 export { defineOAuth } from "../integrations/oauth.ts";
 /**
  * The shape of a Monday.com webhook delivery, and the two readers worth having

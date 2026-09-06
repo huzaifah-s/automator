@@ -38,7 +38,7 @@ import {
   variableValue,
 } from "../core/variables.ts";
 import type { Registry } from "../core/loader.ts";
-import type { LoadedWorkflow, RunRecord } from "../core/types.ts";
+import type { LoadedWorkflow, RunRecord, WebhookDecision } from "../core/types.ts";
 import {
   credentialFormPage,
   credentialsPage,
@@ -297,6 +297,48 @@ export function createApp(registry: Registry): Hono {
     // which is nearly all of them nearly all of the time.
     store.resolveRejections(wf.name);
 
+    /*
+     * The last gate, and the only one that is about the payload rather than
+     * the caller. Everything above decides whether this delivery is allowed
+     * in; this decides whether there is anything behind it worth a run.
+     *
+     * Placed before acceptDelivery on purpose. A "noop" run status would have
+     * tidied the run list and paid for it anyway — the inbox row, the log
+     * lines, the concurrency slot, and for a workflow with onOverlap: "queue"
+     * a place in the queue ahead of the delivery that *does* matter. The whole
+     * value is in not starting.
+     *
+     * Applies to sync hooks too. A caller waiting on a result is still owed
+     * the truth that nothing ran, and it is cheaper to tell it here.
+     */
+    if (wf.trigger.filter) {
+      let decision: WebhookDecision = true;
+      try {
+        decision = await wf.trigger.filter(input);
+      } catch (err) {
+        // Fails towards running. A predicate that throws is a bug in workflow
+        // code, and the two ways of being wrong are not symmetrical: a run
+        // nobody needed costs a row, and a delivery dropped on a broken
+        // predicate costs the work and leaves a counter that says it was
+        // deliberate. The same stance as the reachability probe in webhooks.ts
+        // — a diagnostic that decides things is worse than the fault it finds.
+        log.warn(
+          `Filter for ${wf.name} threw — running the delivery anyway: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+
+      if (decision !== true) {
+        store.recordIgnored({ workflow: wf.name, reason: decision });
+        log.debug(`Ignored a delivery for ${wf.name} — ${decision}`);
+        // 200 rather than 202: 202 means "accepted, will act on it later",
+        // which is exactly what did not happen. Any 2xx settles it for a
+        // provider; what matters is that it is not a retryable status, because
+        // this delivery will be declined identically every time.
+        return c.json({ accepted: false, ignored: true, reason: decision, workflow: wf.name });
+      }
+    }
+
     // Async is the default: most providers time out or retry on a slow reply.
     if ((wf.trigger.respond ?? "async") === "async") {
       // Written down before the 202 goes back, so a restart between the
@@ -488,6 +530,7 @@ export function createApp(registry: Registry): Hono {
         blockedWorkflows().get(wf.name) ?? [],
         store.rejectionsFor(wf.name),
         store.lastPoll(wf.name),
+        store.ignoredFor(wf.name),
       ) as any,
     );
   });
@@ -953,6 +996,7 @@ export function createApp(registry: Registry): Hono {
   app.get("/api/workflows", (c) => {
     const versions = store.workflowVersions();
     const rejected = store.rejectionTotals();
+    const ignored = store.ignoredTotals();
     const polls = store.lastPolls();
     return c.json(
       registry.all().map((w) => {
@@ -993,8 +1037,32 @@ export function createApp(registry: Registry): Hono {
                 lastAt: new Date(rejected.get(w.name)!.last_at).toISOString(),
               }
             : null,
+          // Deliveries this workflow's own filter declined to run. Not a
+          // problem like `rejected` is — it is the number that makes the run
+          // count add up against the provider's delivery log. Null, not 0,
+          // when there have never been any.
+          ignored: ignored.has(w.name)
+            ? {
+                count: ignored.get(w.name)!.count,
+                lastAt: new Date(ignored.get(w.name)!.last_at).toISOString(),
+              }
+            : null,
         };
       }),
+    );
+  });
+
+  /** What a workflow's filter is declining to run, reason by reason. */
+  app.get("/api/workflows/:name/ignored", (c) => {
+    const wf = registry.get(c.req.param("name"));
+    if (!wf) return c.json({ error: "Unknown workflow" }, 404);
+    return c.json(
+      store.ignoredFor(wf.name).map((r) => ({
+        reason: r.reason,
+        count: r.count,
+        firstAt: new Date(r.first_at).toISOString(),
+        lastAt: new Date(r.last_at).toISOString(),
+      })),
     );
   });
 

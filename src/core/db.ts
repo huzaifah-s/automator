@@ -5,6 +5,7 @@ import { redact } from "./redact.ts";
 import type {
   CallRecord,
   CredentialRow,
+  IgnoredRecord,
   InboxRecord,
   LogRecord,
   PollRecord,
@@ -23,6 +24,19 @@ const REJECTION_DETAIL_MAX = 500;
 
 /** Ceiling on a poll tick's `error`. Same reasoning as a rejection's detail. */
 const POLL_ERROR_MAX = 500;
+
+/**
+ * Ceiling on an ignore reason. Short on purpose: it is a label for a category
+ * of delivery, and it is a primary key column.
+ */
+const IGNORE_REASON_MAX = 80;
+/**
+ * How many distinct reasons one workflow may keep. Well above what any honest
+ * filter returns — they are constants in workflow code — and low enough that a
+ * filter building its reason out of the payload cannot fill the table. Past
+ * this the least recently seen reason is dropped.
+ */
+const MAX_IGNORE_REASONS = 20;
 
 mkdirSync(dirname(path), { recursive: true });
 
@@ -159,6 +173,38 @@ db.exec(`
     -- the inbox, which only async webhooks write to and which is pruned.
     resolved_at INTEGER,
     PRIMARY KEY (workflow, path, reason)
+  ) WITHOUT ROWID;
+
+  -- Deliveries a workflow's own filter decided were not worth running. The
+  -- other half of the rejections table: that one is callers turned away at the
+  -- door, this one is callers let all the way in who turned out to have
+  -- nothing behind them.
+  --
+  -- The case that prompted it: one Meta callback URL receives both a teacher's
+  -- WhatsApp message and a "delivered" receipt for every notification the same
+  -- number sent, and the receipts outnumber the messages several to one. Every
+  -- one of them was a run — a row here, a row in inbox, log lines, and a place
+  -- in a queue ahead of somebody's actual message.
+  --
+  -- Counted, not stored per delivery, for the same reason as rejections: this
+  -- is the high-volume path by construction, and a row per receipt is a way to
+  -- fill a disk with the successful case. Nothing about the payload is kept,
+  -- which is the honest cost — an ignored delivery leaves a number, so a filter
+  -- that is wrong shows up as a count going up with nothing to inspect. That
+  -- is why a filter that throws runs the workflow instead (see app.ts).
+  --
+  -- The reason column is workflow-authored text and is in the primary key, so
+  -- it is redacted, capped, and the distinct reasons per workflow bounded — a
+  -- filter that interpolated a message id into its reason would otherwise grow
+  -- this table without limit. Pruned only when a new reason first appears, so
+  -- the common path is one upsert and nothing else.
+  CREATE TABLE IF NOT EXISTS ignored (
+    workflow TEXT    NOT NULL,
+    reason   TEXT    NOT NULL,
+    count    INTEGER NOT NULL DEFAULT 0,
+    first_at INTEGER NOT NULL,
+    last_at  INTEGER NOT NULL,
+    PRIMARY KEY (workflow, reason)
   ) WITHOUT ROWID;
 
   -- The last time each poll trigger looked, and what it saw. A tick that finds
@@ -573,6 +619,32 @@ const stmts = {
      GROUP BY workflow`,
   ),
   clearRejections: db.prepare(`DELETE FROM rejections WHERE workflow = ?`),
+  // RETURNING count, so the caller can tell a brand-new reason from the
+  // millionth repeat of an old one without a second query — the prune below
+  // is only worth running in the first case.
+  bumpIgnored: db.prepare(
+    `INSERT INTO ignored (workflow, reason, count, first_at, last_at)
+     VALUES (?, ?, 1, ?, ?)
+     ON CONFLICT(workflow, reason) DO UPDATE SET
+       count   = count + 1,
+       last_at = excluded.last_at
+     RETURNING count`,
+  ),
+  pruneIgnored: db.prepare(
+    `DELETE FROM ignored
+      WHERE workflow = ?1
+        AND reason NOT IN (
+          SELECT reason FROM ignored WHERE workflow = ?1
+           ORDER BY last_at DESC LIMIT ?2
+        )`,
+  ),
+  ignoredFor: db.prepare(
+    `SELECT * FROM ignored WHERE workflow = ? ORDER BY count DESC, last_at DESC`,
+  ),
+  ignoredTotals: db.prepare(
+    `SELECT workflow, SUM(count) AS count, MAX(last_at) AS last_at
+       FROM ignored GROUP BY workflow`,
+  ),
   // Replaced wholesale each tick — the previous tick's numbers are never
   // wanted alongside the current ones.
   recordPoll: db.prepare(
@@ -880,6 +952,35 @@ export const store = {
   },
 
   clearRejections: (workflow: string) => stmts.clearRejections.run(workflow).changes,
+
+  /* ----------------------------------------------------------- ignored */
+
+  /**
+   * Counts one delivery a workflow's filter declined to run. The high-volume
+   * path — this is called for every WhatsApp receipt Meta sends — so it stays
+   * one upsert, and only pays for the prune the first time a reason appears.
+   */
+  recordIgnored(entry: { workflow: string; reason: string }): void {
+    const now = Date.now();
+    // Redacted like every other observational string: this is text a workflow
+    // author wrote, it is rendered on a web page, and nothing stops it having
+    // been built out of the payload.
+    const reason = redact(entry.reason).slice(0, IGNORE_REASON_MAX);
+    const row = stmts.bumpIgnored.get(entry.workflow, reason, now, now) as { count: number };
+    if (row.count === 1) stmts.pruneIgnored.run(entry.workflow, MAX_IGNORE_REASONS);
+  },
+
+  ignoredFor: (workflow: string) => stmts.ignoredFor.all(workflow) as IgnoredRecord[],
+
+  /** Totals per workflow, for the list badge and the API. */
+  ignoredTotals(): Map<string, { count: number; last_at: number }> {
+    const rows = stmts.ignoredTotals.all() as Array<{
+      workflow: string;
+      count: number;
+      last_at: number;
+    }>;
+    return new Map(rows.map((r) => [r.workflow, { count: r.count, last_at: r.last_at }]));
+  },
 
   /* ------------------------------------------------------------- polls */
 

@@ -18,6 +18,41 @@ export type WebhookVerifier = (req: {
 }) => boolean | Promise<boolean>;
 
 /**
+ * What a webhook filter decides about one delivery.
+ *
+ * `true` runs it. Anything else is the *reason* it was ignored, and there is
+ * deliberately no `false`: a delivery that vanishes without a run has to say
+ * why, because the counter it lands in is the only trace it leaves. Only the
+ * literal `true` runs, so a predicate that accidentally returns a string can
+ * never mean "yes" — it fails towards recording, not towards silence.
+ */
+export type WebhookDecision = true | string;
+
+/**
+ * Decides whether a delivery is worth a run, from the payload as validated.
+ *
+ * This exists because one callback URL is often two things. Meta posts a
+ * teacher's WhatsApp message and a "delivered" receipt for every notification
+ * the same number sent to the same address, and the receipts outnumber the
+ * messages several to one. Without this every receipt was a run: a row, an
+ * inbox entry, log lines, and — for a workflow with `onOverlap: "queue"` — a
+ * place in the queue *ahead of* somebody's actual message.
+ *
+ * The same idea `poll()` already has, for the other kind of trigger: nothing
+ * new means no run at all, and a bounded counter is what keeps quiet from
+ * looking dead. See the `ignored` table in db.ts.
+ *
+ * Runs after `schema`, so the payload is already the shape run() expects, and
+ * after every authentication check — this is a question about content, not
+ * about the caller, and it must never be the thing keeping a forged call out.
+ *
+ * **Write it to fail towards running.** A filter that throws runs the workflow
+ * anyway; so does one that cannot make up its mind. Recording a run nobody
+ * needed costs a row, and dropping one silently costs the work.
+ */
+export type WebhookFilter<T = unknown> = (input: T) => WebhookDecision | Promise<WebhookDecision>;
+
+/**
  * What a handshake sends back. A string is returned as `text/plain` verbatim —
  * Meta's URL verification wants the bare challenge and rejects anything that
  * wraps it — and an object as JSON.
@@ -75,6 +110,12 @@ export type Trigger =
       method?: "GET" | "POST";
       /** Validates the parsed body (POST) or query string (GET). */
       schema?: ZodType;
+      /**
+       * Decides whether this delivery is worth a run at all. Returning a
+       * string instead of `true` answers the caller 200, records the reason
+       * against a bounded counter, and starts nothing. See WebhookFilter.
+       */
+      filter?: WebhookFilter;
       /**
        * "async" (default) returns 202 + runId immediately — correct for almost
        * every provider, which will retry on a slow response.
@@ -379,6 +420,24 @@ export interface RejectionRecord {
    * `last_at` means this row is history rather than a live problem.
    */
   resolved_at: number | null;
+}
+
+/**
+ * Deliveries a workflow's own `filter` decided were not worth running,
+ * counted per (workflow, reason) — see the `ignored` table in db.ts.
+ *
+ * The difference from a RejectionRecord is who decided and on what grounds. A
+ * rejection is the door: a caller that could not authenticate, or sent
+ * something unparseable. This is the workflow: a caller that did everything
+ * right and simply had nothing to say.
+ */
+export interface IgnoredRecord {
+  workflow: string;
+  /** The workflow's own words for why. Redacted and capped on the way in. */
+  reason: string;
+  count: number;
+  first_at: number;
+  last_at: number;
 }
 
 /**

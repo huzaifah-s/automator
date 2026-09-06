@@ -2,6 +2,7 @@ import { html, raw } from "hono/html";
 import type { HtmlEscapedString } from "hono/utils/html";
 import type {
   CallRecord,
+  IgnoredRecord,
   LoadedWorkflow,
   LogRecord,
   PollRecord,
@@ -1238,8 +1239,12 @@ export function workflowPage(
   rejections: RejectionRecord[] = [],
   /** The last tick of a poll trigger. Null for every other kind of trigger. */
   lastPoll: PollRecord | null = null,
+  /** Deliveries this workflow's own filter declined to run. Usually empty. */
+  ignored: IgnoredRecord[] = [],
 ) {
   const polls = wf.trigger.kind === "poll";
+  const filters = wf.trigger.kind === "webhook" && wf.trigger.filter !== undefined;
+  const ignoredTotal = ignored.reduce((n, r) => n + r.count, 0);
   const crumb = html`<span class="crumb">
     ${wf.folder ? html`${ICON_FOLDER} <a href="/">${wf.folder}</a> /` : ""}
     <b>${wf.name}</b>
@@ -1257,6 +1262,15 @@ export function workflowPage(
           ? html`<div class="stat">
               <b class="${lastPoll?.error ? "failed" : ""}" title="${pollTitle(lastPoll)}"
                 >${lastPoll ? relative(lastPoll.at) : "never"}</b><span>last polled</span>
+            </div>`
+          : ""}
+        <!-- Not styled as a problem, because it is not one: a filter doing its
+             job is the healthy state. It earns a tile only where the count
+             changes how you read "total runs" next to it. -->
+        ${ignoredTotal > 0
+          ? html`<div class="stat">
+              <b title="deliveries that arrived, passed every check, and had no work behind them"
+                >${ignoredTotal}</b><span>ignored</span>
             </div>`
           : ""}
       </div>
@@ -1277,6 +1291,11 @@ export function workflowPage(
         <tr><td>Next run</td><td class="mono">${next ? fmt(next.getTime()) : "—"}</td></tr>
         ${polls
           ? html`<tr><td>Last polled</td><td class="mono">${lastPollCell(lastPoll)}</td></tr>`
+          : ""}
+        ${filters
+          ? html`<tr><td>Filter</td><td class="mono">
+              yes <span class="muted">· deliveries with no work behind them are counted, not run</span>
+            </td></tr>`
           : ""}
         <tr><td>Retries</td><td class="mono">${wf.retries ?? 2}</td></tr>
         <tr><td>Timeout</td><td class="mono">${dur(wf.timeoutMs ?? 300_000)}</td></tr>
@@ -1312,6 +1331,7 @@ export function workflowPage(
       </div>
 
       ${rejections.length > 0 ? rejectionsSection(wf, rejections) : ""}
+      ${ignored.length > 0 ? ignoredSection(ignored, ignoredTotal) : ""}
 
       <h2>Recent runs</h2>
       ${polls
@@ -1319,6 +1339,13 @@ export function workflowPage(
             A tick that finds nothing new starts no run, so gaps here are the normal
             state of a healthy poll — <b>last polled</b> above is what says the schedule
             is still running.
+          </p>`
+        : ""}
+      ${filters
+        ? html`<p class="muted" style="margin:0 0 8px">
+            This hook filters: a delivery with no work behind it is counted rather than
+            run, so this list is what actually happened and not what arrived.
+            <b>Ignored deliveries</b> above is the rest of the traffic.
           </p>`
         : ""}
       ${runsTable(runs, false)}
@@ -1379,6 +1406,40 @@ function rejectionsSection(wf: LoadedWorkflow, rejections: RejectionRecord[]) {
         <button class="btn" type="submit">Clear counters</button>
       </form>
     </div>
+  `;
+}
+
+/**
+ * Deliveries the workflow itself declined to run. Sits below the rejections
+ * section and reads deliberately differently: nothing here is a fault, so
+ * there is no red box and nothing to clear. It answers one question — the run
+ * list is shorter than the provider's delivery log, and here is the gap.
+ */
+function ignoredSection(ignored: IgnoredRecord[], total: number) {
+  const newest = Math.max(...ignored.map((r) => r.last_at));
+  const oldest = Math.min(...ignored.map((r) => r.first_at));
+
+  return html`
+    <h2>Ignored deliveries</h2>
+    <p class="muted" style="margin:0 0 10px">
+      ${total} ${total === 1 ? "delivery" : "deliveries"} arrived, passed every check, and
+      had nothing behind ${total === 1 ? "it" : "them"} — the last ${relative(newest)}, the
+      first ${relative(oldest)}. No run was started, and the payloads were not kept: this
+      count is the whole record.
+    </p>
+    <div class="card"><table><tbody>
+      ${ignored.map(
+        (r) => html`<tr>
+          <td><span class="tag">${r.reason}</span></td>
+          <td class="mono">
+            ${r.count}&times;
+            <span class="muted">
+              first ${relative(r.first_at)}, last ${relative(r.last_at)}
+            </span>
+          </td>
+        </tr>`,
+      )}
+    </tbody></table></div>
   `;
 }
 

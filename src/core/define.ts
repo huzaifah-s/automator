@@ -128,6 +128,20 @@ export {
 export { redact } from "./redact.ts";
 export type { HandshakeReply, WebhookHandshake, WebhookVerifier } from "./types.ts";
 export { defineOAuth } from "../integrations/oauth.ts";
+/**
+ * The shape of a Monday.com webhook delivery, and the two readers worth having
+ * for one. See src/integrations/monday.ts.
+ */
+export { mondayEvent, mondayWebhook, pulseId } from "../integrations/monday.ts";
+export type {
+  MondayWebhookEvent,
+  MondayAsset,
+  MondayColumn,
+  MondayEvent,
+  MondayFields,
+  MondayItem,
+} from "../integrations/monday.ts";
+export type { WhatsAppSent, TemplateOptions } from "../integrations/whatsapp.ts";
 export type {
   Ctx,
   PollCtx,

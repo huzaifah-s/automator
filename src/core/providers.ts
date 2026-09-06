@@ -456,6 +456,102 @@ export const PROVIDERS = {
       return `Page "${me?.name ?? page}" is reachable${when}`;
     },
   },
+
+  monday: {
+    label: "Monday.com",
+    blurb: "A personal or service API token, for reading boards and writing back to items.",
+    docs: "https://developer.monday.com/api-reference/docs/authentication",
+    fields: {
+      api_token: {
+        label: "API token",
+        schema: z.string().min(40),
+        placeholder: "eyJhbGciOi…",
+        help: "Monday › avatar › Developers › My access tokens. It is a JWT, and it does not expire.",
+      },
+    },
+    envMap: { api_token: "MONDAY_API_TOKEN" },
+    async test(v, signal) {
+      const token = need(v, "api_token");
+
+      // The cheapest authenticated query there is, and the only one that works
+      // regardless of which boards the token can see.
+      const body = await probe(
+        "https://api.monday.com/v2",
+        {
+          method: "POST",
+          headers: { authorization: token, "content-type": "application/json" },
+          body: JSON.stringify({ query: "{ me { name email } account { name } }" }),
+        },
+        signal,
+        "Monday.com",
+      );
+
+      // Monday answers 200 with an `errors` array for a revoked token, so the
+      // status probe() checked proves nothing on its own.
+      if (body?.errors?.length) {
+        throw new Error(
+          `Monday.com rejected the token — ${body.errors.map((e: any) => e?.message ?? "unknown").join("; ")}`,
+        );
+      }
+
+      const me = body?.data?.me;
+      if (!me?.name) throw new Error("Monday.com answered without identifying the token's user");
+      const account = body?.data?.account?.name;
+      return `Authenticated as ${me.name}${account ? ` (${account})` : ""}`;
+    },
+  },
+
+  /*
+   * WhatsApp Business Cloud — a different API and a different token to `meta`
+   * above, despite both being Graph. A Page token cannot send a WhatsApp
+   * message and a WhatsApp token cannot post to a Page, so they are two
+   * credentials rather than two fields of one.
+   */
+  whatsapp: {
+    label: "WhatsApp Business Cloud",
+    blurb: "A system-user token and a sending number, for message templates and replies.",
+    docs: "https://developers.facebook.com/docs/whatsapp/cloud-api/get-started",
+    fields: {
+      access_token: {
+        label: "Access token",
+        schema: z.string().min(50),
+        placeholder: "EAA…",
+        help:
+          "Generate it for a System User in Business Settings and give it a permanent expiry. " +
+          "The 24-hour token from the API Setup page will stop working tomorrow.",
+      },
+      phone_number_id: {
+        label: "Phone number ID",
+        schema: z.string().regex(/^\d+$/, "A phone number ID is digits only"),
+        secret: false,
+        placeholder: "361426827060787",
+        help: "WhatsApp Manager › API Setup. Not the phone number itself.",
+      },
+    },
+    envMap: {
+      access_token: "WHATSAPP_ACCESS_TOKEN",
+      phone_number_id: "WHATSAPP_PHONE_NUMBER_ID",
+    },
+    async test(v, signal) {
+      const token = need(v, "access_token");
+      const id = need(v, "phone_number_id");
+
+      // Reads the sending number itself: proves the token is live *and* that it
+      // is scoped to this number, which a /me call would not.
+      const me = await probe(
+        `https://graph.facebook.com/v21.0/${encodeURIComponent(id)}` +
+          "?fields=display_phone_number,verified_name,quality_rating",
+        { headers: { authorization: `Bearer ${token}` } },
+        signal,
+        "WhatsApp",
+      );
+
+      const number = me?.display_phone_number ?? id;
+      const name = me?.verified_name ? `"${me.verified_name}" ` : "";
+      const quality = me?.quality_rating ? `, quality ${String(me.quality_rating).toLowerCase()}` : "";
+      return `Sending as ${name}${number}${quality}`;
+    },
+  },
 } satisfies Record<string, Provider>;
 
 export type ProviderId = keyof typeof PROVIDERS;

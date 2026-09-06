@@ -18,6 +18,8 @@ import { createSheets, type SheetsClient } from "./sheets.ts";
 import { createDrive, type DriveClient } from "./drive.ts";
 import { createS3, type S3Client } from "./s3.ts";
 import { createScrape, type ScrapeClient } from "./scrape.ts";
+import { createMonday, type MondayClient } from "./monday.ts";
+import { createWhatsApp, type WhatsAppClient } from "./whatsapp.ts";
 
 /** Everything hanging off `ctx` besides the run metadata. */
 export interface Integrations {
@@ -32,6 +34,8 @@ export interface Integrations {
   drive: DriveClient;
   s3: S3Client;
   scrape: ScrapeClient;
+  monday: MondayClient;
+  whatsapp: WhatsAppClient;
 }
 
 /**
@@ -72,6 +76,8 @@ export function buildIntegrations(signal: AbortSignal, runId?: string): Integrat
   let drive: DriveClient | undefined;
   let s3: S3Client | undefined;
   let scrape: ScrapeClient | undefined;
+  let monday: MondayClient | undefined;
+  let whatsapp: WhatsAppClient | undefined;
 
   return {
     http,
@@ -105,6 +111,12 @@ export function buildIntegrations(signal: AbortSignal, runId?: string): Integrat
     get scrape() {
       return (scrape ??= createScrape(http));
     },
+    get monday() {
+      return (monday ??= createMonday(http));
+    },
+    get whatsapp() {
+      return (whatsapp ??= createWhatsApp(http));
+    },
   };
 }
 
@@ -132,6 +144,10 @@ const INTEGRATION_SECRET_ENV = [
   // stay readable; only the two that authenticate are here.
   "S3_ACCESS_KEY_ID",
   "S3_SECRET_ACCESS_KEY",
+  // ctx.monday and ctx.whatsapp. The phone number id and the API versions are
+  // configuration and stay readable; only the two that authenticate are here.
+  "MONDAY_API_TOKEN",
+  "WHATSAPP_ACCESS_TOKEN",
   // Declared through defineSecrets by every defineOAuth() call, so this only
   // covers the case where the key is set before any credential uses it.
   "OAUTH_ENCRYPTION_KEY",

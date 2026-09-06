@@ -8,6 +8,39 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-06
 
+### The deploy now says when PUBLIC_URL cannot reach it
+
+Monday refuses every webhook registration with `Internal Server Error
+[DOWNSTREAM_SERVICE_ERROR]`, and means by it that *it* failed calling *us*. The
+error describes Monday's plumbing rather than the endpoint, and it is identical
+for a bad event name, a malformed config and a domain that does not resolve —
+so it cannot be used to tell those apart. Two rounds of debugging went into a
+cause the provider was never going to name.
+
+`reconcileWebhooks` now fetches our own `/healthz` over `PUBLIC_URL` before the
+first subscription is created, and warns with what happened: the DNS error, the
+TLS error, the timeout, the wrong status. `/healthz` rather than a hook path —
+it is unauthenticated, purpose-built for the question, and its body is a
+contract rather than an error string somebody might reword. The body is checked
+for `ok: true` and not just the status, which is what catches the case that
+looks healthiest and is worst: a stale deployment still holding the domain.
+
+It warns and does not block, and that is the whole design. A container
+frequently cannot reach its own public hostname — no NAT hairpin,
+split-horizon DNS — so a failed probe is evidence, not a verdict, and the
+provider may well get through where we did not. A diagnostic that refused to
+register would be worse than the fault it diagnoses. The message says so, so
+nobody reads a false negative as a diagnosis.
+
+Verified against all four outcomes: a domain that does not resolve, a domain
+answering 404, a domain answering 200 with somebody else's JSON, and a URL that
+reaches this process. One warning per boot, before the failures rather than
+after them.
+
+The same round of blind debugging also fixed the failure log itself, which
+named the provider's message but not the URL it had been given — the success
+line printed it and the failure line did not, which is exactly backwards.
+
 ### Monday's webhook registration was wrong in two ways, and silent about one
 
 Setting the six board variables turned self-registration on for the first time,

@@ -8,6 +8,30 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-06
 
+### A WhatsApp message that fails to send is now an alert, not a silence
+
+Meta reports the fate of every message the StudentQR number sends to the same
+callback URL the relay already listens on. The relay read `messages` and
+ignored everything else, so `"status": "failed"` payloads — a number that is
+not on WhatsApp, a paused template, an unpaid bill — were accepted, counted as
+"not a text message", and dropped. n8n did the same. A school simply never
+heard back, and nobody found out until it asked.
+
+Failed statuses now fail the run, which puts them on the runner's alert
+channel with the reason, Meta's own resolution link, and a link to the run.
+Failing the run was chosen over sending a Telegram message from inside the
+workflow: the alert channel already carries the 🚨 format, the run link, and
+the 30-minute cooldown, and a delivery that never arrived *is* a failure. What
+it costs is the two retries this workflow declares, which cannot fix a
+rejection Meta has already made — roughly six seconds of the relay's queue per
+failed message.
+
+The alert names the reason but not the recipient, and that is deliberate. The
+cooldown keys on the exact text sent, so putting the school in it would turn
+an account-level problem — a lapsed bill fails *every* send — into one Telegram
+message per school. The reason is what repeats; every recipient is logged on
+the run, one click away.
+
 ### The tab row scrolls sideways instead of wrapping onto two lines
 
 Adding Variables made four tabs, and four labels with their badges want about

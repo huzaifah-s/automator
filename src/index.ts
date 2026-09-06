@@ -16,6 +16,12 @@ import { log } from "./core/logger.ts";
 import { closeSql, registerIntegrationSecrets } from "./integrations/index.ts";
 import { loadSecretStore, startSecretRefresh, stopSecretRefresh } from "./core/secret-store.ts";
 import {
+  loadVariables,
+  startVariableRefresh,
+  stopVariableRefresh,
+  warnAboutSecretLookalikes,
+} from "./core/variables.ts";
+import {
   credentialReady,
   credentialRef,
   credentialRequirements,
@@ -23,6 +29,7 @@ import {
 } from "./core/credentials.ts";
 import { alertBoot, describeAlertChannel } from "./core/alerts.ts";
 import { runSecretCli } from "./cli/secrets.ts";
+import { runVariableCli } from "./cli/variables.ts";
 
 const args = process.argv.slice(2);
 
@@ -33,10 +40,23 @@ if (args[0] === "--secret") {
   process.exit(await runSecretCli(args.slice(1)));
 }
 
+// Same reasoning for variables: setting a board id for a workflow you have not
+// deployed yet is exactly what the loader would abort on.
+if (args[0] === "--variable") {
+  process.exit(await runVariableCli(args.slice(1)));
+}
+
 // Before anything reads the environment: fold the stored credentials into it,
 // so defineSecrets validates against what is actually available and the
 // integrations — which read process.env inside their own factories — see the
 // same values. A key present only in the store must satisfy boot validation.
+// Non-secret configuration first. It cannot collide with a secret — writes to
+// either store refuse a name the other already holds — but if one ever did,
+// loading secrets second means the encrypted, redacted value is the one left
+// standing in process.env.
+const storedVariables = loadVariables();
+if (storedVariables > 0) log.info(`Loaded ${storedVariables} variable(s)`);
+
 const storedSecrets = await loadSecretStore();
 if (storedSecrets > 0) log.info(`Loaded ${storedSecrets} secret(s) from the store`);
 
@@ -72,6 +92,10 @@ const registry = new Registry(
     process.exit(1);
   }),
 );
+
+// Only now do the secret declarations exist, so only now can we tell whether a
+// variable is holding something a workflow considers a credential.
+warnAboutSecretLookalikes();
 
 // When each workflow file last changed, for the dashboard's "updated" column.
 // Here rather than inside loadWorkflows(): loading is a read, this is a write.
@@ -130,6 +154,7 @@ if (orphans > 0) log.warn(`Marked ${orphans} interrupted run(s) as failed`);
 // A `bun run secret set` writes to the database from another process; this is
 // how the long-lived server hears about it without being restarted.
 startSecretRefresh();
+startVariableRefresh();
 
 startScheduler(registry);
 
@@ -202,6 +227,7 @@ async function shutdown(signal: string, code = 0): Promise<never> {
   beginShutdown();
   stopScheduler();
   stopSecretRefresh();
+  stopVariableRefresh();
 
   // Give in-flight runs a chance to finish before the process goes away.
   const deadline = Date.now() + Number(process.env.SHUTDOWN_TIMEOUT_MS ?? 20_000);

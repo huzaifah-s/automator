@@ -160,6 +160,10 @@ border-bottom:1.6px solid var(--faint);transform:rotate(-45deg);margin-left:2px;
 .ex{grid-template-columns:minmax(0,1fr) 92px 84px 104px 72px 90px}
 .cr{grid-template-columns:minmax(0,1fr) 120px 96px 210px}
 .sc{grid-template-columns:minmax(0,1fr) 96px 150px}
+.vr{grid-template-columns:minmax(0,1fr) 190px minmax(0,1fr) 92px 104px}
+.acts{display:flex;gap:6px;justify-content:flex-end}
+.acts form{display:contents}
+.acts .tag{cursor:pointer;border:1px solid var(--border);font-family:inherit}
 .row.head{padding:7px 14px;border-top:none;font-size:10.5px;text-transform:uppercase;
 letter-spacing:.07em;color:var(--faint);font-weight:600;background:var(--sunk)}
 .folder .row.head{background:transparent;border-top:1px solid var(--border-soft)}
@@ -308,8 +312,15 @@ white-space:pre-wrap;word-break:break-word}
 .crumb{flex:1;font-size:12.5px}
 /* The bottom margin is the point: without it the row sits directly on the
    sticky bar's border and reads as if it were part of it. */
-.tabs{order:3;flex:0 0 100%;gap:4px;margin:9px 0 9px}
-.tab{flex:1;justify-content:center;padding:8px 4px;font-size:12.5px;gap:5px}
+/* Wrapping, because four of them do not fit across one line. Splitting the
+   row evenly is what the three-tab version did and it stopped working when
+   Variables was added: "Credentials" plus its badge cannot shrink below about
+   98px, so a quarter of 347px clipped it and pushed the last tab off-screen
+   entirely. Two rows of two keeps every label whole, which is the thing the
+   even split was for. */
+.tabs{order:3;flex:0 0 100%;flex-wrap:wrap;gap:4px;margin:9px 0 9px}
+.tab{flex:1 1 calc(50% - 4px);min-width:0;justify-content:center;
+padding:8px 4px;font-size:12.5px;gap:5px}
 .tab .n{padding:0 5px}
 
 .stats{gap:8px}
@@ -320,6 +331,14 @@ h2{margin:20px 0 8px}
 .row{display:flex;flex-wrap:wrap;align-items:center;gap:7px 10px;padding:12px 14px}
 .row>:first-child{flex:1 1 100%;min-width:0}
 .keep-sm{display:block}
+/* A variable's value is the reason the page exists, and its note is what says
+   which board 1844357900 actually is — so unlike the other tables' secondary
+   columns both survive the stack, and the timestamp is what goes instead.
+   "10m ago" is the least useful thing here; on a page about configuration,
+   what a number means beats when it was typed. */
+.vr .mono.trunc{flex:1 1 100%}
+.vr .vnote{flex:1 1 100%}
+.vr .acts{flex:1 1 100%}
 /* A stacked row is not a table any more, so a header of column names is one
    too, and it keeps only its first cell — which is still what says whether
    the rows under it are credentials or secrets. */
@@ -510,7 +529,7 @@ const ICON_PLAY = raw(
   `<svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-hidden="true"><path d="M4.6 3.1v9.8c0 .4.45.65.79.43l7.7-4.9a.5.5 0 0 0 0-.86l-7.7-4.9a.5.5 0 0 0-.79.43Z"/></svg>`,
 );
 
-type Tab = "workflows" | "executions" | "credentials" | null;
+type Tab = "workflows" | "executions" | "credentials" | "variables" | null;
 
 interface Shell {
   /** Browser title and, on detail pages, the breadcrumb next to the tabs. */
@@ -545,6 +564,7 @@ function layout(shell: Shell, body: HtmlEscapedString | Promise<HtmlEscapedStrin
       <a class="tab" href="/credentials" ${tab === "credentials" ? raw('aria-current="page"') : ""}>Credentials${
         badges.unconnected ? html`<span class="n bad">${badges.unconnected}</span>` : ""
       }</a>
+      <a class="tab" href="/variables" ${tab === "variables" ? raw('aria-current="page"') : ""}>Variables</a>
     </nav>
     <span class="grow"></span>
     ${crumb ?? ""}
@@ -2019,6 +2039,140 @@ export function secretFormPage(args: {
           </div>
         </div>
       </form>
+    `,
+  );
+}
+
+export interface VariableView {
+  key: string;
+  value: string;
+  note: string | null;
+  updatedAt: number;
+}
+
+/**
+ * The Variables tab — configuration that is deliberately not a credential.
+ *
+ * The one page here that renders stored values in full, and that is the point
+ * rather than an oversight: a board id you cannot read back is not
+ * configuration, and the whole reason this store exists is that putting one in
+ * Secrets would scrub it out of every run page. What keeps that honest is at
+ * the door, in src/core/variables.ts — a name or a value that looks like a
+ * credential is refused before it can ever be rendered here.
+ */
+export function variablesPage(args: {
+  variables: VariableView[];
+  writable: boolean;
+  failedInWindow: number;
+  workflowCount: number;
+  unconnected: number;
+  error?: string | null;
+  /** Pre-fills the form when editing, so the value does not have to be retyped. */
+  editing?: VariableView | null;
+}) {
+  const { variables, writable, editing } = args;
+
+  return layout(
+    {
+      title: "Variables",
+      tab: "variables",
+      // Not refreshed, for the same reason the Credentials tab is not: this
+      // page has a form on it, and a background swap would discard whatever
+      // was half-typed.
+      refresh: null,
+      badges: {
+        workflows: args.workflowCount,
+        failed: args.failedInWindow,
+        unconnected: args.unconnected || null,
+      },
+    },
+    html`
+      ${args.error ? html`<div class="flash">${args.error}</div>` : ""}
+
+      <div class="note">
+        Configuration that is <b>not</b> a credential — board ids, chat ids, sheet ids,
+        phone numbers, thresholds. Stored in plaintext, mirrored into the environment, and
+        read with a plain <code class="mono">process.env.NAME</code>. A value set here
+        overrides the same name in <code class="mono">.env</code>, so changing one is a
+        save rather than a redeploy.
+        <br><br>
+        Values here are <b>never scrubbed</b> from logs or run pages — that is what makes
+        them useful and what makes them the wrong home for anything that authenticates.
+        Names like <code class="mono">*_TOKEN</code> and values that look like keys are
+        refused; those belong in <a href="/credentials">Credentials</a>.
+      </div>
+
+      ${writable
+        ? html`
+            <form class="card" method="post" action="/variables">
+              <div class="form">
+                <div class="field">
+                  <label for="vkey">Name <span class="req">— uppercase letters, digits and underscores</span></label>
+                  <input class="mono" type="text" id="vkey" name="key" required
+                         value="${editing?.key ?? ""}" placeholder="STUDENTQR_BOARD_BADGES"
+                         pattern="[A-Z][A-Z0-9_]*" ${editing ? raw("readonly") : ""}>
+                </div>
+                <div class="field">
+                  <label for="vvalue">Value</label>
+                  <input class="mono" type="text" id="vvalue" name="value" required
+                         spellcheck="false" value="${editing?.value ?? ""}"
+                         placeholder="1844357900">
+                </div>
+                <div class="field">
+                  <label for="vnote">Note <span class="req">— optional</span></label>
+                  <input type="text" id="vnote" name="note" value="${editing?.note ?? ""}"
+                         placeholder="7. JACKIE - PRINTING (BADGES)">
+                  <div class="help">What this is for, so the next person does not have to guess.</div>
+                </div>
+                <div class="bar">
+                  <button class="btn primary" type="submit">${editing ? "Save" : "Add"}</button>
+                  ${editing ? html`<a class="btn" href="/variables">Cancel</a>` : ""}
+                </div>
+              </div>
+            </form>
+          `
+        : html`<div class="note">
+            The dashboard is read-only. Set <code class="mono">DASHBOARD_WRITE=1</code> to
+            change variables here, or use <code class="mono">bun run variable</code>.
+          </div>`}
+
+      ${variables.length === 0
+        ? html`<div class="empty">
+            <b>No variables yet</b>
+            Everything is coming from the environment.
+          </div>`
+        : html`
+            <div class="card">
+              <div class="row vr head">
+                <div>Name</div>
+                <div class="hide-sm">Value</div>
+                <div class="hide-sm vnote">Note</div>
+                <div class="hide-sm">Updated</div>
+                <div></div>
+              </div>
+              ${variables.map(
+                (v) => html`
+                  <div class="row vr">
+                    <div class="name"><b class="mono">${v.key}</b></div>
+                    <div class="mono trunc" title="${v.value}">${v.value}</div>
+                    <div class="muted trunc vnote" title="${v.note ?? ""}">${v.note ?? ""}</div>
+                    <div class="muted hide-sm" title="${fmt(v.updatedAt)}">
+                      ${relative(v.updatedAt)}
+                    </div>
+                    ${writable
+                      ? html`<div class="acts">
+                          <a class="tag" href="/variables?edit=${encodeURIComponent(v.key)}">Edit</a>
+                          <form method="post" action="/variables/${encodeURIComponent(v.key)}/delete"
+                                onsubmit="return confirm('Delete ${v.key}? The environment value, if there is one, comes back.')">
+                            <button class="tag" type="submit">Delete</button>
+                          </form>
+                        </div>`
+                      : ""}
+                  </div>
+                `,
+              )}
+            </div>
+          `}
     `,
   );
 }

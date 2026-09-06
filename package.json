@@ -12,7 +12,8 @@
     "trigger": "bun src/index.ts --run",
     "secret": "bun src/index.ts --secret",
     "up": "docker compose -f docker-compose.yml -f compose.local.yml up -d --build",
-    "down": "docker compose -f docker-compose.yml -f compose.local.yml down"
+    "down": "docker compose -f docker-compose.yml -f compose.local.yml down",
+    "variable": "bun src/index.ts --variable"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.0",

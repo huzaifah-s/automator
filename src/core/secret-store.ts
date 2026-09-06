@@ -260,6 +260,18 @@ export async function setSecret(
   }
   if (!cipher.ready()) throw new Error(keyProblem(KEY_ENVS));
 
+  // The other half of "one key, one store" — variables.ts refuses a name that
+  // is already a secret, and this refuses one that is already a variable.
+  // Read from the table, not from variables.ts: importing it here would be a
+  // real cycle, and an in-memory check would depend on load order the way the
+  // first version of the guard on that side mistakenly did.
+  if (store.variableRows().some((r) => r.key === key)) {
+    throw new Error(
+      `"${key}" already exists as a variable. Delete it there first — a key lives ` +
+        `in one store or the other, never both.`,
+    );
+  }
+
   const schema = secretSchema(key);
   if (schema) {
     const parsed = schema.safeParse(value);

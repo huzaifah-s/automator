@@ -222,6 +222,23 @@ db.exec(`
     updated_at INTEGER NOT NULL
   ) WITHOUT ROWID;
 
+  -- Configuration that is deliberately NOT a secret: board ids, chat ids, sheet
+  -- ids, phone numbers, thresholds. Stored in plaintext and never registered
+  -- with the log redactor, which is the entire point — scrubbing a board id
+  -- out of a run page would make "which board did this come from" unanswerable.
+  --
+  -- That inverted default is also the danger, so the guard is at the door
+  -- rather than here: src/core/variables.ts refuses a name that reads like a
+  -- credential and a value that is unmistakably one, and refuses any key that
+  -- already exists in the secrets table. A key lives in one table or the
+  -- other, never both, so "which one wins" has no answer to get wrong.
+  CREATE TABLE IF NOT EXISTS variables (
+    key        TEXT    PRIMARY KEY,
+    value      TEXT    NOT NULL,
+    note       TEXT,
+    updated_at INTEGER NOT NULL
+  ) WITHOUT ROWID;
+
   -- The grouping half of a credential: which platform it is for, which folder
   -- it is filed under, and how the last connection test went. Deliberately
   -- holds no values at all — the fields themselves are ordinary rows in the
@@ -473,6 +490,16 @@ const stmts = {
        owner  = COALESCE(excluded.owner,  secrets.owner)`,
   ),
   deleteSecret: db.prepare(`DELETE FROM secrets WHERE key = ?`),
+  allVariables: db.prepare(`SELECT key, value, note, updated_at FROM variables ORDER BY key`),
+  setVariable: db.prepare(
+    `INSERT INTO variables (key, value, note, updated_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET
+       value = excluded.value, note = excluded.note, updated_at = excluded.updated_at`,
+  ),
+  deleteVariable: db.prepare(`DELETE FROM variables WHERE key = ?`),
+  variableWatermark: db.prepare(
+    `SELECT COUNT(*) AS count, COALESCE(MAX(updated_at), 0) AS latest FROM variables`,
+  ),
   setSecretFolder: db.prepare(`UPDATE secrets SET folder = ? WHERE key = ?`),
   setSecretFolderByOwner: db.prepare(`UPDATE secrets SET folder = ? WHERE owner = ?`),
   deleteSecretsByOwner: db.prepare(`DELETE FROM secrets WHERE owner = ?`),
@@ -1045,6 +1072,35 @@ export const store = {
 
   secretDropByOwner(owner: string): number {
     return stmts.deleteSecretsByOwner.run(owner).changes;
+  },
+
+  /* --------------------------------------------------------- variables */
+
+  /*
+   * Plaintext, and the only table here that is meant to be read with sqlite3
+   * and understood. src/core/variables.ts is the only caller, and it is what
+   * keeps a credential from ever reaching this table.
+   */
+
+  variableRows: () =>
+    stmts.allVariables.all() as {
+      key: string;
+      value: string;
+      note: string | null;
+      updated_at: number;
+    }[],
+
+  variablePut(key: string, value: string, note: string | null): void {
+    stmts.setVariable.run(key, value, note, Date.now());
+  },
+
+  variableDrop(key: string): boolean {
+    return stmts.deleteVariable.run(key).changes > 0;
+  },
+
+  /** Cheap probe for "did another process write to this table". */
+  variableWatermark(): { count: number; latest: number } {
+    return stmts.variableWatermark.get() as { count: number; latest: number };
   },
 
   /* ------------------------------------------------------- credentials */

@@ -31,11 +31,18 @@ import {
   type CredentialStatus,
 } from "../core/credentials.ts";
 import { PROVIDERS, isProviderId, providerIds, type Provider } from "../core/providers.ts";
+import {
+  deleteVariable,
+  listVariables,
+  setVariable,
+  variableValue,
+} from "../core/variables.ts";
 import type { Registry } from "../core/loader.ts";
 import type { LoadedWorkflow, RunRecord } from "../core/types.ts";
 import {
   credentialFormPage,
   credentialsPage,
+  variablesPage,
   DEFAULT_RANGE,
   DEFAULT_RANGE_MS,
   executionsPage,
@@ -683,6 +690,65 @@ export function createApp(registry: Registry): Hono {
 
   app.get("/credentials", (c) => renderCredentials(c));
 
+  /* --------------------------------------------------------- variables */
+
+  const renderVariables = (c: any, error?: string, status: 200 | 400 = 200) => {
+    const editKey = c.req.query("edit");
+    const rows = listVariables().map((v) => ({
+      key: v.key,
+      value: v.value,
+      note: v.note,
+      updatedAt: v.updated_at,
+    }));
+    return c.html(
+      variablesPage({
+        variables: rows,
+        writable,
+        failedInWindow: store.statusCountsSince(Date.now() - DEFAULT_RANGE_MS).failed ?? 0,
+        workflowCount: registry.all().length,
+        unconnected: wantedCredentials().length,
+        editing: editKey ? (rows.find((r) => r.key === editKey) ?? null) : null,
+        error: error ?? null,
+      }) as any,
+      status,
+    );
+  };
+
+  app.get("/variables", (c) => renderVariables(c));
+
+  app.post("/variables", async (c) => {
+    const denied = requireWrite(c);
+    if (denied) return denied;
+
+    const form = await c.req.parseBody();
+    const key = String(form.key ?? "").trim();
+    const value = String(form.value ?? "").trim();
+    const note = String(form.note ?? "").trim();
+
+    try {
+      setVariable(key, value, note || null);
+    } catch (err) {
+      // Back to the same page with the message, rather than a bare 400 — the
+      // refusals here are the ones worth reading, and they explain what to do
+      // instead ("put it in Secrets").
+      return renderVariables(c, err instanceof Error ? err.message : String(err), 400);
+    }
+
+    // The name and nothing else, same as a secret write. A variable is not a
+    // credential, but a log line is not the place to prove it either.
+    log.info(`Variable ${key} was set from the dashboard`);
+    return c.redirect("/variables", 303);
+  });
+
+  app.post("/variables/:key/delete", (c) => {
+    const denied = requireWrite(c);
+    if (denied) return denied;
+    const key = c.req.param("key");
+    if (!deleteVariable(key)) return renderVariables(c, `${key} was not stored.`, 400);
+    log.info(`Variable ${key} was deleted from the dashboard`);
+    return c.redirect("/variables", 303);
+  });
+
   // Registered before "/credentials/:provider/:id" so a literal "new" is not
   // read as a platform name. No provider is called "new", but relying on that
   // rather than on the order would be relying on a coincidence.
@@ -1080,6 +1146,51 @@ export function createApp(registry: Registry): Hono {
 
     log.info(`Secret ${key} was deleted over the API`);
     return c.json({ key, ok: true, fallsBackToEnv: secretValue(key) !== undefined });
+  });
+
+  /*
+   * Variables over the API — configuration that is deliberately not a secret.
+   *
+   * The one place in this server where a stored value is returned in full, and
+   * that is the distinction the whole store rests on: a board id you cannot
+   * read back is not configuration. What keeps it honest is that the setter
+   * refuses a name or a value that looks like a credential, so nothing that
+   * needs hiding is supposed to be in here in the first place.
+   */
+  app.get("/api/variables", (c) =>
+    c.json({
+      variables: listVariables().map((v) => ({
+        key: v.key,
+        value: v.value,
+        note: v.note,
+        updatedAt: v.updated_at,
+      })),
+    }),
+  );
+
+  app.put("/api/variables/:key", async (c) => {
+    const key = c.req.param("key");
+    const body = await c.req.json().catch(() => null);
+    const value = (body as { value?: unknown } | null)?.value;
+    const note = (body as { note?: unknown } | null)?.note;
+
+    if (typeof value !== "string") {
+      return c.json({ error: 'Body must be {"value": "…"}' }, 400);
+    }
+    try {
+      setVariable(key, value, typeof note === "string" ? note : null);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+    log.info(`Variable ${key} was set over the API`);
+    return c.json({ key, ok: true });
+  });
+
+  app.delete("/api/variables/:key", (c) => {
+    const key = c.req.param("key");
+    if (!deleteVariable(key)) return c.json({ error: "Not stored" }, 404);
+    log.info(`Variable ${key} was deleted over the API`);
+    return c.json({ key, ok: true, fallsBackToEnv: variableValue(key) !== undefined });
   });
 
   /*

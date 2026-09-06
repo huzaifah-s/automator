@@ -8,6 +8,39 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-06
 
+### Webhook registration was losing a race with the reverse proxy
+
+Every Monday subscription failed on a deployment whose URL was correct the
+entire time. The reachability probe added an hour earlier is what found it:
+one second after boot, `https://…/healthz` answered **503**, and from outside
+a few minutes later it answered `200 {"ok":true}` with a valid certificate.
+
+Coolify's proxy does not route to a container until its Docker healthcheck
+passes, and `docker-compose.yml` gives that a ten second start period. Webhook
+reconciliation runs immediately after the server starts listening, so the
+registrations went out three to sixteen seconds in — inside the window where
+the public URL is a 503 from the proxy and the process behind it is perfectly
+healthy. Monday verifies a new subscription by calling the URL, got the 503,
+and refused, reporting it as `Internal Server Error [DOWNSTREAM_SERVICE_ERROR]`
+— an error about Monday's own plumbing that is identical whatever is wrong.
+
+So reconciliation now waits for `PUBLIC_URL` to answer before creating the
+first subscription, polling every two seconds for up to two minutes. Waiting
+costs nothing: reconciliation is deliberately not awaited by boot, so the
+server is already listening and answering while this polls — including
+answering the very healthcheck it is waiting on.
+
+Past the deadline it warns and registers anyway, which is the same trade as
+before and made for the same reason: a host that cannot reach its own public
+name is still reachable from outside, so the probe stays evidence rather than a
+verdict. This supersedes the entry below, which described the probe as
+warn-only.
+
+Verified by pointing the server at a stub proxy that 503s for fourteen seconds
+and then serves a healthy `/healthz`: it logged the wait, re-probed, and
+registered at fourteen seconds. The give-up path was verified separately
+against a domain that does not resolve.
+
 ### The deploy now says when PUBLIC_URL cannot reach it
 
 Monday refuses every webhook registration with `Internal Server Error

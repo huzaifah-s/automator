@@ -420,12 +420,50 @@ function buildCtx(
 }
 
 /**
+ * Records an attempt that never reached `runWorkflow` — an unknown name, a
+ * cycle, the depth limit — as a run of the child, so it is visible where a
+ * person looks for it.
+ *
+ * Without this the refusal left nothing behind at all: no row was written,
+ * and a caller that catches the error — every StudentQR notification does,
+ * deliberately, so a bookkeeping row cannot fail a delivered message — reduced
+ * the whole attempt to one warn line buried on its own run page. The child's
+ * page said it had never been called, which is a different claim and a false
+ * one. One row is a cheap price for making "did it run?" answerable.
+ *
+ * No alert fires from here on purpose. A refusal that matters reaches the alert
+ * channel through whichever run ends up failing because of it, and a caller
+ * that swallows it has already decided it is not worth waking anyone —
+ * alerting anyway would put a Telegram message behind every catch block.
+ *
+ * `attempts` is 0 for the same reason as the unconnected-credential path above:
+ * the workflow body never executed.
+ */
+function recordRefusal(
+  name: string,
+  callerRunId: string,
+  input: unknown,
+  status: Extract<RunStatus, "failed" | "skipped">,
+  message: string,
+): string {
+  const runId = crypto.randomUUID();
+  store.startRun(runId, name, "workflow", {
+    parentRun: callerRunId,
+    input: capture(input).json,
+  });
+  store.finishRun(runId, status, 0, message, null);
+  return runId;
+}
+
+/**
  * ctx.run(): start another workflow and hand back its result.
  *
  * Everything that can go wrong is decided before anything starts, and every
  * one of them throws. A sub-workflow call is the caller asking for a value —
  * returning undefined because the child was skipped, or silently going around
  * a loop eight times, are both worse than failing the parent.
+ *
+ * Every one of them also leaves a run behind. See recordRefusal.
  */
 async function runChild(
   callerName: string,
@@ -436,8 +474,16 @@ async function runChild(
   name: string,
   input: unknown,
 ): Promise<unknown> {
+  /** Records the refusal against the child, points the caller's log at it. */
+  const refuse = (message: string, status: "failed" | "skipped" = "failed"): Error => {
+    const runId = recordRefusal(name, callerRunId, input, status, message);
+    // Mirrors the `← name ok (id)` line below, and names the run to open.
+    logger.warn(`← ${name} ${status} (${runId.slice(0, 8)}) — ${message}`);
+    return new Error(message);
+  };
+
   if (!registry) {
-    throw new Error("ctx.run() has no workflow registry — setRegistry was never called");
+    throw refuse("ctx.run() has no workflow registry — setRegistry was never called");
   }
 
   const chain = [...callerAncestry, callerName];
@@ -445,18 +491,21 @@ async function runChild(
   // symptom. Covers a workflow calling itself, which would otherwise deadlock
   // outright under onOverlap: "queue" — the child would wait for its own parent.
   if (chain.includes(name)) {
-    throw new Error(`ctx.run("${name}") would loop: ${[...chain, name].join(" → ")}`);
+    throw refuse(`ctx.run("${name}") would loop: ${[...chain, name].join(" → ")}`);
   }
   if (chain.length >= MAX_WORKFLOW_DEPTH) {
-    throw new Error(
+    throw refuse(
       `ctx.run("${name}") is ${chain.length + 1} workflows deep, past the limit of ` +
         `${MAX_WORKFLOW_DEPTH}: ${chain.join(" → ")}`,
     );
   }
 
   const child = registry.get(name);
-  if (!child) throw new Error(`ctx.run("${name}"): no workflow by that name`);
-  if (child.enabled === false) throw new Error(`ctx.run("${name}"): that workflow is disabled`);
+  // The run is recorded under the name that was asked for, even though no
+  // workflow answers to it. A row for a name with no page beats no row: the
+  // typo is the thing you need to see, and it is on the caller's run too.
+  if (!child) throw refuse(`ctx.run("${name}"): no workflow by that name`);
+  if (child.enabled === false) throw refuse(`ctx.run("${name}"): that workflow is disabled`);
 
   logger.info(`→ ${name}`);
   const outcome = await runWorkflow(child, {
@@ -470,11 +519,20 @@ async function runChild(
     return outcome.result;
   }
   if (outcome.status === "skipped") {
+    // Two kinds of skip reach here, and only one of them already has a row.
+    // onOverlap: "skip" records its own; the shutdown guard at the top of
+    // runWorkflow returns an empty runId without writing anything, and that
+    // one still has to leave a trace — it is dropped work.
+    if (!outcome.runId) {
+      throw refuse(`ctx.run("${name}") was skipped — the server is shutting down`, "skipped");
+    }
+    logger.warn(`← ${name} skipped (${outcome.runId.slice(0, 8)})`);
     throw new Error(
       `ctx.run("${name}") was skipped — a run of it was already in flight, and its ` +
         `onOverlap is "skip". Give it onOverlap: "queue" if it should wait its turn.`,
     );
   }
+  logger.warn(`← ${name} failed (${outcome.runId.slice(0, 8)})`);
   throw outcome.error ?? new Error(`ctx.run("${name}") failed`);
 }
 

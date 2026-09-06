@@ -209,6 +209,15 @@ chain, not two separate chains that call into each other under
 `onOverlap: "queue"` — that one can still deadlock, and is the reason the depth
 limit exists as a backstop.
 
+**Every `ctx.run()` refusal writes a run for the child.** The checks that
+happen before `runWorkflow` — unknown name, disabled, cycle, depth, shutting
+down — used to throw with nothing recorded, which is invisible when the caller
+catches the error, and both callers in this repo do. `recordRefusal` in
+`runner.ts` writes a failed (or skipped) run under the requested name, parented
+to the caller. Don't "tidy" it into an alert: the caller's catch block is the
+decision about whether anyone should be woken, and a refusal that matters gets
+there through the run that fails because of it.
+
 **Resume and replay are different operations — keep them apart.** Resume reuses
 the parent's `checkpoint_key` so completed steps are skipped; replay reuses the
 parent's recorded `input` against a *fresh* checkpoint key so everything runs

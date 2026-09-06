@@ -48,6 +48,18 @@ needs editing — the loader finds it, subdirectories included. A file one level
 down imports `../../src/core/define.ts`; that is the only thing a folder
 changes.
 
+A file whose basename starts with `_` is skipped by the loader — the one way to
+put shared code inside `workflows/`, for a folder of related workflows that
+needs it. Everything else there must default-export a workflow, and not doing
+so is an error rather than a quiet skip, because that is what catches a typo'd
+export. Keep `_` files to what one folder owns; the moment two folders want the
+same helper it is an integration.
+
+One wart to know about: a workflow's "updated" time is a hash of *its own*
+source, so editing a `_` file it imports does not move any workflow's
+`updated_at` on the dashboard. The code is live after the deploy either way;
+only the timestamp is misleading.
+
 ```ts
 import { z } from "zod";
 import { cron, defineSecrets, defineWorkflow } from "../src/core/define.ts";
@@ -288,6 +300,29 @@ getter (`() => secrets.X`) for anything evaluated at import. And a value that
 stops matching its schema does not throw: the proxy warns once and keeps the
 last good one, because breaking a run over an operator's typo is worse than
 running on the previous credential.
+
+**A variable is not a secret, and the difference is redaction, not intent.**
+`src/core/variables.ts` is a second store over the same environment base, for
+configuration — board ids, chat ids, phone numbers. It exists because the
+secret store registers everything it holds with the redactor (it cannot tell a
+token from a hostname), so a board id kept there is scrubbed off every run page.
+The cost is that this store's default is "not protected", and the compensation
+is entirely at the write: a credential-shaped **name** is refused, a
+credential-shaped **value** is refused, and a key that exists in the other store
+is refused — in both directions. Both collision checks read their table
+directly rather than through the in-memory map, because the CLI runs before
+`loadSecretStore()` and an in-memory check there silently passed everything.
+That was a real bug in the first version of this, caught by running it.
+
+The one case that cannot be refused is a variable that a workflow *later*
+declares with `defineSecrets`. `warnAboutSecretLookalikes()` runs after the
+loader and says so every boot; don't make it an abort, because the deployment
+is already running on that value and refusing to start would not un-store it.
+
+**Variables load before secrets in `src/index.ts`.** They cannot collide, but
+if one ever did — a row written before the guard existed, or by hand — the
+encrypted, redacted value is the one that should be left standing in
+`process.env`.
 
 **Stored secrets are mirrored into `process.env`.** Integrations read their own
 credentials from `process.env` inside their factories, so the store would only

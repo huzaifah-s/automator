@@ -98,6 +98,18 @@ imports `../../src/core/define.ts`. Nothing else about a folder is load-bearing:
 secrets, state namespaces, the concurrency cap, and run history are all
 unaffected by where the file sits.
 
+**A file whose name starts with `_` is not a workflow.** Every other `.ts` file
+here has to default-export one, and failing to is an error rather than a
+silent skip — that guard is what catches a typo'd export. `_` is the explicit
+way out, for shared code a folder of related workflows needs and that does not
+belong in `src/`: `workflows/studentqr/_studentqr.ts` holds the message
+catalogue its ten workflows send from, so the parameter order of a WhatsApp
+template is written down once instead of ten times.
+
+Keep that narrow. It is for code one folder owns. Anything the whole runner
+would use is an integration, and the moment two folders want the same helper
+that is what it has become.
+
 ### Triggers
 
 ```ts
@@ -132,8 +144,8 @@ the next boot if a restart landed in between — see
 ### What's on `ctx`
 
 `http` `slack` `telegram` `discord` `ai` `email` `sql` `sheets` `drive` `s3`
-`scrape`, plus `log`, `step`, `run`, `state`, `signal`, `input`, `attempt`,
-`runId`.
+`scrape` `monday` `whatsapp`, plus `log`, `step`, `run`, `state`, `signal`,
+`input`, `attempt`, `runId`.
 
 All of them except `http` are lazy — a workflow that only makes an HTTP call
 never opens a Postgres pool or reads an unrelated env var.
@@ -151,6 +163,22 @@ public URL; `ctx.s3.delete(key)` takes it down again.
 Neither goes through `ctx.http`, deliberately: that client JSON-encodes bodies,
 retries, and records request and response bodies onto the run page, and none of
 that is right for a 200MB video.
+
+`ctx.monday` is Monday.com's GraphQL API — `item(id)`, `itemsByColumn(…)`,
+`createItem(…)`, `setColumn(…)`, `assets(id)`, and `fields(item)` for reading
+cells by column id. `fields` returns `undefined` for an empty cell rather than
+`""` or `"-"`, so what to send instead is a decision at the call site. The
+webhook payload has a schema and two readers of its own — `mondayEvent`,
+`pulseId(payload)`, `changedLabel(payload)`.
+
+`ctx.whatsapp` sends WhatsApp Business Cloud messages: `template(…)` for an
+approved template (the only way to *open* a conversation) and `text(to, body)`
+for free-form text, which Meta allows only inside the 24-hour window an inbound
+message opens. Template parameters are flattened on the way out — Meta rejects
+a parameter that is empty or contains a newline, a tab, or five spaces in a
+row, and it rejects the whole send rather than rendering that placeholder oddly.
+Doing that at the wire instead of per call site is deliberate; see the note on
+`sanitise` in `src/integrations/whatsapp.ts`.
 
 `ctx.step(name, fn, { input })` wraps a unit of work. It gets its own timing
 line, its input and output are recorded, and its result becomes a checkpoint.
@@ -326,6 +354,40 @@ how to call the provider went with the file, so the runner can only tell you
 about it — which it does, on every boot, naming the id. To clean up properly,
 put the file back with `enabled: false` for one boot; the subscription is then
 deleted and the warning stops.
+
+### Monday.com boards
+
+`mondayWebhook()` is a ready-made `register` block for a Monday board:
+
+```ts
+trigger: webhook("studentqr/badges-status", {
+  method: "POST",
+  schema: mondayEvent,
+  handshake: mondayChallenge(),
+  register: mondayWebhook({
+    boardId: process.env.STUDENTQR_BOARD_BADGES,
+    event: "change_specific_column_value",
+    columnId: "status",
+  }),
+})
+```
+
+Set the board's variable and the deploy creates the subscription; leave it
+unset and `mondayWebhook` returns `undefined`, so that workflow does not
+self-register and you paste its URL by hand. "Not configured yet" is therefore
+not a boot alert every restart.
+
+Prefer `change_specific_column_value` over `change_column_value`: the latter
+fires on a corrected address or an added note as well, and each of those wakes
+a run that fetches the item and does nothing.
+
+Two things to know. Monday's `create_webhook` sends a `{"challenge":"…"}` POST
+that has to be echoed, which is what `mondayChallenge()` is for — without a
+handshake, registration cannot succeed. And the URL carries `WEBHOOK_SECRET` in
+the query string, because Monday has nowhere to put a header; reconciliation
+compares the bare URL, so **rotating `WEBHOOK_SECRET` does not re-register
+anything** and Monday keeps sending the old one until you clear the
+subscription from the workflow's state and restart.
 
 ## Rejected deliveries
 
@@ -713,6 +775,60 @@ Two things this buys you:
    and outputs, recorded HTTP URLs and bodies, workflow return values, and error
    messages. Request *headers* are never captured at all.
 
+### Variables — configuration that is not a credential
+
+Board ids, chat ids, sheet ids, phone numbers, thresholds. Things a workflow
+needs to know that are not secrets, kept in the database so changing one is a
+save rather than a redeploy.
+
+```bash
+bun run variable -- set STUDENTQR_BOARD_BADGES=1844357900 -m "7. JACKIE - BADGES"
+bun run variable -- list
+bun run variable -- rm STUDENTQR_BOARD_BADGES
+```
+
+There is a **Variables** tab on the dashboard that does the same, and
+`GET/PUT/DELETE /api/variables`. A workflow reads one with a plain
+`process.env.NAME` — the store mirrors into the environment the way the secret
+store does, so nothing has to import anything.
+
+**Why this is not just "a secret that isn't secret."** The secret store
+registers every value it holds with the log redactor, because it cannot tell a
+token from a hostname. That is a safety property, and it is also why a board id
+does not belong there: it would be scrubbed out of every run page and log line,
+and *which board did this come from* is the first question when a notification
+goes to the wrong school.
+
+**And why that cost is paid at the door.** This store's default is the opposite
+one — nothing in it is protected, so a credential pasted into the wrong tab
+would be rendered on every run page and written to disk in plaintext. Four
+things stop that:
+
+- **A name that reads like a credential is refused.** `*_TOKEN`, `*_KEY`,
+  `*_SECRET`, `*_PASSWORD`, and `SIGNING`/`PRIVATE`/`CREDENTIAL` anywhere in
+  the name. This is the one that matters, because the mistake people make is
+  calling something `FOO_TOKEN` and not thinking about it again.
+- **A value that is unmistakably a credential is refused** — a JWT, a PEM
+  block, `sk-…`, `xox…`, `ghp_…`. Deliberately a short, high-confidence list:
+  a heuristic that rejects real configuration is one people learn to work
+  around.
+- **A key that already exists as a secret is refused, and vice versa.** One key
+  lives in one store. There is no precedence rule between them because there is
+  never a contest — and both checks read the table directly rather than from
+  memory, so they hold whichever store this process happens to have loaded.
+- **A variable a workflow later declares with `defineSecrets` is warned about
+  at every boot**, naming the two commands that move it. That one cannot be a
+  refusal: the workflow is deployed after the variable was written.
+
+Over the environment, and under nothing:
+
+```
+variable  →  environment value  →  missing
+```
+
+The store wins for the same reason the secret store does — if the environment
+won, changing a value a deploy had already set would need another deploy.
+
 ### The secret store — changing a credential without a redeploy
 
 Env vars are read once, at process start, so changing one is a restart at best
@@ -1048,6 +1164,55 @@ throws is treated as a failed check, not a 500, and the reason is logged.
 **`secret` and `verify` are alternatives.** Declaring both stops the boot,
 naming the file. Which one was actually guarding the route would otherwise be
 a guess, and the guess people make is "both".
+
+### Webhooks that check the URL is really yours
+
+Before a provider will send you anything, several of them send *one* request
+asking the endpoint to prove it is the one you meant — and they want their own
+value back at the top level, with nothing wrapped around it. Neither response
+mode can do that: `respond: "async"` answers `{"accepted":true}` with a 202 and
+`"sync"` answers `{"runId":…,"status":…,"result":…}`. `handshake` answers it
+directly, and no run happens:
+
+```ts
+trigger: webhook("studentqr/whatsapp", {
+  method: "POST",
+  schema: inbound,
+  handshake: metaVerification(() => secrets.WHATSAPP_VERIFY_TOKEN),
+  verify: hmacSignature({
+    header: "x-hub-signature-256",
+    secret: () => secrets.WHATSAPP_APP_SECRET,
+    encoding: "hex",
+    prefix: "sha256=",
+  }),
+})
+```
+
+Monday.com's is the other shape — a `{"challenge":"…"}` POST wanting the same
+object straight back — and has its own helper, `mondayChallenge()`.
+
+**It composes with `secret` and `verify` rather than replacing them.** Both
+still guard every real delivery. A handshake only ever claims the one request
+that *is* a handshake; returning `undefined` means "this wasn't one" and the
+request carries on through the normal checks.
+
+**A handshake answers on any method on its path.** Meta verifies a callback URL
+with a `GET` and then delivers events to the same URL with a `POST`, and one
+workflow has one method. An exact method match always wins, so this can never
+divert a real delivery — it only picks up what would otherwise have been a 404.
+
+**It runs *before* the auth gate, so it must authenticate itself.** That is
+what a handshake is: the request that arrives before the shared secret exists
+on the far side. Meta's is a GET with no body, so `x-hub-signature-256` cannot
+exist on it — `metaVerification` constant-time compares `hub.verify_token`
+instead, and a wrong token falls through to a 404. Monday's needs no check at
+all, because the only thing it can be made to do is echo back a string the
+caller already had. Both helpers are strict about what counts as a handshake,
+so a real event can never take this path and skip the route's checks. Write
+your own the same way, or don't write one.
+
+A string is returned as `text/plain` verbatim (Meta compares it byte for byte);
+an object is returned as JSON.
 
 ## Operations
 

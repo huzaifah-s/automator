@@ -8,6 +8,235 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-06
 
+### StudentQR — ten workflows off n8n, and three things the port had to fix
+
+Four n8n exports, rebuilt. The "StudentQR" canvas was never one workflow: it
+was seven independent flows sharing a drawing surface, joined only by having
+been dragged onto the same page. They are seven files now, plus the contact
+upsert, the two-way WhatsApp relay, and the monthly report.
+
+Two integrations carry the mechanics — `ctx.monday` (GraphQL, column readers,
+the webhook payload's schema) and `ctx.whatsapp` (approved templates, free-form
+text inside the 24-hour window). Two Credentials-tab providers, `monday` and
+`whatsapp`, so the tokens go from a person into the encrypted store without
+passing through an agent's transcript.
+
+Three things were wrong in the graph and are not wrong here.
+
+**One notification told every school its courier was its tracking number.**
+`notification_delivering` was sent from six nodes. Five passed
+`(status, tracking, courier)`; the teacher-facing badges node passed
+`(status, courier, tracking)`. A template's placeholders are positional, so
+that school read "Tracking Number: J&T, Courier: MY43206650254". Nothing on a
+canvas shows you that. There is now one line that says what order that template
+takes its parameters in, in `workflows/studentqr/_studentqr.ts`, and six
+callers that cannot disagree with it.
+
+**Two of the seven product options were never confirmed to anyone.** The
+"order received" switch routed status indices `[0,1]`, `[3,4,5]` and `6`. On
+that board index 5 does not exist, and 2 ("Lencana QR (5 Keping)") and 7
+("magnetic") do — so a school ordering five-piece badges, one of the commonest
+options on the form, fell through every branch in silence. Both are badges by
+label and are routed as badges now. That is the one deliberate behavioural
+change in the port; it is commented as such in `order-created.ts` and reverts
+by deleting two lines.
+
+**The monthly report could feed itself.** It sets the row's status when it
+sends, and it fires on a status change. n8n survived that only because the
+Monday recipe happened to be narrowed to one label — a property of a dropdown
+in somebody's browser, not of the automation. The workflow now ignores the two
+statuses it writes itself. It also picks the report by matching the asset id in
+the Report column rather than taking `assets[0]`, which was whichever file
+Monday listed first across every file column on the row.
+
+Smaller: the order-created flow copies support before checking for a phone
+number, like the other five already did, so an order submitted without one is
+no longer invisible to everyone; and `ctx.run()` replaces the HTTP calls each
+flow made back into its own webhook to record a contact.
+
+**A fourth thing was wrong, and it was ours.** The relay finds out who a
+support reply belongs to by looking up a board item whose *name* is the
+forwarded message's WhatsApp id. The first cut of that used
+`items_page_by_column_values`, copying what the n8n node did — and that query
+does not accept `name`, only real columns. n8n got away with it because the
+older `items_by_column_values` did, and Monday has since removed it. Caught by
+reading Monday's docs rather than by running anything, because the API rejects
+an unauthenticated request before it validates the query: a wrong query shape
+is indistinguishable from a wrong token until a live token exists. It now uses
+`items_page` with a `name` rule, filters the result for an exact match
+client-side (the rule's matching is not documented as exact, and a prefix match
+on a message id would hand one school's conversation to another), and inlines
+`compare_value` as Monday's own example does rather than declaring a variable
+of a scalar type whose name the docs do not pin down.
+
+**Two things that succeed are no longer allowed to report failure.** Recording
+a contact is bookkeeping that happens after both WhatsApp messages have gone,
+and the contacts sheet is the only piece of this needing a Google service
+account — so a deployment that skipped that would have seen every notification
+run fail while every message arrived, retrying only the part that did not
+matter. The monthly report had the same shape with worse consequences: its
+support copy is a receipt sent after the school already has the PDF, and
+letting it fail meant `onFailure` marked a delivered report Failed, inviting
+the next person who read the board to send it again. Both are caught, logged,
+and reported in the run's result instead.
+
+**Not ported, deliberately.** Every Google Sheets "Messages" node in the
+StudentQR canvas was already orphaned — nothing connected into them — and the
+"Zahra AI - Functions" OpenAI assistant is referenced by nothing now that a
+human answers the relay. Both were left out rather than resurrected. The
+Contacts sheet, which *is* live, is ported; its two formula columns still read
+the Messages tab and still render empty, which is what they did before.
+
+### Variables — a second store, for the things that must stay readable
+
+Configuration that is not a credential had nowhere to live but `.env`, which
+made every board id a redeploy. Putting one in the secret store instead is
+worse, not better: that store registers everything it holds with the log
+redactor, because it cannot tell a token from a hostname — so a board id kept
+there is scrubbed out of every run page, and *which board did this come from*
+becomes unanswerable exactly when a notification has gone to the wrong school.
+
+So: a `variables` table, plaintext, mirrored into `process.env`, with a CLI
+(`bun run variable`), an API, and a dashboard tab that renders values in full.
+The precedence is the secret store's — variable over environment — for the same
+reason: if the environment won, changing a value a deploy had set would need
+another deploy.
+
+**The objection to this was that it inverts a safety default**, and it does. The
+secret store protects by default; this one does not. That is answered at the
+write rather than accepted:
+
+- a **name** that reads like a credential is refused (`*_TOKEN`, `*_KEY`,
+  `SIGNING`, `PRIVATE`, …), because the mistake people actually make is naming
+  something `FOO_TOKEN` and not thinking about it again;
+- a **value** that is unmistakably one is refused — JWT, PEM block, `sk-…`,
+  `xox…` — from a short, high-confidence list, because a heuristic that rejects
+  real configuration is one people route around;
+- a key that exists in the **other** store is refused, in both directions, so
+  there is no precedence rule between the two stores to get wrong;
+- and a variable that a workflow *later* declares with `defineSecrets` is
+  warned about every boot, naming the two commands that move it. That one
+  cannot be a refusal — the workflow is deployed after the variable was
+  written, and refusing to boot would not un-store the value.
+
+The cross-store guard was wrong first time and shipped only because it was
+tested: it asked `storedSecretKeys()`, which answers from memory and is empty
+until `loadSecretStore()` has run — and the CLI is precisely the caller that
+had not run it, so the guard passed everything. Both checks read their table
+directly now.
+
+Rejected: making this "a secret with a `redact: false` flag". One store with
+two safety defaults is one store where the safe one can be turned off by
+typing, and the flag would have had to be trusted on every read rather than
+checked once at the write.
+
+### Monday boards subscribe themselves
+
+`mondayWebhook()` is a `register` block for a Monday board, so the six
+StudentQR webhooks are created by the deploy instead of pasted into Monday's
+integration centre six times. It returns `undefined` when the board's variable
+is unset, so a board nobody has filled in yet simply does not self-register —
+"not configured" should not be a boot alert on every restart.
+
+It subscribes to `change_specific_column_value` on the status column rather
+than `change_column_value`. The n8n recipes fired on every column, so a
+corrected address or an added note woke a workflow that fetched the item and
+did nothing; that traffic is now gone.
+
+This is only possible because of `handshake` above: `create_webhook` sends a
+`{"challenge":"…"}` POST that must be echoed, and before that existed there was
+no way to answer it.
+
+One caveat, documented rather than solved: the subscription URL carries
+`WEBHOOK_SECRET` in the query string, because Monday has nowhere to put a
+header, and reconciliation compares the bare URL. Rotating that secret does not
+re-register anything, and Monday keeps sending the old one until the
+subscription is cleared from the workflow's state.
+
+### One board described once, and three boards sharing one workflow
+
+Two kinds of repetition across the StudentQR files, only one of which was a
+problem.
+
+`issue-received.ts` and `issue-solved.ts` each hard-coded the column ids of
+**the same board**. That is one fact stored twice, and the failure mode has no
+error in it: the form gets rebuilt, somebody updates the file they had open,
+and from then on half the messages carry a blank school name. Not hypothetical
+— that form has already been rebuilt once, which is why `issue` and `info` each
+carry a new column id and an old one. It lives in `_studentqr.ts` now.
+
+The three order-status workflows were the other kind: ~60 identical lines each,
+differing only in a column map and which labels that board uses. They are now
+`orderStatusWorkflow({ columns, stages })` calls, so each file is nothing but
+what makes it that board — 34, 36 and 49 lines. The reason to do it is the same
+reason the template catalogue exists: the bug this port inherited was one copy
+of a call disagreeing with five others, and it was invisible because you had to
+read all six to know.
+
+The cost is real and worth stating: `badges-status.ts` no longer shows you what
+it *does*. It shows you what is true about that board, and the steps are in
+`_studentqr.ts`. That trade is only worth taking where the files are genuinely
+the same workflow — order-created, the relay, the monthly report and the
+contact upsert look similar in outline and do different things, so they stay
+written out.
+
+### `handshake` on a webhook, for the request that proves the URL is yours
+
+Meta will not send a WhatsApp message to a callback URL until it has GET'd it
+with a `hub.challenge` and been handed **the bare string** back. Monday.com
+POSTs `{"challenge":"…"}` and wants the same object. Neither response mode
+could answer either: async returns `{"accepted":true}` with a 202, sync returns
+`{"runId":…,"status":…,"result":…}`, and both providers compare at the top
+level.
+
+`handshake` answers directly and starts no run. `metaVerification()` and
+`mondayChallenge()` cover the two shapes.
+
+Three decisions worth keeping:
+
+**It runs before the auth gate, and so authenticates itself.** That is what a
+handshake *is* — the request that arrives before the shared secret exists on
+the far side. Meta's is a GET with no body, so `x-hub-signature-256` cannot
+exist on it. The alternative was a route-level exemption, which would have been
+a hole with nobody responsible for it; instead each helper is strict about what
+it will treat as a handshake, and one of them does a constant-time token
+compare. `mondayChallenge` needs no check because the only thing it can be made
+to do is echo back a string the caller already had.
+
+**It answers on any method on its path.** Meta verifies with GET and delivers
+with POST, to one URL, and a workflow has one method. An exact method match
+always wins, so this only ever picks up what would have been a 404 — it cannot
+divert a real delivery. The rejected alternative was a second workflow on the
+same path whose `run()` was unreachable, which would have put a workflow on the
+dashboard that never runs.
+
+**It composes with `secret` and `verify` instead of replacing them**, unlike
+those two, which are mutually exclusive. Returning `undefined` means "not a
+handshake" and the request carries on through the normal checks, so a route
+does not become less guarded by gaining one.
+
+Verified by curl against a running server: the Monday challenge echoes as JSON,
+Meta's GET returns the bare challenge as `text/plain`, a wrong verify token is
+a 404, an unsigned POST is a 401, a tampered signature is a 401, and a
+correctly signed delivery runs.
+
+### `_`-prefixed files in `workflows/` are not workflows
+
+Every file under `workflows/` had to default-export one, and failing to was an
+error rather than a silent skip — which is the right guard, because a typo'd
+export should not vanish. But it left a folder of related workflows with
+nowhere to put code they share, and `src/` is for what the whole runner uses,
+not one client's message catalogue.
+
+A leading underscore is the explicit opt-out. Explicit, rather than "skip
+anything with no default export", so the guard survives.
+
+The thing it bought immediately: `workflows/studentqr/_studentqr.ts` holds the
+WhatsApp template catalogue, which is why the parameter-order bug above cannot
+recur. The boundary is that `_` files are for what one folder owns — the moment
+two folders want the same helper, it is an integration.
+
+
 ### The filter bar on a phone, fixed where a phone is what found it
 
 Five things the desktop layout hid, all of them in the executions toolbar.

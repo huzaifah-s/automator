@@ -151,7 +151,12 @@ export function createMonday(http: HttpClient): MondayClient {
 
   const client: MondayClient = {
     async query(document, variables) {
-      const res = await http.post<{ data?: any; errors?: { message?: string }[]; error_message?: string }>(
+      const res = await http.post<{
+        data?: any;
+        errors?: { message?: string; extensions?: { code?: string } }[];
+        error_message?: string;
+        error_code?: string;
+      }>(
         ENDPOINT,
         { query: document, variables: variables ?? {} },
         { headers: headers() },
@@ -160,12 +165,27 @@ export function createMonday(http: HttpClient): MondayClient {
       // Monday answers 200 with an `errors` array for a bad query, an expired
       // token, and a rate limit alike, so the status check ctx.http already did
       // proves nothing on its own.
+      //
+      // `extensions.code` and `error_code` are carried through because the
+      // message on its own is routinely useless — a rejected `create_webhook`
+      // says "Internal Server Error" twice and nothing else, while the code
+      // beside it names the actual complaint. Two registration failures were
+      // debugged blind for want of this.
       if (res.errors?.length) {
         throw new Error(
-          `Monday.com: ${res.errors.map((e) => e.message ?? "unknown error").join("; ")}`,
+          `Monday.com: ${res.errors
+            .map((e) => {
+              const code = e.extensions?.code;
+              return `${e.message ?? "unknown error"}${code ? ` [${code}]` : ""}`;
+            })
+            .join("; ")}`,
         );
       }
-      if (res.error_message) throw new Error(`Monday.com: ${res.error_message}`);
+      if (res.error_message) {
+        throw new Error(
+          `Monday.com: ${res.error_message}${res.error_code ? ` [${res.error_code}]` : ""}`,
+        );
+      }
       if (!res.data) throw new Error("Monday.com answered with no data and no error");
       return res.data;
     },

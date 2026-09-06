@@ -74,6 +74,20 @@ Run now button, sharing its centre line. The first attempt was 20×11, which
 next to a 23px button is a chip floating beside a control rather than half of
 a matched pair, and looked exactly as unconsidered as it was.
 
+Every control carries that same switch, in the position the click puts it in,
+so the icon means one thing — this workflow's on/off state — wherever it
+appears, and the word beside it says which way this button goes. The pause
+glyph it replaced was a second vocabulary for the same idea.
+
+The reason box is revealed by the Pause button rather than sitting on the bar:
+click Pause, optionally say why, click *Pause workflow*. Permanently visible,
+it was a field asking a question nobody had while they were reading the page.
+It is a checkbox and two CSS rules rather than script, because that bar is
+inside the region the 15s refresh replaces wholesale — a listener bound to the
+old button would go with it, where CSS state comes back with the markup. The
+refresh also treats an open box as busy, the same way it already steps around
+an open menu, so it cannot fold away what somebody was typing.
+
 A workflow its file disabled gets the switch too, drawn off and **not
 clickable**, with a title saying which file to edit. Rendering nothing there
 was the first cut and it is the worse answer: a row that shows a state with no

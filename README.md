@@ -749,9 +749,14 @@ still stored — resume depends on them.
 ### Pausing a workflow from the dashboard
 
 Every row on the **Workflows** tab has an on/off switch, and the workflow page
-has one with a box for a one-line reason. Flicking it takes effect
+has a **Pause** button that offers a one-line reason before it commits — click
+Pause, optionally say why, click *Pause workflow*. Either way it takes effect
 immediately, with **no redeploy and no restart**, and survives one: it is a row
 in the database, not a variable in the process.
+
+The reason is optional and only ever for you: it shows next to *Paused* on the
+workflow page, so in two weeks you know why it is off instead of guessing. The
+switch on the list skips it entirely — that one is the quick kill switch.
 
 A paused workflow stops firing **by itself**. Its cron or poll timer is taken
 down, so the *Next* column goes to `—` rather than showing a time it will not

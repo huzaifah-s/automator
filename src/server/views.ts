@@ -209,6 +209,7 @@ line-height:0}
    otherwise "Resume" carries a dark blob. Scoped to .btn so the toggle on a
    row keeps its own hover feedback. */
 .btn svg.sw.on{color:var(--green)}
+.btn svg.sw:not(.on){color:var(--muted)}
 .knob{fill:var(--panel)}
 .toggle:hover:not(:disabled){color:var(--accent)}
 /* Shown, not hidden, for a workflow its file disabled. "Where do I click" is
@@ -239,7 +240,7 @@ border:1px solid var(--border);color:var(--muted);white-space:nowrap}
 /* ---- controls ---- */
 .btn{display:inline-flex;align-items:center;gap:6px;background:var(--panel-2);
 border:1px solid var(--border);color:var(--fg);padding:5px 11px;border-radius:7px;
-font:12px/1.4 var(--sans);cursor:pointer}
+font:12px/1.4 var(--sans);cursor:pointer;white-space:nowrap}
 .btn:hover{border-color:var(--accent);color:var(--accent)}
 .btn.icon{padding:5px 7px}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
@@ -256,6 +257,25 @@ font:12px/1.4 var(--sans);cursor:pointer}
    pushed this input out of line with the button beside it. */
 .bar input.why{width:auto;min-width:180px;padding:5px 9px;border-radius:7px;
 font:12px/1.4 var(--sans)}
+/* Pausing in two steps: the reason box is a second thought, not a fixture on
+   the bar. Somebody switching a workflow off in a hurry never has to look at
+   it, and the one time it matters it is one click away.
+   A checkbox rather than script, because this bar is inside the region the
+   15s refresh replaces wholesale — a listener bound to the old button would
+   go with it, and CSS state comes back with the markup. The box is offscreen
+   rather than display:none so it still takes focus and answers the spacebar;
+   the label carries the focus ring for it. */
+.pauser{display:flex;gap:8px;align-items:center;position:relative}
+/* Positioned against .pauser, not the page: an absolute box with no
+   positioned ancestor lands in the document's top-left corner, and focusing
+   it scrolls the page there. */
+.pauser>.askpause{position:absolute;left:0;top:0;width:1px;height:1px;opacity:0}
+.pauser>.step2{display:none}
+.pauser>.askpause:checked~.step1{display:none}
+.pauser>.askpause:checked~.step2{display:flex}
+.pauser>.askpause:focus-visible~.step1{border-color:var(--accent);color:var(--accent)}
+label.btn{user-select:none}
+.btn.quiet{border-color:transparent;color:var(--muted)}
 .actions{display:flex;gap:6px;justify-content:flex-end}
 .actions form{display:contents}
 
@@ -411,6 +431,15 @@ h2{margin:20px 0 8px}
    and reads as the small one of the pair. Scaled by the same ratio, and the
    column widened to hold it. */
 svg.sw{width:36px;height:21px}
+/* Opened on a phone, the reason box and its two buttons do not fit on one
+   line, and squeezed onto one they shrink the button until its label breaks
+   in half. Give the box the width and let the buttons take the line below. */
+.bar .pauser{flex-wrap:wrap}
+/* Only once it is open. Collapsed it is one ordinary button and should share
+   a line like one, rather than reserving a row for a box that is not there. */
+.bar .pauser:has(>.askpause:checked){flex:1 1 100%}
+.bar .pauser>.step2{flex-wrap:wrap;width:100%}
+.bar input.why{flex:1 1 100%;min-width:0}
 /* Two lines of it, now that nothing is racing it for the width: one line of
    a failure is never the half that says what failed. */
 .desc,.detail{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
@@ -586,6 +615,9 @@ const SCRIPT = (seconds: number) => `
     var busy = !!(el2 && el2.matches && el2.matches("input,select,textarea"));
     // An open menu is being used too, and the swap would shut it mid-choice.
     if (document.querySelector("details.menu[open]")) busy = true;
+    // Same for a pause waiting on its reason: the swap would fold the box
+    // back up and throw away what had been typed into it.
+    if (document.querySelector(".pauser > .askpause:checked")) busy = true;
     if (!document.hidden && !busy) {
       try {
         var res = await fetch(location.href, { credentials: "same-origin" });
@@ -632,10 +664,6 @@ const ICON_SWITCH_ON = raw(
 );
 const ICON_SWITCH_OFF = raw(
   `<svg class="sw" viewBox="0 0 28 16" width="28" height="16" aria-hidden="true"><rect x=".75" y=".75" width="26.5" height="14.5" rx="7.25" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="5" fill="currentColor"/></svg>`,
-);
-/** Two bars. Only used where a word sits next to it and says "Pause". */
-const ICON_PAUSE = raw(
-  `<svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-hidden="true"><rect x="4" y="3" width="3" height="10" rx="1"/><rect x="9" y="3" width="3" height="10" rx="1"/></svg>`,
 );
 const ICON_PLAY = raw(
   `<svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-hidden="true"><path d="M4.6 3.1v9.8c0 .4.45.65.79.43l7.7-4.9a.5.5 0 0 0 0-.86l-7.7-4.9a.5.5 0 0 0-.79.43Z"/></svg>`,
@@ -1481,9 +1509,16 @@ export function workflowPage(
         <form method="post" action="/workflows/${wf.name}/run">
           <button class="btn" type="submit">${ICON_PLAY} Run now</button>
         </form>
-        <!-- Present but dead for a workflow the file disabled, rather than
-             absent: the flash above says why, and a button that is visibly
-             not available is what stops somebody looking for one. -->
+        <!--
+          Every one of these carries the same switch, in the position the
+          click puts it in — the icon is one idea (this workflow's on/off
+          state) wherever it appears, and the word beside it says which
+          direction this particular button goes.
+
+          Present but dead for a workflow the file disabled, rather than
+          absent: the flash above says why, and a button that is visibly
+          not available is what stops somebody looking for one.
+        -->
         ${disabled
           ? html`<button class="btn" type="button" disabled
                     title="workflows/${wf.file} sets enabled: false — change the file and deploy">
@@ -1494,12 +1529,17 @@ export function workflowPage(
                 <input type="hidden" name="back" value="workflow">
                 <button class="btn" type="submit">${ICON_SWITCH_ON} Resume</button>
               </form>`
-            : html`<form method="post" action="/workflows/${wf.name}/pause">
-                <input type="hidden" name="back" value="workflow">
-                <input class="why" type="text" name="note" maxlength="200" autocomplete="off"
-                       placeholder="Why (optional)">
-                <button class="btn" type="submit">${ICON_PAUSE} Pause</button>
-              </form>`}
+            : html`<div class="pauser">
+                <input type="checkbox" id="ask-pause" class="askpause">
+                <label class="btn step1" for="ask-pause">${ICON_SWITCH_OFF} Pause</label>
+                <form class="step2" method="post" action="/workflows/${wf.name}/pause">
+                  <input type="hidden" name="back" value="workflow">
+                  <input class="why" type="text" name="note" maxlength="200" autocomplete="off"
+                         placeholder="Why (optional)">
+                  <button class="btn" type="submit">${ICON_SWITCH_OFF} Pause workflow</button>
+                  <label class="btn quiet" for="ask-pause">Cancel</label>
+                </form>
+              </div>`}
         <!-- Spelled out because the tab opens on 7 days: a link that says
              "all" and lands on a week is the kind of small lie you only catch
              by counting rows. The widest window is all of them, since anything

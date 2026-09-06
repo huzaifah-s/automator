@@ -21,6 +21,12 @@ import { SUPPORT_PHONE } from "./_studentqr.ts";
  *      message being replied to in `context.id`, which is the key back to the
  *      teacher, and the reply is relayed to them.
  *
+ * It has a third job the n8n graph did not: this same callback URL is where
+ * Meta reports what happened to every message the StudentQR number sends, so a
+ * send that **failed** — a number that is not on WhatsApp, a paused template, an
+ * unpaid bill — is turned into a run failure here, and from there into an alert.
+ * Nothing reported those before; a school simply never heard back.
+ *
  * A port of the n8n graph "Zahra AI - Retriever". The board is doing the job
  * of a lookup table, which is what it was doing in n8n too — `ctx.state` would
  * hold this more cheaply, but the board is also the thing a human opens to see
@@ -88,6 +94,34 @@ const inbound = z.object({
                     }),
                   )
                   .optional(),
+                /**
+                 * The fate of a message *we* sent: "sent", "delivered",
+                 * "read", or "failed". Every field is loose on purpose — a
+                 * schema that rejects gives Meta a 422, and Meta answers a
+                 * 422 by redelivering the same payload for a day. `code` is
+                 * a number today and is read as either, for the same reason.
+                 */
+                statuses: z
+                  .array(
+                    z.object({
+                      id: z.string().optional(),
+                      status: z.string().optional(),
+                      recipient_id: z.string().optional(),
+                      errors: z
+                        .array(
+                          z.object({
+                            code: z.union([z.number(), z.string()]).optional(),
+                            title: z.string().optional(),
+                            message: z.string().optional(),
+                            error_data: z
+                              .object({ details: z.string().optional() })
+                              .optional(),
+                          }),
+                        )
+                        .optional(),
+                    }),
+                  )
+                  .optional(),
               }),
             }),
           )
@@ -102,7 +136,8 @@ const NO_MATCH = "We can't find the message to reply to.";
 
 export default defineWorkflow<z.infer<typeof inbound>>({
   name: "studentqr-whatsapp-relay",
-  description: "Relays WhatsApp messages between schools and the support number",
+  description:
+    "Relays WhatsApp messages between schools and support, and alerts on failed deliveries",
   trigger: webhook("studentqr/whatsapp", {
     method: "POST",
     schema: inbound,
@@ -148,9 +183,71 @@ export default defineWorkflow<z.infer<typeof inbound>>({
       };
     });
 
+    // A delivery with nothing to relay is nearly always a status callback, and
+    // this number's status callbacks are the only report anyone gets on whether
+    // a StudentQR notification actually arrived — every order, issue and welcome
+    // message goes out through it, and they all come back here when they don't
+    // land. Checked inside this branch because Meta sends `messages` and
+    // `statuses` in separate deliveries; a payload that somehow carried both
+    // would relay the teacher's message and skip the report, which is the right
+    // way round to lose one of the two.
     if (!message.relayable) {
+      const delivery = await ctx.step("check what happened to what we sent", async () => {
+        const statuses = (ctx.input.entry ?? [])
+          .flatMap((entry) => entry.changes ?? [])
+          .flatMap((change) => change.value.statuses ?? []);
+
+        return {
+          statuses: statuses.length,
+          failed: statuses
+            .filter((s) => s.status === "failed")
+            .flatMap((s) =>
+              (s.errors ?? []).map((err) => ({
+                to: s.recipient_id ?? "an unknown number",
+                code: err.code ?? "",
+                reason: err.title ?? err.message ?? "no reason given",
+                details: err.error_data?.details ?? "",
+              })),
+            ),
+        };
+      });
+
+      if (delivery.failed.length > 0) {
+        // Every recipient on the run page, one on the alert. The alert channel
+        // throttles on the exact text it sends, so naming the school there
+        // would turn an account-level problem — a lapsed bill fails *every*
+        // send — into one Telegram message per school. The reason is the thing
+        // that repeats; who it happened to is a click away on the run.
+        for (const f of delivery.failed) {
+          ctx.log.error(`WhatsApp could not deliver to ${f.to} — ${f.reason}`, {
+            code: f.code,
+            details: f.details,
+          });
+        }
+
+        // Reported by failing the run rather than by messaging Telegram from
+        // here: this is exactly the problem the runner's alert channel exists
+        // for, and going through it buys the 🚨 format, the link back to this
+        // run, and the 30-minute cooldown for free. The cost is the two retries
+        // this workflow declares, which cannot fix a rejection Meta has already
+        // decided — about six seconds of the relay's queue per failed message.
+        const first = delivery.failed[0]!;
+        const more =
+          delivery.failed.length > 1
+            ? `\n(and ${delivery.failed.length - 1} more in the same delivery)`
+            : "";
+        throw new Error(
+          `WhatsApp could not deliver a message — ${first.reason}` +
+            `${first.code ? ` (${first.code})` : ""}` +
+            `${first.details ? `\n${first.details}` : ""}${more}`,
+        );
+      }
+
       ctx.log.info("Not a text message — nothing to relay");
-      return { relayed: false, reason: "not a text message" };
+      return {
+        relayed: false,
+        reason: delivery.statuses > 0 ? "delivery status callback" : "not a text message",
+      };
     }
 
     /* ------------------------------------------- support replying outward */

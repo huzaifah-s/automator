@@ -8,6 +8,42 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-06
 
+### Monday's webhook registration was wrong in two ways, and silent about one
+
+Setting the six board variables turned self-registration on for the first time,
+and all seven subscriptions failed at boot. Two separate causes.
+
+The two create-item subscriptions were refused outright: `create_pulse` is not
+in `WebhookEventType`. Monday has two names for one event — you subscribe with
+`create_item`, and the payload that arrives says `"type": "create_pulse"`. The
+old name is all through Monday's own sample payloads, and this port read the
+receiving side from a captured delivery and reused the string for the
+subscription. Only the subscription side changed; `mondayEvent` still documents
+`create_pulse`, because that is still what is sent.
+
+The five `change_specific_column_value` subscriptions failed with `Internal
+Server Error` on five different boards with five different column ids, which
+is the call rather than the boards. `config` is Monday's `JSON` scalar: passing
+it as a declared variable validates fine and then dies inside their resolver.
+Every example Monday publishes inlines it as a string literal. This file had
+already hit exactly this with `compare_value` in `itemsByName` and solved it the
+same way — the lesson did not generalise the first time, so it is written down
+here now: **Monday's custom scalars are not reliably variable-safe, and the
+documented inline form is the one to copy.**
+
+Stated plainly, the second fix is the best-supported explanation rather than a
+confirmed one. The other candidate was Monday failing the URL challenge it
+sends when a subscription is created; our side of that is verified — posting
+`{"challenge":"…"}` at four of the paths echoes it back before the auth gate —
+so if the 500s survive, the remaining suspect is whether `PUBLIC_URL` is
+reachable from Monday, not the handler.
+
+What made both of these cost more than they should have is that the client threw
+away the error code. Monday answers a rejected `create_webhook` with `Internal
+Server Error` twice and an `extensions.code` beside it naming the real
+complaint, and only the sentence reached the log. Both error shapes now carry
+the code.
+
 ### A sub-workflow call that is refused now leaves a run behind
 
 `ctx.run()` decides everything that can go wrong before it starts anything — an

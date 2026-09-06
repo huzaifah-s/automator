@@ -330,7 +330,7 @@ padding:10px 12px;overflow-x:auto;font-family:var(--mono);font-size:11.5px;max-h
 white-space:pre-wrap;word-break:break-word}
 
 @media(max-width:880px){
-.wf{grid-template-columns:minmax(0,1fr) 92px 80px}
+.wf{grid-template-columns:minmax(0,1fr) 92px 90px}
 .ex{grid-template-columns:minmax(0,1fr) 92px 90px}
 /* Too narrow for both: the name drops to a line of its own under the folder,
    rather than the two of them sharing one and each showing three letters. */
@@ -405,6 +405,12 @@ h2{margin:20px 0 8px}
 /* The column header it stood under is gone, so the cell says what it is. */
 .wf .next::before{content:"next ";color:var(--faint)}
 .actions{gap:8px}
+/* The buttons grow on a touch screen (.btn padding above) and an SVG sized in
+   its own attributes does not, so the switch has to be told — left alone it
+   keeps its desktop 28x16 next to a button that went from 23px tall to 29px,
+   and reads as the small one of the pair. Scaled by the same ratio, and the
+   column widened to hold it. */
+svg.sw{width:36px;height:21px}
 /* Two lines of it, now that nothing is racing it for the width: one line of
    a failure is never the half that says what failed. */
 .desc,.detail{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}

@@ -41,26 +41,25 @@ type Family = "card" | "badges" | "sticker";
  * status index. The index is the stable identity — renaming "Lencana QR (3
  * Keping) / QR Badges (3 Pcs)" on the board does not move it.
  *
- * **This differs from the n8n graph, deliberately, and it is the one
- * behavioural change in this port worth signing off.** n8n routed indices
- * `[0,1]` to cards, `[3,4,5]` to badges and `6` to stickers. On this board
- * index 5 does not exist, and indices 2 ("Lencana QR (5 Keping)") and 7
- * ("Lencana QR Magnetik (1 Keping)") do — so a school ordering five-piece or
- * magnetic badges fell through every branch and was never told its order had
- * been received. Five-piece is not an edge case; it is one of the commonest
- * options on the form.
+ * **Indices 2 ("Lencana QR (5 Keping)") and 7 ("Lencana QR Magnetik (1
+ * Keping)") are absent on purpose.** n8n routed `[0,1]` to cards, `[3,4,5]` to
+ * badges and `6` to stickers; index 5 does not exist on this board and 2 and 7
+ * were never routed, so a school ordering five-piece or magnetic badges got no
+ * confirmation. That silence was the intended behaviour and it is kept.
  *
- * Both are badges by label, so both are badges here. Revert by deleting the
- * `2` and `7` entries if that silence turns out to have been on purpose.
+ * The port does change one thing about it: an unrouted product now warns on
+ * the run page instead of passing as a successful no-op, so the next person
+ * asking "why did this school hear nothing" gets an answer. Add an entry here
+ * to start confirming either product.
  */
 const FAMILY: Record<number, Family> = {
   0: "card", // Kad QR Sahaja
   1: "card", // Kad QR (Tali + Pemegang kad)
-  2: "badges", // Lencana QR (5 Keping)      — unrouted in n8n
+  // 2: Lencana QR (5 Keping)   — not confirmed, as in n8n
   3: "badges", // Lencana QR (3 Keping)
   4: "badges", // Lencana QR (2 Keping)
   6: "sticker", // Pelekat QR (Saiz A4)
-  7: "badges", // Lencana QR Magnetik        — unrouted in n8n
+  // 7: Lencana QR Magnetik     — not confirmed, as in n8n
 };
 
 export default defineWorkflow<MondayEvent>({
@@ -106,9 +105,10 @@ export default defineWorkflow<MondayEvent>({
 
     const family = order.jenis_produk_index === undefined ? undefined : FAMILY[order.jenis_produk_index];
     if (!family) {
-      // Loud rather than silent. An option added to the board that nobody
-      // mapped here is exactly the failure this port inherited, and it should
-      // show up on the run page instead of looking like a successful no-op.
+      // Loud rather than silent. Reached both by the two products left
+      // unrouted on purpose and by an option added to the board that nobody
+      // mapped — the second is a bug, and the two are indistinguishable from
+      // here, so both say so on the run page rather than passing as a no-op.
       ctx.log.warn(
         `No message for product "${order.jenis_produk ?? "(empty)"}" ` +
           `(index ${order.jenis_produk_index ?? "none"}) — add it to FAMILY in this file`,

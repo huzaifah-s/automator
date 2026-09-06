@@ -158,7 +158,7 @@ border-bottom:1.6px solid var(--faint);transform:rotate(-45deg);margin-left:2px;
 
 /* ---- rows ---- */
 .row{display:grid;align-items:center;gap:14px;padding:11px 14px;border-top:1px solid var(--border-soft)}
-.wf{grid-template-columns:minmax(0,1fr) 158px 92px 84px 84px 76px}
+.wf{grid-template-columns:minmax(0,1fr) 158px 92px 84px 84px 80px}
 .ex{grid-template-columns:minmax(0,1fr) 92px 84px 104px 72px 90px}
 .cr{grid-template-columns:minmax(0,1fr) 120px 96px 210px}
 .sc{grid-template-columns:minmax(0,1fr) 96px 150px}
@@ -187,14 +187,18 @@ text-overflow:ellipsis;white-space:nowrap}
 .tag.paused{color:var(--yellow);border-color:var(--yellow)}
 /* The on/off switch on a workflow row. No border of its own — a toggle inside
    a bordered button reads as a control inside a control — and it carries the
-   state in its colour as well as the knob's position. */
-.toggle{display:inline-flex;align-items:center;background:none;border:none;
-padding:3px 2px;cursor:pointer;color:var(--faint);line-height:0}
-/* On is a filled track, off is an outlined one. Position alone was not enough:
-   at 20px the knob moving 8px to the left is a difference you have to go
-   looking for, and this is a control you read at a glance down a column. The
-   knob is punched out in the surface colour rather than white, so it stays a
-   hole in the track in both themes. */
+   state in its colour as well as the knob's position.
+   It still takes the row's control height: .actions stretches it, so a 16px
+   switch and a 29px icon button share a centre line and an optical weight
+   instead of one floating beside the other. The padding is hit area. */
+.toggle{display:inline-flex;align-items:center;justify-content:center;
+background:none;border:none;padding:0 3px;cursor:pointer;color:var(--faint);
+line-height:0}
+/* On is a filled track, off is an outlined one. Position alone was not enough
+   at this size: a knob shifting 12px is a difference you have to go looking
+   for, and this is a control read at a glance down a column. The knob is
+   punched out in the surface colour rather than white, so it stays a hole in
+   the track in both themes. */
 .toggle.on{color:var(--green)}
 /* ".folder svg" above mutes every icon inside a folder's chrome, which is
    right for the folder and wrong for a control that carries state in its
@@ -326,7 +330,7 @@ padding:10px 12px;overflow-x:auto;font-family:var(--mono);font-size:11.5px;max-h
 white-space:pre-wrap;word-break:break-word}
 
 @media(max-width:880px){
-.wf{grid-template-columns:minmax(0,1fr) 92px 76px}
+.wf{grid-template-columns:minmax(0,1fr) 92px 80px}
 .ex{grid-template-columns:minmax(0,1fr) 92px 90px}
 /* Too narrow for both: the name drops to a line of its own under the folder,
    rather than the two of them sharing one and each showing three letters. */
@@ -618,10 +622,10 @@ const ICON_HOME = raw(
  * instead of only the action, which is what the row was missing.
  */
 const ICON_SWITCH_ON = raw(
-  `<svg class="sw on" viewBox="0 0 20 11" width="20" height="11" aria-hidden="true"><rect x=".8" y=".8" width="18.4" height="9.4" rx="4.7" fill="currentColor"/><circle class="knob" cx="14.3" cy="5.5" r="2.6"/></svg>`,
+  `<svg class="sw on" viewBox="0 0 28 16" width="28" height="16" aria-hidden="true"><rect x=".75" y=".75" width="26.5" height="14.5" rx="7.25" fill="currentColor"/><circle class="knob" cx="20" cy="8" r="5"/></svg>`,
 );
 const ICON_SWITCH_OFF = raw(
-  `<svg class="sw" viewBox="0 0 20 11" width="20" height="11" aria-hidden="true"><rect x=".8" y=".8" width="18.4" height="9.4" rx="4.7" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="5.7" cy="5.5" r="2.6" fill="currentColor"/></svg>`,
+  `<svg class="sw" viewBox="0 0 28 16" width="28" height="16" aria-hidden="true"><rect x=".75" y=".75" width="26.5" height="14.5" rx="7.25" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="5" fill="currentColor"/></svg>`,
 );
 /** Two bars. Only used where a word sits next to it and says "Pause". */
 const ICON_PAUSE = raw(

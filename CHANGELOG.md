@@ -66,8 +66,13 @@ inside a ring, which at 11px is a dot sitting next to the Run now triangle it
 shares a row with — two different acts (start it once now; let it start itself
 again) that looked like one button. A switch cannot be confused with a play
 button at any size, and it answers "is this thing on" without being clicked.
-On is a filled track and off is an outlined one, because at 20px a knob moving
-8px is a difference you have to go looking for.
+On is a filled track and off is an outlined one, because a knob moving 12px is
+a difference you have to go looking for.
+
+It is sized to the control beside it — 28×16 in a box the same height as the
+Run now button, sharing its centre line. The first attempt was 20×11, which
+next to a 23px button is a chip floating beside a control rather than half of
+a matched pair, and looked exactly as unconsidered as it was.
 
 A workflow its file disabled gets the switch too, drawn off and **not
 clickable**, with a title saying which file to edit. Rendering nothing there

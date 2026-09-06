@@ -201,6 +201,17 @@ what stops a redeploy creating a duplicate. Deleting on shutdown looks tidier
 and is wrong: every deploy would drop and recreate the subscription, and
 `SIGKILL` skips the cleanup regardless. Nothing in there may throw out to boot.
 
+**The reachability probe warns and never blocks.** Before the first
+subscription is created, `reconcileWebhooks` fetches our own `/healthz` over
+`PUBLIC_URL`, because a provider that cannot reach the URL reports it as an
+error of its own — Monday says `Internal Server Error
+[DOWNSTREAM_SERVICE_ERROR]` — and every registration then fails identically
+whatever is really wrong. A *failed* probe is evidence and not a verdict: a
+container often cannot reach its own public hostname, and the provider still
+can. Do not "improve" this into a precondition; it would turn a diagnostic into
+an outage. It runs at most once per boot, and only when something is actually
+about to be registered.
+
 **`ctx.run()` never takes a second concurrency slot.** A nested run inherits
 its caller's, because the caller is blocked awaiting it and a slot per level
 deadlocks a full pool. Cycles are refused up front from the ancestry chain

@@ -20,6 +20,8 @@ const DIRECTORY_KEY = "@webhook:registered";
 
 /** Ceiling on one provider call, so a hanging API can't stall boot behind it. */
 const CALL_TIMEOUT_MS = 30_000;
+/** Ceiling on the reachability probe. Short — it is one request to ourselves. */
+const PROBE_TIMEOUT_MS = 10_000;
 
 interface Subscription {
   id: string;
@@ -57,6 +59,32 @@ export async function reconcileWebhooks(registry: Registry): Promise<void> {
 
   const registered = new Set(known);
 
+  /**
+   * Runs the reachability probe at most once, and only when a subscription is
+   * actually about to be created — a boot where everything is already in place
+   * makes no requests at all. The warning is inside the memoised body so seven
+   * registrations produce one line rather than seven copies of it.
+   */
+  let probed: Promise<void> | undefined;
+  const warnIfUnreachable = (): Promise<void> =>
+    (probed ??= (async () => {
+      // Non-null: the guard above returns when a candidate needs PUBLIC_URL,
+      // and this only runs from inside the candidate loop.
+      const origin = publicUrl!;
+      const result = await probePublicUrl(origin);
+      if (result.ok) {
+        log.debug(`PUBLIC_URL reaches this server (${origin}/healthz)`);
+        return;
+      }
+      log.warn(
+        `PUBLIC_URL may not reach this server — GET ${origin}/healthz ${result.why}. ` +
+          `A provider verifies a new subscription by calling it and reports the failure ` +
+          `as an error of its own, so check this first if the registrations below fail. ` +
+          `Not conclusive: this request left and re-entered the network, and a host that ` +
+          `cannot reach its own public name can still be perfectly reachable from outside.`,
+      );
+    })());
+
   for (const wf of candidates) {
     const trigger = wf.trigger;
     if (trigger.kind !== "webhook" || !trigger.register) continue;
@@ -89,6 +117,11 @@ export async function reconcileWebhooks(registry: Registry): Promise<void> {
       }
 
       if (!wanted) continue;
+
+      // Before the provider is asked to accept the URL, not after it refuses:
+      // the answer is the same either way, and a person reading the boot log
+      // top to bottom should meet the likely cause before the symptom.
+      await warnIfUnreachable();
 
       const id = await withCtx(wf, url, state, (ctx) => trigger.register!.create(ctx));
       if (typeof id !== "string" || id === "") {
@@ -165,5 +198,59 @@ async function withCtx<T>(
     return await fn(ctx);
   } finally {
     clearTimeout(timer);
+  }
+}
+
+
+/**
+ * Asks whether PUBLIC_URL actually reaches this process, by fetching our own
+ * `/healthz` over it.
+ *
+ * This exists because a provider that cannot reach the URL it was handed does
+ * not usually say so. Monday answers `Internal Server Error
+ * [DOWNSTREAM_SERVICE_ERROR]` — a description of its own plumbing, not of the
+ * endpoint — and every registration fails identically whatever is wrong with
+ * them, so the provider's error cannot distinguish a bad event name from a
+ * domain that does not resolve. Something on this side has to have an opinion.
+ *
+ * `/healthz` rather than the hook path: it is unauthenticated, it is purpose
+ * built for exactly this question, and its shape is a contract rather than an
+ * error string that could be reworded. A proxy routes by host, so reaching it
+ * means reaching `/hooks/*` too.
+ *
+ * **What a success proves:** the domain resolves, TLS verifies, and whatever
+ * sits in front routes to this process — which is the set of things actually
+ * wrong when a registration fails this way. Checking `ok: true` in the body
+ * rather than only the status is what catches the case that looks healthiest
+ * and is worst: a stale deployment still holding the domain.
+ *
+ * **What a failure does not prove.** It is evidence, not a verdict. A
+ * container frequently cannot reach its own public hostname — no NAT hairpin,
+ * split-horizon DNS — so the provider may well get through where we did not.
+ * That is precisely why this warns and registration goes ahead anyway: a
+ * diagnostic that blocked the deploy would be worse than the fault it
+ * diagnoses. Nothing here throws, for the same reason as the rest of the file.
+ */
+async function probePublicUrl(origin: string): Promise<{ ok: true } | { ok: false; why: string }> {
+  const url = `${origin}/healthz`;
+  try {
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      headers: { accept: "application/json" },
+    });
+    if (!res.ok) return { ok: false, why: `answered HTTP ${res.status}` };
+
+    const body: unknown = await res.json().catch(() => null);
+    if (typeof body !== "object" || body === null || (body as { ok?: unknown }).ok !== true) {
+      return {
+        ok: false,
+        why: "answered 200, but not with this server's /healthz — something else holds that domain",
+      };
+    }
+    return { ok: true };
+  } catch (err) {
+    // A DNS failure, a TLS failure and a timeout all arrive here, and the name
+    // is the useful half: "TimeoutError" says something "fetch failed" doesn't.
+    return { ok: false, why: err instanceof Error ? `${err.name}: ${err.message}` : String(err) };
   }
 }

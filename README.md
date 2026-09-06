@@ -748,10 +748,10 @@ still stored — resume depends on them.
 
 ### Pausing a workflow from the dashboard
 
-Every row on the **Workflows** tab has a pause button, and so does the workflow
-page — where there is also a box for a one-line reason. Pausing takes effect
-immediately, with no restart, and survives one: it is a row in the database,
-not a variable in the process.
+Every row on the **Workflows** tab has an on/off switch, and the workflow page
+has one with a box for a one-line reason. Flicking it takes effect
+immediately, with **no redeploy and no restart**, and survives one: it is a row
+in the database, not a variable in the process.
 
 A paused workflow stops firing **by itself**. Its cron or poll timer is taken
 down, so the *Next* column goes to `—` rather than showing a time it will not
@@ -775,12 +775,18 @@ Two things it deliberately does **not** do:
   the items that arrived meanwhile are still there.
 
 **The switch can only ever turn a workflow off.** A workflow whose file says
-`enabled: false` shows as *Disabled* with no pause button, and no amount of
-clicking will start it — that answer belongs to the code, and a dashboard that
-could overrule it would make the repo a lie about what is running. Resuming does
-not override the file either; it removes the pause and lets the file answer
-again. So the two states read differently on purpose: **Disabled** means change
-the file, **Paused** means click Resume.
+`enabled: false` shows as *Disabled*, and its switch is drawn in the off
+position but is **not clickable** — hovering it says why. That answer belongs to
+the code, and a dashboard that could overrule it would make the repo a lie about
+what is running. Resuming does not override the file either; it removes the
+pause and lets the file answer again. So the two states read differently on
+purpose:
+
+| On the row | What it means | How to change it |
+|---|---|---|
+| Switch on | Runs on its trigger | Click the switch to pause |
+| `Paused` + switch off | An operator switched it off here | Click the switch to resume |
+| `Disabled` + switch locked off | The file says `enabled: false` | Edit the file and deploy |
 
 It is not gated behind `DASHBOARD_WRITE`. That flag decides whether a browser
 may put a *credential* into the encrypted store; this stores no value and

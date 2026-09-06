@@ -158,7 +158,7 @@ border-bottom:1.6px solid var(--faint);transform:rotate(-45deg);margin-left:2px;
 
 /* ---- rows ---- */
 .row{display:grid;align-items:center;gap:14px;padding:11px 14px;border-top:1px solid var(--border-soft)}
-.wf{grid-template-columns:minmax(0,1fr) 158px 92px 84px 84px 68px}
+.wf{grid-template-columns:minmax(0,1fr) 158px 92px 84px 84px 76px}
 .ex{grid-template-columns:minmax(0,1fr) 92px 84px 104px 72px 90px}
 .cr{grid-template-columns:minmax(0,1fr) 120px 96px 210px}
 .sc{grid-template-columns:minmax(0,1fr) 96px 150px}
@@ -185,6 +185,32 @@ text-overflow:ellipsis;white-space:nowrap}
    nothing: a workflow that is switched off looks switched off from across the
    room, which is the whole point of putting the switch on the list. */
 .tag.paused{color:var(--yellow);border-color:var(--yellow)}
+/* The on/off switch on a workflow row. No border of its own — a toggle inside
+   a bordered button reads as a control inside a control — and it carries the
+   state in its colour as well as the knob's position. */
+.toggle{display:inline-flex;align-items:center;background:none;border:none;
+padding:3px 2px;cursor:pointer;color:var(--faint);line-height:0}
+/* On is a filled track, off is an outlined one. Position alone was not enough:
+   at 20px the knob moving 8px to the left is a difference you have to go
+   looking for, and this is a control you read at a glance down a column. The
+   knob is punched out in the surface colour rather than white, so it stays a
+   hole in the track in both themes. */
+.toggle.on{color:var(--green)}
+/* ".folder svg" above mutes every icon inside a folder's chrome, which is
+   right for the folder and wrong for a control that carries state in its
+   colour — without this the "on" switch renders grey like everything else. */
+.toggle svg{color:inherit}
+/* On a labelled button the switch is the action, not the state, so it takes
+   the colour of the thing it will do rather than the button's text colour —
+   otherwise "Resume" carries a dark blob. Scoped to .btn so the toggle on a
+   row keeps its own hover feedback. */
+.btn svg.sw.on{color:var(--green)}
+.knob{fill:var(--panel)}
+.toggle:hover:not(:disabled){color:var(--accent)}
+/* Shown, not hidden, for a workflow its file disabled. "Where do I click" is
+   exactly the question a missing control leaves you with; a switch that is
+   visibly locked off answers it, and the title says where the answer lives. */
+.toggle:disabled{cursor:not-allowed;opacity:.55}
 .dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--faint)}
 .dot.success{background:var(--green)}.dot.failed{background:var(--red)}
 .dot.running{background:var(--accent);animation:pulse 1.4s ease-in-out infinite}
@@ -215,6 +241,8 @@ font:12px/1.4 var(--sans);cursor:pointer}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 .btn.primary:hover{color:#fff;filter:brightness(1.08)}
 .btn.danger:hover{border-color:var(--red);color:var(--red)}
+.btn:disabled{opacity:.55;cursor:not-allowed}
+.btn:disabled:hover{border-color:var(--border);color:var(--fg)}
 .bar{display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap}
 /* A form on the bar is a row of controls, not a block: the pause form is a
    note box and a button and they belong side by side. */
@@ -298,7 +326,7 @@ padding:10px 12px;overflow-x:auto;font-family:var(--mono);font-size:11.5px;max-h
 white-space:pre-wrap;word-break:break-word}
 
 @media(max-width:880px){
-.wf{grid-template-columns:minmax(0,1fr) 92px 68px}
+.wf{grid-template-columns:minmax(0,1fr) 92px 76px}
 .ex{grid-template-columns:minmax(0,1fr) 92px 90px}
 /* Too narrow for both: the name drops to a line of its own under the folder,
    rather than the two of them sharing one and each showing three letters. */
@@ -579,13 +607,25 @@ const ICON_FOLDER = raw(
 const ICON_HOME = raw(
   `<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M8 .5 15 6v9.5H9.75V10.5h-3.5V15.5H1V6L8 .5Z"/></svg>`,
 );
-/** Two bars — the switch that stops a workflow firing on its own. */
+/**
+ * The on/off switch, drawn in whichever position the workflow is in.
+ *
+ * A toggle rather than another glyph, and that is the second attempt: resume
+ * was first a play triangle inside a ring, which at 11px is a dot next to the
+ * Run now triangle it sits beside — two different acts (start it once now,
+ * let it start itself again) that looked like the same button. A switch cannot
+ * be confused with a play button at any size, and it shows the current state
+ * instead of only the action, which is what the row was missing.
+ */
+const ICON_SWITCH_ON = raw(
+  `<svg class="sw on" viewBox="0 0 20 11" width="20" height="11" aria-hidden="true"><rect x=".8" y=".8" width="18.4" height="9.4" rx="4.7" fill="currentColor"/><circle class="knob" cx="14.3" cy="5.5" r="2.6"/></svg>`,
+);
+const ICON_SWITCH_OFF = raw(
+  `<svg class="sw" viewBox="0 0 20 11" width="20" height="11" aria-hidden="true"><rect x=".8" y=".8" width="18.4" height="9.4" rx="4.7" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="5.7" cy="5.5" r="2.6" fill="currentColor"/></svg>`,
+);
+/** Two bars. Only used where a word sits next to it and says "Pause". */
 const ICON_PAUSE = raw(
   `<svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-hidden="true"><rect x="4" y="3" width="3" height="10" rx="1"/><rect x="9" y="3" width="3" height="10" rx="1"/></svg>`,
-);
-/** A play inside a ring — resume, which is not the same act as Run now. */
-const ICON_RESUME = raw(
-  `<svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="8" cy="8" r="6.4"/><path d="M6.6 5.6v4.8l4-2.4Z" fill="currentColor" stroke="none"/></svg>`,
 );
 const ICON_PLAY = raw(
   `<svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-hidden="true"><path d="M4.6 3.1v9.8c0 .4.45.65.79.43l7.7-4.9a.5.5 0 0 0 0-.86l-7.7-4.9a.5.5 0 0 0-.79.43Z"/></svg>`,
@@ -835,18 +875,21 @@ function workflowRow(
           <button class="btn icon" type="submit" title="Run now">${ICON_PLAY}</button>
         </form>
         ${disabled
-          ? ""
+          ? html`<button class="toggle" type="button" disabled
+                    title="Disabled in workflows/${w.file} — that file sets enabled: false. This switch cannot turn it on; change the file and deploy.">
+                ${ICON_SWITCH_OFF}
+              </button>`
           : paused
             ? html`<form method="post" action="/workflows/${w.name}/resume">
                 <input type="hidden" name="back" value="list">
-                <button class="btn icon" type="submit" title="Resume — let it fire on its own again">
-                  ${ICON_RESUME}
+                <button class="toggle" type="submit" title="Switch on — let it fire on its own again">
+                  ${ICON_SWITCH_OFF}
                 </button>
               </form>`
             : html`<form method="post" action="/workflows/${w.name}/pause">
                 <input type="hidden" name="back" value="list">
-                <button class="btn icon" type="submit" title="Pause — stop it firing on its own">
-                  ${ICON_PAUSE}
+                <button class="toggle on" type="submit" title="Switch off — stop it firing on its own. Run now still works.">
+                  ${ICON_SWITCH_ON}
                 </button>
               </form>`}
       </div>
@@ -1428,14 +1471,18 @@ export function workflowPage(
         <form method="post" action="/workflows/${wf.name}/run">
           <button class="btn" type="submit">${ICON_PLAY} Run now</button>
         </form>
-        <!-- Nothing to offer for a workflow the file disabled: a pause can
-             only subtract, and there is nothing left to subtract from. -->
+        <!-- Present but dead for a workflow the file disabled, rather than
+             absent: the flash above says why, and a button that is visibly
+             not available is what stops somebody looking for one. -->
         ${disabled
-          ? ""
+          ? html`<button class="btn" type="button" disabled
+                    title="workflows/${wf.file} sets enabled: false — change the file and deploy">
+                ${ICON_SWITCH_OFF} Off in the file
+              </button>`
           : paused
             ? html`<form method="post" action="/workflows/${wf.name}/resume">
                 <input type="hidden" name="back" value="workflow">
-                <button class="btn" type="submit">${ICON_RESUME} Resume</button>
+                <button class="btn" type="submit">${ICON_SWITCH_ON} Resume</button>
               </form>`
             : html`<form method="post" action="/workflows/${wf.name}/pause">
                 <input type="hidden" name="back" value="workflow">

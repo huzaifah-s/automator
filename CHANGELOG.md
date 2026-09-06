@@ -60,6 +60,21 @@ that covers all of them. The compensation for a public dashboard is that a
 pause is loud rather than silent: warned when it happens, warned again at every
 boot, counted on `/healthz`, and marked `◐` by `bun run list`.
 
+The control is a switch showing the current state, not a pair of action
+buttons, and that is the second attempt. Resume was first a play triangle
+inside a ring, which at 11px is a dot sitting next to the Run now triangle it
+shares a row with — two different acts (start it once now; let it start itself
+again) that looked like one button. A switch cannot be confused with a play
+button at any size, and it answers "is this thing on" without being clicked.
+On is a filled track and off is an outlined one, because at 20px a knob moving
+8px is a difference you have to go looking for.
+
+A workflow its file disabled gets the switch too, drawn off and **not
+clickable**, with a title saying which file to edit. Rendering nothing there
+was the first cut and it is the worse answer: a row that shows a state with no
+control is a dead end, and "where do I click" is exactly the question it
+leaves you with.
+
 The note field is operator-typed text rendered on a web page, so it goes
 through `redact()` and a 200-character cap at the storage boundary like every
 other observational string.

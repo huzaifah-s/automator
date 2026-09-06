@@ -134,6 +134,54 @@ const inbound = z.object({
 const NOT_A_REPLY = "Please swipe to reply directly on the message you're responding to.";
 const NO_MATCH = "We can't find the message to reply to.";
 
+/**
+ * Whether a delivery has anything behind it — the trigger's `filter`.
+ *
+ * This URL receives one delivery per teacher message and three or so per
+ * message the StudentQR number *sends*: "sent", then "delivered", then "read".
+ * Every notification in _studentqr.ts goes out through that number — orders,
+ * issues, card status, badges, welcome — so the receipts outnumber the real
+ * traffic several to one, and each of them used to be a full run. Worse than
+ * untidy: this workflow is `onOverlap: "queue"`, so a burst of read receipts
+ * took its turn in the queue *ahead of* a teacher waiting on support.
+ *
+ * Deliberately more permissive than run(), which is the safe direction: this
+ * decides what is *definitely* nothing, and run() decides what to do with the
+ * rest. Anything it lets through that turns out to be unrelayable falls into
+ * the branches below and returns `relayed: false` as it always did — those
+ * stay, both because a manual run or a replay does not come through here, and
+ * because a filter is a shortcut and never the thing enforcing correctness.
+ *
+ * The two ignorable cases are counted separately on purpose. A receipt is
+ * plumbing nobody needs to see; a teacher sending a photo is a person being
+ * silently not-answered, and collapsing the two would hide the second inside
+ * the volume of the first. Neither keeps its payload — that is the cost of not
+ * running: `ignored` holds a count and a reason, and nothing else.
+ */
+function worthRunning(body: z.infer<typeof inbound>): boolean {
+  const values = (body.entry ?? []).flatMap((entry) => entry.changes ?? []).map((c) => c.value);
+
+  // A text message from anyone — a teacher writing in, or support swipe-replying.
+  const relayable = values.some((v) =>
+    (v.messages ?? []).some((m) => (m.text?.body ?? "").trim() !== ""),
+  );
+  if (relayable) return true;
+
+  // A send that failed is the workflow's third job, and it arrives as a status
+  // callback like all the others. Missing this is the expensive mistake here —
+  // it is the only report anyone gets that a school never heard back — so it is
+  // checked before anything is turned away.
+  return values.some((v) => (v.statuses ?? []).some((s) => s.status === "failed"));
+}
+
+/** Names what a delivery was, once worthRunning() has said it was nothing. */
+function whyIgnored(body: z.infer<typeof inbound>): string {
+  const values = (body.entry ?? []).flatMap((entry) => entry.changes ?? []).map((c) => c.value);
+  return values.some((v) => (v.messages ?? []).length > 0)
+    ? "a message with no text — a sticker, image or reaction"
+    : "a delivery receipt for a message we sent";
+}
+
 export default defineWorkflow<z.infer<typeof inbound>>({
   name: "studentqr-whatsapp-relay",
   description:
@@ -141,6 +189,10 @@ export default defineWorkflow<z.infer<typeof inbound>>({
   trigger: webhook("studentqr/whatsapp", {
     method: "POST",
     schema: inbound,
+    // Most of what Meta posts here is a receipt for a message we sent, and a
+    // receipt is not an execution. See worthRunning() — and note the run body
+    // still guards every case this lets through.
+    filter: (body) => worthRunning(body) || whyIgnored(body),
     // Meta verifies the callback URL with a GET carrying `hub.challenge`, and
     // wants the bare challenge back. A handshake answers on any method on its
     // path, which is what lets one URL do both jobs — see types.ts.

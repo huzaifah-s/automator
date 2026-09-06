@@ -312,15 +312,22 @@ white-space:pre-wrap;word-break:break-word}
 .crumb{flex:1;font-size:12.5px}
 /* The bottom margin is the point: without it the row sits directly on the
    sticky bar's border and reads as if it were part of it. */
-/* Wrapping, because four of them do not fit across one line. Splitting the
-   row evenly is what the three-tab version did and it stopped working when
-   Variables was added: "Credentials" plus its badge cannot shrink below about
-   98px, so a quarter of 347px clipped it and pushed the last tab off-screen
-   entirely. Two rows of two keeps every label whole, which is the thing the
-   even split was for. */
-.tabs{order:3;flex:0 0 100%;flex-wrap:wrap;gap:4px;margin:9px 0 9px}
-.tab{flex:1 1 calc(50% - 4px);min-width:0;justify-content:center;
-padding:8px 4px;font-size:12.5px;gap:5px}
+/* One row that scrolls sideways, rather than four tabs split across two.
+   None of the three arrangements fits: four labels and their badges want
+   about 400px and the phone has 347px, an even split clipped "Credentials",
+   and wrapping to two rows spent a second line of a screen that is already
+   short on them. Scrolling gives the labels the width they need and puts the
+   overflow a swipe away instead of a line down.
+
+   The negative margin is what makes it read as scrollable: the strip runs to
+   the screen edges, so an off-screen tab is cut by the edge rather than
+   stopping neatly 14px short of it, which looks like the end of the row.
+   It matches the padding .top adds back, so nothing overflows the page. */
+.tabs{order:3;flex:0 0 calc(100% + 28px);flex-wrap:nowrap;gap:4px;margin:9px -14px;
+padding:0 14px;overflow-x:auto;overscroll-behavior-x:contain;
+-webkit-overflow-scrolling:touch;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tab{flex:none;padding:8px 11px;font-size:12.5px;gap:5px}
 .tab .n{padding:0 5px}
 
 .stats{gap:8px}
@@ -492,7 +499,25 @@ const SCRIPT = (seconds: number) => `
     try { localStorage.setItem(CLOSED, JSON.stringify(Array.from(closed))); } catch (err) {}
   });
 
+  // On a phone the tab strip scrolls sideways, so the tab you are on can
+  // start off-screen — which is how you end up on a page whose tab you
+  // cannot see is the current one. Only when it actually scrolls: at a
+  // desktop width the row fits and scrollIntoView would still nudge the page.
+  var showCurrentTab = function () {
+    var strip = document.querySelector(".tabs");
+    var cur = strip && strip.querySelector("[aria-current]");
+    if (!cur || strip.scrollWidth <= strip.clientWidth) return;
+    // Written out rather than scrollIntoView, which measures against the
+    // padding box and left the last tab sitting under the strip's own 14px
+    // of padding — half a word short of the thing this is for.
+    var pad = 14;
+    var atLeast = cur.offsetLeft + cur.offsetWidth + pad - strip.clientWidth;
+    var atMost = cur.offsetLeft - pad;
+    strip.scrollLeft = Math.max(0, Math.min(atMost, Math.max(atLeast, strip.scrollLeft)));
+  };
+
   apply();
+  showCurrentTab();
 
   var tick = async function () {
     var el = document.querySelector(".wrap");
@@ -510,7 +535,17 @@ const SCRIPT = (seconds: number) => `
         if (res.ok) {
           var doc = new DOMParser().parseFromString(await res.text(), "text/html");
           var next = doc.querySelector(".wrap");
-          if (next) { el.replaceWith(next); apply(); }
+          if (next) {
+            // The swap replaces the tab strip too, and a replaced element
+            // starts scrolled to the left. Carry the offset over, or every
+            // refresh drags the row back under the user's thumb.
+            var strip = el.querySelector(".tabs");
+            var left = strip ? strip.scrollLeft : 0;
+            el.replaceWith(next);
+            var after = next.querySelector(".tabs");
+            if (after) after.scrollLeft = left;
+            apply();
+          }
         }
       } catch (err) {}
     }

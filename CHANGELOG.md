@@ -74,10 +74,10 @@ Run now button, sharing its centre line. The first attempt was 20×11, which
 next to a 23px button is a chip floating beside a control rather than half of
 a matched pair, and looked exactly as unconsidered as it was.
 
-Every control carries that same switch, in the position the click puts it in,
-so the icon means one thing — this workflow's on/off state — wherever it
-appears, and the word beside it says which way this button goes. The pause
-glyph it replaced was a second vocabulary for the same idea.
+The switch lives on the list rows only. A row cell has no space for a label,
+so it needs a glyph; the workflow page's bar has the room, and there an icon
+beside the word it duplicates is decoration to look past — so those buttons
+are words alone, Run now included.
 
 The reason box is revealed by the Pause button rather than sitting on the bar:
 click Pause, optionally say why, click *Pause workflow*. Permanently visible,

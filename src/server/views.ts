@@ -204,12 +204,6 @@ line-height:0}
    right for the folder and wrong for a control that carries state in its
    colour — without this the "on" switch renders grey like everything else. */
 .toggle svg{color:inherit}
-/* On a labelled button the switch is the action, not the state, so it takes
-   the colour of the thing it will do rather than the button's text colour —
-   otherwise "Resume" carries a dark blob. Scoped to .btn so the toggle on a
-   row keeps its own hover feedback. */
-.btn svg.sw.on{color:var(--green)}
-.btn svg.sw:not(.on){color:var(--muted)}
 .knob{fill:var(--panel)}
 .toggle:hover:not(:disabled){color:var(--accent)}
 /* Shown, not hidden, for a workflow its file disabled. "Where do I click" is
@@ -1507,13 +1501,12 @@ export function workflowPage(
 
       <div class="bar">
         <form method="post" action="/workflows/${wf.name}/run">
-          <button class="btn" type="submit">${ICON_PLAY} Run now</button>
+          <button class="btn" type="submit">Run now</button>
         </form>
         <!--
-          Every one of these carries the same switch, in the position the
-          click puts it in — the icon is one idea (this workflow's on/off
-          state) wherever it appears, and the word beside it says which
-          direction this particular button goes.
+          Words, no glyphs. A row on the list needs an icon because the cell
+          has no room for a label; this bar has the room, and an icon next to
+          the word it duplicates is decoration that has to be looked past.
 
           Present but dead for a workflow the file disabled, rather than
           absent: the flash above says why, and a button that is visibly
@@ -1522,21 +1515,21 @@ export function workflowPage(
         ${disabled
           ? html`<button class="btn" type="button" disabled
                     title="workflows/${wf.file} sets enabled: false — change the file and deploy">
-                ${ICON_SWITCH_OFF} Off in the file
+                Off in the file
               </button>`
           : paused
             ? html`<form method="post" action="/workflows/${wf.name}/resume">
                 <input type="hidden" name="back" value="workflow">
-                <button class="btn" type="submit">${ICON_SWITCH_ON} Resume</button>
+                <button class="btn" type="submit">Resume</button>
               </form>`
             : html`<div class="pauser">
                 <input type="checkbox" id="ask-pause" class="askpause">
-                <label class="btn step1" for="ask-pause">${ICON_SWITCH_OFF} Pause</label>
+                <label class="btn step1" for="ask-pause">Pause</label>
                 <form class="step2" method="post" action="/workflows/${wf.name}/pause">
                   <input type="hidden" name="back" value="workflow">
                   <input class="why" type="text" name="note" maxlength="200" autocomplete="off"
                          placeholder="Why (optional)">
-                  <button class="btn" type="submit">${ICON_SWITCH_OFF} Pause workflow</button>
+                  <button class="btn" type="submit">Pause workflow</button>
                   <label class="btn quiet" for="ask-pause">Cancel</label>
                 </form>
               </div>`}

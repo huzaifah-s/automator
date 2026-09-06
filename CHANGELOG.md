@@ -8,6 +8,38 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-06
 
+### A sub-workflow call that is refused now leaves a run behind
+
+`ctx.run()` decides everything that can go wrong before it starts anything — an
+unknown name, a disabled workflow, a cycle, the depth limit — and each of those
+threw before `runWorkflow` was reached, so no run row was ever written. That is
+fine when the caller lets the error through: the caller's own run fails and
+carries the reason. It is not fine when the caller catches it, and the two
+places that call a sub-workflow in this repo both do, deliberately —
+`notify()` and `welcome-message` downgrade a failed contact write to a warning
+so a bookkeeping row cannot mark a delivered WhatsApp message as failed.
+
+The result was a workflow that had genuinely been called reporting that it had
+never run. `studentqr-add-contact` showed no runs at all while every
+notification went out green, and the only trace was one `warn` line on the
+caller's page. "Never called" and "called and refused" are different facts and
+the dashboard was stating the wrong one.
+
+A refusal is now recorded as a failed run of the child, parented to the caller,
+with the input it was called with — so it appears on the runs list, on the
+child's own page, and under "Workflows it ran" on the caller's run. An unknown
+name is recorded under the name that was asked for, even though no page answers
+to that link: the typo is the thing you need to see. The shutdown skip, which
+also returned without writing anything, is recorded as `skipped` for the same
+reason.
+
+Deliberately no alert from this path. A refusal that matters already reaches
+the alert channel through whichever run finally fails because of it, and a
+caller that swallows one has decided it is not worth waking anyone — alerting
+anyway would put a Telegram message behind every catch block. The cost is that
+a swallowed refusal is a red run nobody is paged about, which is the same
+bargain the rest of the dashboard makes.
+
 ### Five-piece and magnetic badges stay unconfirmed, as they were in n8n
 
 The port routed PRODUCT indices 2 ("Lencana QR (5 Keping)") and 7 ("Lencana QR

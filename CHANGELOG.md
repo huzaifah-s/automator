@@ -8,6 +8,28 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-06
 
+### The tab row scrolls sideways instead of wrapping onto two lines
+
+Adding Variables made four tabs, and four labels with their badges want about
+400px where a phone has 347. The even split that carried three tabs clipped
+"Credentials" and pushed the last tab off the screen, so they were wrapped
+onto two rows of two — which kept every label whole at the cost of a second
+line of vertical space on the one screen that has none to spare, directly
+under a sticky bar.
+
+They are one row that scrolls horizontally now. That is the trade: the tabs
+you are not on may be off-screen, where wrapping showed all four at once. Two
+things pay it back. The strip runs to the screen edges rather than stopping at
+the 14px gutter, so an off-screen tab is cut by the edge — a row that ends
+neatly reads as a row that has ended. And the current tab is scrolled into
+view on load, because a tab bar whose highlighted tab you cannot see is worse
+than either layout.
+
+The offset is carried across the dashboard's background refresh. That refresh
+replaces `.wrap`, the tab strip is inside it, and a replaced element starts
+scrolled to the left — on the executions tab that would have dragged the row
+back under the reader's thumb every fifteen seconds.
+
 ### StudentQR — ten workflows off n8n, and three things the port had to fix
 
 Four n8n exports, rebuilt. The "StudentQR" canvas was never one workflow: it

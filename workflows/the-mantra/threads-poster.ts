@@ -1,4 +1,3 @@
-// reload smoke test — removed in the next commit
 import {
   defineCredential,
   defineOAuth,

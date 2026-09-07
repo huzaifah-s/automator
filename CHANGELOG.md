@@ -8,6 +8,63 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-08
 
+### Variables and MCP now look like the rest of the dashboard
+
+Both tabs were built form-first: a wall of explanation, then an always-open
+form, then the table you actually came to read, pushed below the fold. Their
+rows used a different set of controls from every other table here — `.tag`
+buttons where Credentials uses `.btn`, a raw `onsubmit="return confirm(...)"`
+where the shell already delegates `data-confirm`, an empty state that was not
+in a card. Two tabs written at different times had drifted into two designs.
+
+**Credentials is the shape, because it is the one that was designed.** Both
+pages now open with a stats strip, keep the explanation to a `.note` with real
+paragraphs instead of stacked `<br><br>`, and put the table directly under a
+toolbar that carries the same filter box Credentials has. Delete goes through
+the shell's `data-confirm`, so all three tabs ask in the same voice.
+
+**The form is a button until you want it.** A checkbox and a CSS sibling rule —
+the trick `.pauser` already uses on the workflow bar — rather than script, so
+there is nothing to rebind. It unfolds itself for the three cases where the
+form *is* the page: an edit, a refusal you have to correct, and a store with
+nothing in it yet.
+
+**Two columns stopped disappearing at the wrong width.** The `.vr` and `.mr`
+grids were never given a narrow-screen variant, so between 560px and 880px the
+header dropped cells the rows still rendered — a value column with no name over
+it. Both now collapse deliberately, and MCP's *Last used* survives, since that
+column is the whole argument the page makes about what "connected" means.
+
+**The explanation collapsed to one line.** Both tabs opened with four or five
+lines of prose that you read once and then scrolled past on every visit after.
+It is now a `<details>`: the summary carries the half you would be punished for
+not knowing — *these are stored in plaintext and never redacted*, *nothing here
+is "connected"* — and the reasoning is one click below it. Open by default only
+when the tab is empty, which is the one visit where the explanation is the
+content. Deleting the prose was the other option and was not taken: it is the
+paragraph that stops somebody putting an API key in Variables.
+
+**A token row on a phone is two lines instead of four.** It had the scope pill
+on one line, *last used* on the next and Delete alone on a fourth, furthest
+from the name it belongs to. Now the name has the first line and everything
+else shares the second — scope, when it was last used, and the button at the
+end of it. Delete is deliberately not up beside the name: it is the loudest
+control on the row and the one that cannot be undone, and the first thing your
+eye lands on should be which token this is.
+
+The fix that was not obvious: *last used* needs `flex-basis: 0`, not `auto`.
+Flex decides where a line breaks from each item's content width **before** it
+shrinks anything, so with `auto` a long client name still pushed Delete onto a
+line of its own. At `0` it claims no width for that decision and then grows
+into whatever the pill and the button leave, ellipsising instead of wrapping.
+The call count stays behind `hide-sm` — it fits on neither line at 375px, and
+the stats strip above already carries the total.
+
+**MCP's scope pill now marks the token that can do damage.** Full scope reads
+yellow and read-only reads muted; it was the other way around, which put the
+warning colour on the harmless one.
+
+
 ### The deploy-waiting alert now stops when you deploy
 
 `scripts/pull-workflows.sh` refuses to fast-forward a commit that touches

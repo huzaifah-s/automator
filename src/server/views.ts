@@ -162,11 +162,8 @@ border-bottom:1.6px solid var(--faint);transform:rotate(-45deg);margin-left:2px;
 .ex{grid-template-columns:minmax(0,1fr) 92px 84px 104px 72px 90px}
 .cr{grid-template-columns:minmax(0,1fr) 120px 96px 210px}
 .sc{grid-template-columns:minmax(0,1fr) 96px 150px}
-.vr{grid-template-columns:minmax(0,1fr) 190px minmax(0,1fr) 92px 104px}
-.mr{grid-template-columns:minmax(0,1fr) 74px 132px minmax(0,1fr) 70px 78px}
-.acts{display:flex;gap:6px;justify-content:flex-end}
-.acts form{display:contents}
-.acts .tag{cursor:pointer;border:1px solid var(--border);font-family:inherit}
+.vr{grid-template-columns:minmax(0,1fr) 190px minmax(0,1fr) 92px 152px}
+.mr{grid-template-columns:minmax(0,1fr) 96px 118px minmax(0,1fr) 62px 96px}
 .row.head{padding:7px 14px;border-top:none;font-size:10.5px;text-transform:uppercase;
 letter-spacing:.07em;color:var(--faint);font-weight:600;background:var(--sunk)}
 .folder .row.head{background:transparent;border-top:1px solid var(--border-soft)}
@@ -211,6 +208,7 @@ line-height:0}
    exactly the question a missing control leaves you with; a switch that is
    visibly locked off answers it, and the title says where the answer lives. */
 .toggle:disabled{cursor:not-allowed;opacity:.55}
+.ricon{color:var(--faint);flex:none}
 .dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--faint)}
 .dot.success{background:var(--green)}.dot.failed{background:var(--red)}
 .dot.running{background:var(--accent);animation:pulse 1.4s ease-in-out infinite}
@@ -271,6 +269,11 @@ font:12px/1.4 var(--sans)}
 .pauser>.askpause:focus-visible~.step1{border-color:var(--accent);color:var(--accent)}
 label.btn{user-select:none}
 .btn.quiet{border-color:transparent;color:var(--muted)}
+.adderbox{position:relative}
+.adderbox>.reveal{position:absolute;left:0;top:0;width:1px;height:1px;opacity:0}
+.adderbox>.reveal:not(:checked)~.adder{display:none}
+.adderbox>.reveal:focus-visible~.toolbar label.btn{filter:brightness(1.08)}
+.adder{margin-bottom:14px}
 .actions{display:flex;gap:6px;justify-content:flex-end}
 .actions form{display:contents}
 
@@ -290,6 +293,24 @@ input.mono{font-family:var(--mono);font-size:12.5px}
 .note{background:var(--sunk);border:1px solid var(--border);border-radius:9px;
 padding:11px 13px;font-size:12.5px;color:var(--muted);margin-bottom:14px}
 .note b{color:var(--fg)}
+.note p{margin:0 0 9px}
+.note p:last-child{margin-bottom:0}
+/* An explanation worth keeping and not worth re-reading. One line carries the
+   rule — the half you would actually be punished for not knowing — and the
+   reasoning is a click away rather than four lines you scroll past on every
+   visit. Open by default only when the tab is empty, which is the one visit
+   where the explanation *is* the content. */
+details.note{padding:0}
+details.note>summary{display:flex;gap:10px;align-items:center;cursor:pointer;
+list-style:none;padding:11px 13px}
+details.note>summary::-webkit-details-marker{display:none}
+details.note>summary::after{content:"";width:5px;height:5px;flex:none;margin-left:auto;
+border-right:1.6px solid var(--faint);border-bottom:1.6px solid var(--faint);
+transform:rotate(-45deg);transition:transform .15s}
+details.note[open]>summary::after{transform:rotate(45deg)}
+details.note>summary:hover{color:var(--fg)}
+details.note>summary>span{min-width:0}
+details.note .body{padding:0 13px 12px}
 .flash{border-radius:9px;padding:10px 13px;font-size:12.5px;margin-bottom:14px;
 border:1px solid color-mix(in srgb,var(--red) 35%,var(--border));
 background:color-mix(in srgb,var(--red) 9%,var(--panel));color:var(--red)}
@@ -354,6 +375,8 @@ white-space:pre-wrap;word-break:break-word}
 .ex .name .path+b{flex-basis:100%}
 .cr{grid-template-columns:minmax(0,1fr) 210px}
 .sc{grid-template-columns:minmax(0,1fr) 150px}
+.vr{grid-template-columns:minmax(0,1fr) 200px 152px}
+.mr{grid-template-columns:minmax(0,1fr) 96px minmax(0,1fr) 96px}
 .hide-sm{display:none}
 .stats{grid-template-columns:repeat(2,1fr)}
 .brand span:last-child{display:none}}
@@ -411,7 +434,21 @@ h2{margin:20px 0 8px}
    what a number means beats when it was typed. */
 .vr .mono.trunc{flex:1 1 100%}
 .vr .vnote{flex:1 1 100%}
-.vr .acts{flex:1 1 100%}
+.vr .actions{flex:1 1 100%;justify-content:flex-start}
+/* A token row on a phone: the name on its line, then one meta line — scope,
+   when it was last used, and the button pushed to the end of it.
+   Two things had to be said to get there. Left alone, "last used" took a full
+   line of its own and stranded Delete on a fourth. The basis has to be 0, not
+   auto: flex decides where the line breaks from each item's content width
+   before it shrinks anything, so with "auto" a long client name still pushed
+   the button onto a line of its own. At 0 it claims no width for that decision
+   and then grows into whatever the pill and the button leave, ellipsising. The call count stays behind hide-sm — it fits on
+   neither line at this width, and the stats strip above already carries the
+   total.
+   Delete is deliberately not up beside the name. It is the loudest control on
+   the row and the one that cannot be undone, and the first thing your eye
+   lands on should be which token this is. */
+.mr .lused{flex:1 1 0;min-width:0}
 /* A stacked row is not a table any more, so a header of column names is one
    too, and it keeps only its first cell — which is still what says whether
    the rows under it are credentials or secrets. */
@@ -1900,6 +1937,13 @@ export interface ProviderView {
   envNamesForPrimary: string[];
 }
 
+/* Sliders, not a key: the whole claim this tab makes is that what is in it is
+   configuration you are allowed to read, and the icon should not argue with
+   the page. */
+const ICON_VAR = raw(
+  `<svg class="ricon" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M1.9 4.6h2.6M7.7 4.6h6.4M1.9 11.4h6.4M11.3 11.4h2.8"/><circle cx="6.1" cy="4.6" r="1.6"/><circle cx="9.7" cy="11.4" r="1.6"/></svg>`,
+);
+
 const ICON_KEY = raw(
   `<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M10.5 1a4.5 4.5 0 1 0-4.28 5.86L2 11.09V15h3.9l.6-.6v-1.5h1.5l.9-.9v-1.5h1.5l1.1-1.1A4.5 4.5 0 0 0 10.5 1Zm1.25 3.25a1.25 1.25 0 1 1 0-2.5 1.25 1.25 0 0 1 0 2.5Z"/></svg>`,
 );
@@ -2405,6 +2449,12 @@ export function mcpTokensPage(args: {
   const base = args.publicUrl ?? "https://your-runner";
   const canMint = writable && authenticated;
 
+  const used = tokens.filter((t) => t.lastUsedAt !== null).length;
+  const calls = tokens.reduce((sum, t) => sum + t.calls, 0);
+  // Same rule as the Variables tab: folded away, unless the form is the thing
+  // you came for — an error to correct, or no token to connect with at all.
+  const formOpen = Boolean(args.error) || tokens.length === 0;
+
   return layout(
     {
       title: "MCP",
@@ -2416,7 +2466,7 @@ export function mcpTokensPage(args: {
         workflows: args.workflowCount,
         failed: args.failedInWindow,
         unconnected: args.unconnected || null,
-        agents: tokens.filter((t) => t.lastUsedAt !== null).length || null,
+        agents: used || null,
       },
     },
     html`
@@ -2436,84 +2486,129 @@ export function mcpTokensPage(args: {
           </div>`
         : ""}
 
-      <div class="note">
-        Tokens an AI agent authenticates with at
-        <code class="mono">POST ${base}/mcp</code>. One per place you connect from, so
-        losing a laptop is one deletion rather than a rotation.
-        <br><br>
-        <b>There is nothing here that is "connected".</b> MCP over HTTP is a request and
-        a reply — nothing stays open — so the honest version of that question is the
-        <b>Last used</b> column: which client called, and how long ago. A token that has
-        never been used has never worked; check the header your client is sending.
-        <br><br>
-        Only the digest of a token is stored, so a copy of the database is not a set of
-        working keys, and a lost token is replaced rather than recovered.
-        ${envToken
-          ? html`<br><br><code class="mono">MCP_TOKEN</code> is also set in the
-              environment. It always has full scope and is not listed here — it is the way
-              back in if every token below is deleted.`
-          : ""}
+      <div class="stats">
+        <div class="stat"><b>${tokens.length}</b><span>tokens</span></div>
+        <div class="stat"><b class="${used ? "success" : ""}">${used}</b><span>have been used</span></div>
+        <div class="stat">
+          <b class="${tokens.length - used ? "skipped" : ""}">${tokens.length - used}</b>
+          <span>never used</span>
+        </div>
+        <div class="stat"><b>${calls}</b><span>calls</span></div>
       </div>
+
+      <details class="note" ${tokens.length === 0 ? raw("open") : ""}>
+        <summary>
+          <span>
+            <b>Nothing here is "connected".</b> MCP over HTTP is a request and a reply, so
+            <b>Last used</b> is the honest version of that question.
+          </span>
+        </summary>
+        <div class="body">
+          <p>
+            Tokens an AI agent authenticates with at
+            <code class="mono">POST ${base}/mcp</code>. One per place you connect from, so
+            losing a laptop is one deletion rather than a rotation. A token that has never
+            been used has never worked; check the header your client is sending.
+          </p>
+          <p>
+            Only the digest of a token is stored, so a copy of the database is not a set of
+            working keys, and a lost token is replaced rather than recovered.
+            ${envToken
+              ? html` <code class="mono">MCP_TOKEN</code> is also set in the environment. It
+                  always has full scope and is not listed here — it is the way back in if
+                  every token below is deleted.`
+              : ""}
+          </p>
+        </div>
+      </details>
 
       ${canMint
         ? html`
-            <form class="card" method="post" action="/mcp-tokens">
-              <div class="form">
-                <div class="field">
-                  <label for="tname">Name <span class="req">— where this one lives</span></label>
-                  <input type="text" id="tname" name="name" required maxlength="40"
-                         placeholder="laptop" value="">
-                </div>
-                <div class="field">
-                  <label for="tscope">Access</label>
-                  <select id="tscope" name="scope">
-                    <option value="read">Read only — look at everything, change nothing</option>
-                    <option value="full">Full — can also trigger, replay, resume and pause</option>
-                  </select>
-                  <div class="help">
-                    A read token is not even shown the write tools. Full scope can replay a
-                    run, which re-sends whatever that run sent.
+            <div class="adderbox">
+              <input class="reveal" type="checkbox" id="addtok" ${formOpen ? raw("checked") : ""}>
+
+              <div class="toolbar">
+                <input type="search" id="filter" placeholder="Filter tokens…"
+                       autocomplete="off" spellcheck="false">
+                <label class="btn primary" for="addtok">Create token</label>
+              </div>
+
+              <form class="card adder" method="post" action="/mcp-tokens">
+                <div class="form">
+                  <div class="field">
+                    <label for="tname">Name <span class="req">— where this one lives</span></label>
+                    <input type="text" id="tname" name="name" required maxlength="40"
+                           placeholder="laptop" value="">
+                  </div>
+                  <div class="field">
+                    <label for="tscope">Access</label>
+                    <select id="tscope" name="scope">
+                      <option value="read">Read only — look at everything, change nothing</option>
+                      <option value="full">Full — can also trigger, replay, resume and pause</option>
+                    </select>
+                    <div class="help">
+                      A read token is not even shown the write tools. Full scope can replay a
+                      run, which re-sends whatever that run sent.
+                    </div>
+                  </div>
+                  <div class="bar">
+                    <button class="btn primary" type="submit">Create</button>
+                    <label class="btn" for="addtok">Cancel</label>
                   </div>
                 </div>
-                <div class="bar">
-                  <button class="btn primary" type="submit">Create</button>
-                </div>
-              </div>
-            </form>
+              </form>
+            </div>
           `
-        : html`<div class="note">
-            ${!authenticated
-              ? html`Set <code class="mono">DASHBOARD_USER</code> and
-                  <code class="mono">DASHBOARD_PASS</code> before minting a token. This
-                  dashboard is currently unauthenticated, and a form that hands out
-                  credentials for an endpoint that can run production workflows is not
-                  something to leave open to whoever finds the port.`
-              : html`The dashboard is read-only. Set
-                  <code class="mono">DASHBOARD_WRITE=1</code> to create tokens here.`}
-          </div>`}
+        : html`
+            <div class="note">
+              ${!authenticated
+                ? html`Set <code class="mono">DASHBOARD_USER</code> and
+                    <code class="mono">DASHBOARD_PASS</code> before minting a token. This
+                    dashboard is currently unauthenticated, and a form that hands out
+                    credentials for an endpoint that can run production workflows is not
+                    something to leave open to whoever finds the port.`
+                : html`The dashboard is read-only. Set
+                    <code class="mono">DASHBOARD_WRITE=1</code> to create tokens here.`}
+            </div>
+            ${tokens.length > 0
+              ? html`<div class="toolbar">
+                  <input type="search" id="filter" placeholder="Filter tokens…"
+                         autocomplete="off" spellcheck="false">
+                </div>`
+              : ""}
+          `}
 
       ${tokens.length === 0
-        ? html`<div class="empty">
+        ? html`<div class="card"><div class="empty">
             <b>No tokens yet</b>
             Nothing can reach the MCP endpoint${envToken ? " except MCP_TOKEN" : ""}.
-          </div>`
+          </div></div>`
         : html`
             <div class="card">
               <div class="row mr head">
                 <div>Name</div>
-                <div>Access</div>
+                <div class="scope">Access</div>
                 <div class="hide-sm">Starts with</div>
-                <div class="hide-sm">Last used</div>
-                <div class="hide-sm">Calls</div>
+                <div class="lused">Last used</div>
+                <div class="hide-sm calls">Calls</div>
                 <div></div>
               </div>
               ${tokens.map(
                 (t) => html`
-                  <div class="row mr">
-                    <div class="name"><b>${t.name}</b></div>
-                    <div class="muted">${t.scope === "full" ? "full" : "read only"}</div>
+                  <div class="row mr"
+                       data-search="${`${t.name} ${t.scope} ${t.prefix} ${t.lastClient ?? ""}`.toLowerCase()}">
+                    <div class="name">
+                      <span class="dot ${t.lastUsedAt === null ? "" : "success"}"
+                            title="${t.lastUsedAt === null ? "never used" : "has been used"}"></span>
+                      <b>${t.name}</b>
+                    </div>
+                    <div class="scope">
+                      <span class="pill ${t.scope === "full" ? "skipped" : "muted"}">
+                        ${t.scope === "full" ? "full" : "read only"}
+                      </span>
+                    </div>
                     <div class="mono muted trunc hide-sm">${t.prefix}…</div>
-                    <div class="muted trunc hide-sm"
+                    <div class="muted trunc lused"
                          title="${t.lastUsedAt === null ? "never used" : fmt(t.lastUsedAt)}">
                       ${t.lastUsedAt === null
                         ? html`<span class="muted">never used</span>`
@@ -2521,19 +2616,24 @@ export function mcpTokensPage(args: {
                             ? html` · ${t.lastClient}`
                             : ""}`}
                     </div>
-                    <div class="muted hide-sm">${t.calls}</div>
-                    ${writable
-                      ? html`<div class="acts">
-                          <form method="post" action="/mcp-tokens/${t.id}/delete"
-                                onsubmit="return confirm('Delete ${t.name}? Anything using it stops working immediately.')">
-                            <button class="tag" type="submit">Delete</button>
-                          </form>
-                        </div>`
-                      : html`<div></div>`}
+                    <div class="muted hide-sm calls">${t.calls}</div>
+                    <div class="actions">
+                      ${writable
+                        ? html`<form method="post" action="/mcp-tokens/${t.id}/delete"
+                                     data-confirm="Delete ${t.name}? Anything using it stops working immediately.">
+                            <button class="btn danger" type="submit">Delete</button>
+                          </form>`
+                        : html`<span class="muted mono" style="font-size:11.5px">read-only</span>`}
+                    </div>
                   </div>
                 `,
               )}
             </div>
+
+            <div class="card" id="no-matches" hidden><div class="empty">
+              <b>Nothing matches that filter</b>
+              Clear the box above to see everything again.
+            </div></div>
           `}
     `,
   );
@@ -2568,6 +2668,14 @@ export function variablesPage(args: {
 }) {
   const { variables, writable, editing } = args;
 
+  const undocumented = variables.filter((v) => !v.note).length;
+  const newest = variables.reduce((max, v) => Math.max(max, v.updatedAt), 0);
+
+  // The form starts folded away so the table is the first thing on the page,
+  // and unfolds itself for the three cases where it is what you came for:
+  // an edit, a refusal to re-type after, and a store with nothing in it yet.
+  const formOpen = Boolean(editing) || Boolean(args.error) || variables.length === 0;
+
   return layout(
     {
       title: "Variables",
@@ -2585,90 +2693,139 @@ export function variablesPage(args: {
     html`
       ${args.error ? html`<div class="flash">${args.error}</div>` : ""}
 
-      <div class="note">
-        Configuration that is <b>not</b> a credential — board ids, chat ids, sheet ids,
-        phone numbers, thresholds. Stored in plaintext, mirrored into the environment, and
-        read with a plain <code class="mono">process.env.NAME</code>. A value set here
-        overrides the same name in <code class="mono">.env</code>, so changing one is a
-        save rather than a redeploy.
-        <br><br>
-        Values here are <b>never scrubbed</b> from logs or run pages — that is what makes
-        them useful and what makes them the wrong home for anything that authenticates.
-        Names like <code class="mono">*_TOKEN</code> and values that look like keys are
-        refused; those belong in <a href="/credentials">Credentials</a>.
+      ${!writable
+        ? html`<div class="note">
+            <b>Read-only.</b> Set <code class="mono">DASHBOARD_WRITE=1</code> to change
+            variables here, or use <code class="mono">bun run variable</code>.
+          </div>`
+        : ""}
+
+      <div class="stats">
+        <div class="stat"><b>${variables.length}</b><span>variables</span></div>
+        <div class="stat">
+          <b class="${undocumented ? "skipped" : ""}">${undocumented}</b><span>without a note</span>
+        </div>
+        <div class="stat" title="${newest ? fmt(newest) : "nothing stored yet"}">
+          <b>${newest ? relative(newest) : "—"}</b><span>last change</span>
+        </div>
       </div>
 
-      ${writable
-        ? html`
-            <form class="card" method="post" action="/variables">
-              <div class="form">
-                <div class="field">
-                  <label for="vkey">Name <span class="req">— uppercase letters, digits and underscores</span></label>
-                  <input class="mono" type="text" id="vkey" name="key" required
-                         value="${editing?.key ?? ""}" placeholder="STUDENTQR_BOARD_BADGES"
-                         pattern="[A-Z][A-Z0-9_]*" ${editing ? raw("readonly") : ""}>
+      <details class="note" ${variables.length === 0 ? raw("open") : ""}>
+        <summary>
+          <span>
+            <b>Not a credential.</b> Everything here is stored in plaintext and is
+            <b>never scrubbed</b> from logs or run pages.
+          </span>
+        </summary>
+        <div class="body">
+          <p>
+            Board ids, chat ids, sheet ids, phone numbers, thresholds — mirrored into the
+            environment and read with a plain <code class="mono">process.env.NAME</code>. A
+            value set here overrides the same name in <code class="mono">.env</code>, so
+            changing one is a save rather than a redeploy.
+          </p>
+          <p>
+            Being readable is the point: a board id you cannot read back is not
+            configuration. It is also why names like <code class="mono">*_TOKEN</code> and
+            values that look like keys are refused — those belong in
+            <a href="/credentials">Credentials</a>.
+          </p>
+        </div>
+      </details>
+
+      <div class="adderbox">
+        ${writable
+          ? html`<input class="reveal" type="checkbox" id="addvar"
+                        ${formOpen ? raw("checked") : ""}>`
+          : ""}
+
+        <div class="toolbar">
+          <input type="search" id="filter" placeholder="Filter variables…"
+                 autocomplete="off" spellcheck="false">
+          ${writable
+            ? html`<label class="btn primary" for="addvar">Add variable</label>`
+            : ""}
+        </div>
+
+        ${writable
+          ? html`
+              <form class="card adder" method="post" action="/variables">
+                <div class="form">
+                  <div class="field">
+                    <label for="vkey">Name <span class="req">— uppercase letters, digits and underscores</span></label>
+                    <input class="mono" type="text" id="vkey" name="key" required
+                           value="${editing?.key ?? ""}" placeholder="STUDENTQR_BOARD_BADGES"
+                           pattern="[A-Z][A-Z0-9_]*" ${editing ? raw("readonly") : ""}>
+                  </div>
+                  <div class="field">
+                    <label for="vvalue">Value</label>
+                    <input class="mono" type="text" id="vvalue" name="value" required
+                           spellcheck="false" value="${editing?.value ?? ""}"
+                           placeholder="1844357900">
+                  </div>
+                  <div class="field">
+                    <label for="vnote">Note <span class="req">— optional</span></label>
+                    <input type="text" id="vnote" name="note" value="${editing?.note ?? ""}"
+                           placeholder="7. JACKIE - PRINTING (BADGES)">
+                    <div class="help">What this is for, so the next person does not have to guess.</div>
+                  </div>
+                  <div class="bar">
+                    <button class="btn primary" type="submit">${editing ? "Save" : "Add"}</button>
+                    ${editing
+                      ? html`<a class="btn" href="/variables">Cancel</a>`
+                      : html`<label class="btn" for="addvar">Cancel</label>`}
+                  </div>
                 </div>
-                <div class="field">
-                  <label for="vvalue">Value</label>
-                  <input class="mono" type="text" id="vvalue" name="value" required
-                         spellcheck="false" value="${editing?.value ?? ""}"
-                         placeholder="1844357900">
-                </div>
-                <div class="field">
-                  <label for="vnote">Note <span class="req">— optional</span></label>
-                  <input type="text" id="vnote" name="note" value="${editing?.note ?? ""}"
-                         placeholder="7. JACKIE - PRINTING (BADGES)">
-                  <div class="help">What this is for, so the next person does not have to guess.</div>
-                </div>
-                <div class="bar">
-                  <button class="btn primary" type="submit">${editing ? "Save" : "Add"}</button>
-                  ${editing ? html`<a class="btn" href="/variables">Cancel</a>` : ""}
-                </div>
-              </div>
-            </form>
-          `
-        : html`<div class="note">
-            The dashboard is read-only. Set <code class="mono">DASHBOARD_WRITE=1</code> to
-            change variables here, or use <code class="mono">bun run variable</code>.
-          </div>`}
+              </form>
+            `
+          : ""}
+      </div>
 
       ${variables.length === 0
-        ? html`<div class="empty">
+        ? html`<div class="card"><div class="empty">
             <b>No variables yet</b>
             Everything is coming from the environment.
-          </div>`
+          </div></div>`
         : html`
             <div class="card">
               <div class="row vr head">
                 <div>Name</div>
-                <div class="hide-sm">Value</div>
-                <div class="hide-sm vnote">Note</div>
+                <div>Value</div>
+                <div class="hide-sm keep-sm vnote">Note</div>
                 <div class="hide-sm">Updated</div>
                 <div></div>
               </div>
               ${variables.map(
                 (v) => html`
-                  <div class="row vr">
-                    <div class="name"><b class="mono">${v.key}</b></div>
+                  <div class="row vr"
+                       data-search="${`${v.key} ${v.value} ${v.note ?? ""}`.toLowerCase()}">
+                    <div class="name">${ICON_VAR}<b class="mono trunc">${v.key}</b></div>
                     <div class="mono trunc" title="${v.value}">${v.value}</div>
-                    <div class="muted trunc vnote" title="${v.note ?? ""}">${v.note ?? ""}</div>
-                    <div class="muted hide-sm" title="${fmt(v.updatedAt)}">
+                    <div class="muted trunc hide-sm keep-sm vnote" title="${v.note ?? ""}">${v.note ?? ""}</div>
+                    <div class="muted trunc hide-sm" title="${fmt(v.updatedAt)}">
                       ${relative(v.updatedAt)}
                     </div>
-                    ${writable
-                      ? html`<div class="acts">
-                          <a class="tag" href="/variables?edit=${encodeURIComponent(v.key)}">Edit</a>
-                          <form method="post" action="/variables/${encodeURIComponent(v.key)}/delete"
-                                onsubmit="return confirm('Delete ${v.key}? The environment value, if there is one, comes back.')">
-                            <button class="tag" type="submit">Delete</button>
-                          </form>
-                        </div>`
-                      : ""}
+                    <div class="actions">
+                      ${writable
+                        ? html`
+                            <a class="btn" href="/variables?edit=${encodeURIComponent(v.key)}">Edit</a>
+                            <form method="post" action="/variables/${encodeURIComponent(v.key)}/delete"
+                                  data-confirm="Delete ${v.key}? The environment value, if there is one, comes back.">
+                              <button class="btn danger" type="submit">Delete</button>
+                            </form>
+                          `
+                        : html`<span class="muted mono" style="font-size:11.5px">read-only</span>`}
+                    </div>
                   </div>
                 `,
               )}
             </div>
           `}
+
+      <div class="card" id="no-matches" hidden><div class="empty">
+        <b>Nothing matches that filter</b>
+        Clear the box above to see everything again.
+      </div></div>
     `,
   );
 }

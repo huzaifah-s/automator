@@ -1,5 +1,10 @@
 import { loadWorkflows, Registry } from "./core/loader.ts";
-import { startScheduler, stopScheduler, nextRunFor } from "./core/scheduler.ts";
+import {
+  startScheduler,
+  stopScheduler,
+  nextRunFor,
+  reportMissedTicks,
+} from "./core/scheduler.ts";
 import {
   runWorkflow,
   beginShutdown,
@@ -165,6 +170,11 @@ startSecretRefresh();
 startVariableRefresh();
 
 startScheduler(registry);
+
+// After the jobs exist, because it asks each one what it would have done. The
+// skipped row it writes also becomes the workflow's newest `cron` run, which is
+// what stops a crash-looping process reporting the same gap on every boot.
+reportMissedTicks(registry);
 
 const port = Number(process.env.PORT ?? 3000);
 server = Bun.serve({

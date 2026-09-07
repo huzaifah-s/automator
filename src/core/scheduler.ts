@@ -1,5 +1,5 @@
 import { Cron } from "croner";
-import { log } from "./logger.ts";
+import { createLogger, log } from "./logger.ts";
 import { runWorkflow } from "./runner.ts";
 import { pollOnce } from "./poll.ts";
 import { store } from "./db.ts";
@@ -123,6 +123,88 @@ function resolveRetentionDays(): number {
     return DEFAULT_RETENTION_DAYS;
   }
   return days;
+}
+
+/**
+ * How far back a missed tick is still worth mentioning. Past this it is not
+ * news that a workflow which has been off for a week did not run — the same
+ * judgement the inbox makes about a delivery older than a day, and the same
+ * number.
+ */
+const MISSED_LOOKBACK_MS = 86_400_000;
+
+/**
+ * Ceiling on how many missed ticks are enumerated for one workflow. A
+ * per-minute cron on a host that was down overnight has hundreds, and the
+ * exact figure is worth nothing next to the fact that it happened.
+ */
+const MAX_MISSED_REPORTED = 50;
+
+/**
+ * Records the scheduled runs that fell in the window where nothing was
+ * running — a deploy, a crash, a host reboot.
+ *
+ * Croner schedules forward from now and has no memory across processes, so a
+ * cron due at 09:00 on a deploy that lands at 08:59:30 simply never fired: no
+ * run row, no log line, and a workflow page whose last run is yesterday's,
+ * which looks identical to a scheduler that has quietly died. This closes that
+ * one hole — the *reporting* one. It does not run anything.
+ *
+ * **It deliberately does not catch up.** A daily 09:00 report firing at 15:40
+ * because that is when the deploy finished is a surprise delivered to whoever
+ * receives it, and a crash-looping process would deliver it on every boot.
+ * "Run now" is one click away on a workflow page, and the person clicking it
+ * knows what time it is. If a workflow ever genuinely wants the other
+ * behaviour, that is an opt-in on its own trigger and not a default.
+ *
+ * Poll triggers are left out on purpose. A missed poll tick costs nothing: the
+ * seen-set is only advanced by a successful run, so the next tick fetches the
+ * same items and delivers whatever it had not delivered yet. Cron is the only
+ * trigger where a skipped tick is work that never happens.
+ *
+ * No alert either. Every deploy that lands near a scheduled time produces one
+ * of these, which is exactly the traffic the alert cooldown exists to stop —
+ * and unlike a failure, there is nothing here to act on.
+ */
+export function reportMissedTicks(registry: Registry): void {
+  const now = Date.now();
+
+  for (const wf of registry.enabled()) {
+    if (wf.trigger.kind !== "cron") continue;
+    const job = jobs.get(wf.name);
+    // No job means the expression did not parse; scheduleWorkflow already said
+    // so, and a workflow with no schedule cannot have missed one.
+    if (!job) continue;
+
+    const lastRun = store.lastRunAt(wf.name, "cron");
+    // Never run on this trigger, or its history has aged out. Either way there
+    // is no point to measure from, and inventing one would report every tick
+    // since the epoch on a workflow deployed this morning.
+    if (lastRun === null) continue;
+
+    // Whichever is later. The floor is what stops a workflow that was paused
+    // for a fortnight from coming back with a fortnight of missed ticks.
+    const since = new Date(Math.max(lastRun, now - MISSED_LOOKBACK_MS));
+    const missed = job
+      .nextRuns(MAX_MISSED_REPORTED, since)
+      .filter((d) => d.getTime() <= now);
+    if (missed.length === 0) continue;
+
+    const capped = missed.length === MAX_MISSED_REPORTED;
+    const last = missed[missed.length - 1]!;
+    const message =
+      `Missed ${capped ? `at least ${MAX_MISSED_REPORTED}` : missed.length} scheduled ` +
+      `run(s) while the process was not running — the latest was due ` +
+      `${last.toISOString()}`;
+
+    // A run row rather than only a log line, so it lands where somebody looks
+    // for it: the workflow's own history, next to the runs that did happen.
+    // `skipped`, because that is what it is — not a failure of anything.
+    const runId = crypto.randomUUID();
+    store.startRun(runId, wf.name, "cron");
+    store.finishRun(runId, "skipped", 0, message, null);
+    createLogger(wf.name, runId).warn(message);
+  }
 }
 
 /** Null for a workflow with no timer, and for one that is paused. */

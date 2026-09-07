@@ -8,6 +8,52 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-07
 
+### A cron tick that lands in a deploy leaves a mark now
+
+A deploy takes a few seconds and a cron expression does not care. Croner
+schedules forward from process start and has no memory across restarts, so a
+job due at 09:00 on a deploy that landed at 08:59:30 simply never fired — no
+run row, no log line, and a workflow page whose newest run is yesterday's.
+That page looks identical to one whose scheduler has quietly died, which is the
+expensive part: the failure you cannot see is the one you find out about from
+somebody else.
+
+`reportMissedTicks()` runs at boot, asks each cron job what it would have done
+since that workflow's last cron run, and writes one `skipped` run row saying
+how many were missed and when the latest was due.
+
+**It reports and does not catch up, and that is the whole decision.** Running
+them was the obvious alternative and it is wrong twice over: a 09:00 daily
+report delivered at 15:40 because that is when the deploy finished is a
+surprise for its recipients, and a crash-looping process would re-deliver it on
+every boot. "Run now" is already one click away, and the person clicking it
+knows what time it is. If some workflow ever really wants catch-up, that is an
+opt-in on its own trigger, added when something concrete asks for it.
+
+**The row it writes is also what stops it repeating.** Being a `cron` run, it
+becomes the workflow's newest one, so the next boot measures from there and the
+same gap is reported once rather than on every restart of a crash loop.
+
+**Bounded to 24 hours and 50 ticks.** A workflow that was off for a fortnight
+coming back with a fortnight of missed ticks is noise, not news — the same
+judgement, and the same number, the inbox already makes about a delivery older
+than a day. Past 50 it says "at least 50", because the exact figure for a
+per-minute cron is worth nothing next to the fact that it happened.
+
+**A workflow with no previous cron run reports nothing.** `lastRunAt` returns
+null both for "never ran" and for "ran, but that run has been pruned", and the
+caller cannot tell them apart — so it treats null as no point to measure from
+rather than inventing one, and a fresh deployment stays quiet.
+
+**Poll triggers are left out.** A missed poll tick costs nothing: the seen-set
+only advances after a successful run, so the next tick refetches and delivers
+whatever it had not delivered. Cron is the only trigger where a skipped tick is
+work that never happens.
+
+**No alert.** Every deploy that lands near a scheduled time produces one of
+these, which is exactly the traffic the alert cooldown exists to suppress —
+and unlike a failure there is nothing in it to act on.
+
 ### The shutdown grace period was half a promise
 
 `SHUTDOWN_TIMEOUT_MS` is 20s and the README said so, but nothing told Docker

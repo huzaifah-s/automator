@@ -175,6 +175,16 @@ button was clicked), not the mechanism; leaving the job running and dropping
 the run at the last moment would print a next run every fifteen seconds that
 never happens.
 
+**Missed cron ticks are reported at boot, never re-run.** `reportMissedTicks`
+in `src/core/scheduler.ts` asks each job what it would have fired since that
+workflow's last `cron` run and writes one `skipped` row. Do not "finish the
+job" by running them: a 09:00 report delivered at 15:40 because that is when
+the deploy landed is a surprise for its recipients, and a crash-looping process
+would deliver it every boot. The row it writes is load-bearing — being a `cron`
+run it becomes the newest one, which is what makes the next boot measure from
+there instead of reporting the same gap forever. Called after `startScheduler`,
+because it reads the jobs that call creates.
+
 **A webhook `filter` is a shortcut, never the enforcement.** Returning a reason
 instead of `true` answers 200 and starts no run — but a manual run, a replay
 and inbox recovery all bypass it, so `run()` must still handle everything the

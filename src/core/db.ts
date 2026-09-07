@@ -440,6 +440,9 @@ const stmts = {
   runsForWorkflow: db.prepare(
     `SELECT * FROM runs WHERE workflow = ? ORDER BY started_at DESC LIMIT ?`,
   ),
+  lastRunAt: db.prepare(
+    `SELECT MAX(started_at) AS at FROM runs WHERE workflow = ? AND trigger = ?`,
+  ),
   statsForWorkflow: db.prepare(
     `SELECT
        COUNT(*)                                              AS total,
@@ -772,6 +775,15 @@ export const store = {
   recentRuns: (limit = 50) => stmts.recentRuns.all(limit) as RunRecord[],
   runsForWorkflow: (name: string, limit = 20) =>
     stmts.runsForWorkflow.all(name, limit) as RunRecord[],
+
+  /**
+   * When this workflow last started a run on this trigger, or null if it never
+   * did. Null also covers "it did, but that run has been pruned" — the caller
+   * cannot tell the two apart, which is why the one caller treats null as
+   * "nothing to compare against" rather than as a fact about the workflow.
+   */
+  lastRunAt: (workflow: string, trigger: TriggerKind): number | null =>
+    (stmts.lastRunAt.get(workflow, trigger) as { at: number | null }).at,
 
   /** The last `perWorkflow` runs of every workflow, newest first within each. */
   recentRunsPerWorkflow: (perWorkflow = 12) =>

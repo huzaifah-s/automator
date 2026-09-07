@@ -1343,6 +1343,15 @@ docker compose logs -f automator
 - Runs interrupted by a restart are marked failed at boot, not left `running`,
   and an async webhook that never finished is run again — see
   [The webhook inbox](#the-webhook-inbox).
+- A cron tick that fell inside the restart window is recorded at boot as a
+  `skipped` run saying how many were missed and when the latest was due. It is
+  **not** run: a 09:00 daily report firing at 15:40 because that is when the
+  deploy finished is a surprise for whoever receives it, and a crash-looping
+  process would deliver it on every boot. Use **Run now** if you want it. Only
+  the last 24 hours are considered, and only for workflows with a previous cron
+  run to measure from — a fresh deployment reports nothing. Poll triggers are
+  exempt: an unseen item stays unseen until a run succeeds, so a missed poll
+  tick costs nothing.
 - Any run with a recorded input can be replayed from its run page — see
   [Replay](#replay--the-other-button).
 - Run history is pruned nightly (`RUN_RETENTION_DAYS`, default 14). A run
@@ -1647,6 +1656,11 @@ Worth knowing before you commit:
   steps that already succeeded; it does not rewind side effects that happened
   *inside* a step before it threw. Keep each step to one logical action and
   that distinction stays invisible.
+- **Nothing is caught up after downtime.** A cron tick due while the process
+  was restarting is reported at the next boot and never re-run, and a webhook
+  that arrived while it was down was never received at all — that window
+  belongs to the sender's own retries. What *is* covered is the window where we
+  said yes: see [The webhook inbox](#the-webhook-inbox).
 - **No Wait node.** Nothing suspends a run and picks it up tomorrow. Approvals
   and other human-paced waits are two workflows joined by shared state — see
   [Approval gates](#approval-gates) for the pattern and what it costs.

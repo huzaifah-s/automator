@@ -4,7 +4,6 @@ import { basicAuth } from "hono/basic-auth";
 import { HTTPException } from "hono/http-exception";
 import { logger as httpLogger } from "hono/logger";
 import { store } from "../core/db.ts";
-import { isTruncated } from "../core/capture.ts";
 import { log } from "../core/logger.ts";
 import { acceptDelivery, deliver } from "../core/inbox.ts";
 import { alertRejection } from "../core/alerts.ts";
@@ -39,11 +38,20 @@ import {
   variableValue,
 } from "../core/variables.ts";
 import type { Registry } from "../core/loader.ts";
+import { planReplay, workflowsBlockedBy } from "./inspect.ts";
+import { createMcpRouter } from "./mcp.ts";
+import {
+  createMcpToken,
+  deleteMcpToken,
+  isScope,
+  listMcpTokens,
+} from "../core/mcp-tokens.ts";
 import type { LoadedWorkflow, RunRecord, WebhookDecision } from "../core/types.ts";
 import {
   credentialFormPage,
   credentialsPage,
   variablesPage,
+  mcpTokensPage,
   DEFAULT_RANGE,
   DEFAULT_RANGE_MS,
   executionsPage,
@@ -55,6 +63,7 @@ import {
   workflowPage,
   workflowsPage,
   type CredentialView,
+  type McpTokenView,
   type ProviderView,
   type RunRange,
   type SecretView,
@@ -136,6 +145,12 @@ export function createApp(registry: Registry): Hono {
       // Accepted webhooks that have not finished. Steady state is 0; a number
       // that stays up is deliveries being recorded and never settled.
       inbox: store.pendingDeliveryCount(),
+      // Not "connected" — there is no connection to have. Tokens that exist,
+      // and when one of them was last used by anything.
+      mcp: {
+        tokens: store.mcpTokenCount() + (process.env.MCP_TOKEN ? 1 : 0),
+        lastUsed: store.mcpLastSeen() === null ? null : new Date(store.mcpLastSeen()!).toISOString(),
+      },
     }),
   );
 
@@ -380,6 +395,13 @@ export function createApp(registry: Registry): Hono {
     );
   });
 
+  /* ----------------------------------------------------------------- mcp */
+
+  // Registered before the auth middleware for the same reason /hooks is: an
+  // agent authenticates with MCP_TOKEN, not with the dashboard's basic-auth
+  // credentials. Unset, the router answers 503 rather than opening.
+  app.route("/mcp", createMcpRouter(registry));
+
   /* --------------------------------------------------------------- auth */
 
   const user = process.env.DASHBOARD_USER;
@@ -418,6 +440,8 @@ export function createApp(registry: Registry): Hono {
       "/credentials/*",
       "/secrets",
       "/secrets/*",
+      "/mcp-tokens",
+      "/mcp-tokens/*",
       "/api/*",
     ])
       app.use(p, auth);
@@ -427,22 +451,8 @@ export function createApp(registry: Registry): Hono {
 
   /* ---------------------------------------------------------- dashboard */
 
-  /**
-   * Which workflows cannot run because a credential they declared has not been
-   * connected. Computed per request rather than at boot: connecting one on the
-   * Credentials tab has to clear the badge without a restart.
-   */
-  const blockedWorkflows = (): Map<string, string[]> => {
-    const out = new Map<string, string[]>();
-    for (const w of registry.all()) {
-      const missing = (w.credentials ?? []).filter((ref) => {
-        const [provider, id] = ref.split(":");
-        return !credentialReady(provider!, id!);
-      });
-      if (missing.length > 0) out.set(w.name, missing);
-    }
-    return out;
-  };
+  /** Workflows blocked by an unconnected credential — see server/inspect.ts. */
+  const blockedWorkflows = () => workflowsBlockedBy(registry);
 
   app.get("/", (c) =>
     c.html(
@@ -821,6 +831,90 @@ export function createApp(registry: Registry): Hono {
       status,
     );
   };
+
+  /* ----------------------------------------------------------- mcp tokens */
+
+  /*
+   * The MCP tab. Minting a token needs BOTH DASHBOARD_WRITE=1 and a dashboard
+   * that actually authenticates — which is a stricter bar than the Credentials
+   * tab, deliberately.
+   *
+   * The reasoning there was that a credential typed into a form is a
+   * credential that never passes through a transcript, and the flag exists so
+   * a deployment can decline that trade. This is the mirror image: the form
+   * *emits* a credential, for an endpoint that can trigger and replay
+   * production workflows. On an unauthenticated dashboard that is not hygiene
+   * with a flag on it, it is a public "give me an API key" button.
+   */
+  const dashboardAuthenticated = Boolean(user && pass);
+  const publicUrl = process.env.PUBLIC_URL?.replace(/\/+$/, "") || null;
+
+  const tokenViews = (): McpTokenView[] =>
+    listMcpTokens().map((t) => ({
+      id: t.id,
+      name: t.name,
+      scope: isScope(t.scope) ? t.scope : "full",
+      prefix: t.prefix,
+      createdAt: t.created_at,
+      lastUsedAt: t.last_used_at,
+      lastClient: t.last_client,
+      calls: t.calls,
+    }));
+
+  const renderMcp = (
+    c: any,
+    opts: { created?: { name: string; token: string } | null; error?: string; status?: 200 | 400 } = {},
+  ) =>
+    c.html(
+      mcpTokensPage({
+        tokens: tokenViews(),
+        writable,
+        authenticated: dashboardAuthenticated,
+        envToken: Boolean(process.env.MCP_TOKEN),
+        publicUrl,
+        created: opts.created ?? null,
+        failedInWindow: store.statusCountsSince(Date.now() - DEFAULT_RANGE_MS).failed ?? 0,
+        workflowCount: registry.all().length,
+        unconnected: wantedCredentials().length,
+        error: opts.error ?? null,
+      }) as any,
+      opts.status ?? 200,
+    );
+
+  app.get("/mcp-tokens", (c) => renderMcp(c));
+
+  app.post("/mcp-tokens", async (c) => {
+    const denied = requireWrite(c);
+    if (denied) return denied;
+    if (!dashboardAuthenticated) {
+      return c.text(
+        "Set DASHBOARD_USER and DASHBOARD_PASS before creating an MCP token. This " +
+          "dashboard is unauthenticated, and the token it would hand out can run " +
+          "production workflows.",
+        403,
+      );
+    }
+
+    const form = await c.req.parseBody();
+    const name = String(form.name ?? "").trim();
+    const scope = String(form.scope ?? "read");
+    if (!name) return renderMcp(c, { error: "A token needs a name.", status: 400 });
+    if (!isScope(scope)) return renderMcp(c, { error: "Scope must be read or full.", status: 400 });
+
+    const { token } = createMcpToken(name, scope);
+    // Answered with the page rather than a redirect, which every other form
+    // here does. The plaintext exists for exactly this response — it is not in
+    // the database and cannot go in a query string — so a redirect would throw
+    // away the only copy.
+    return renderMcp(c, { created: { name, token } });
+  });
+
+  app.post("/mcp-tokens/:id/delete", (c) => {
+    const denied = requireWrite(c);
+    if (denied) return denied;
+    deleteMcpToken(c.req.param("id"));
+    return c.redirect("/mcp-tokens", 303);
+  });
 
   app.get("/variables", (c) => renderVariables(c));
 
@@ -1444,6 +1538,49 @@ export function createApp(registry: Registry): Hono {
     return c.json({ ok: true });
   });
 
+  /* --------------------------------------------------------- mcp tokens */
+
+  /*
+   * Same three operations as the tab, for scripting a rotation. Unlike the
+   * browser form these are not gated on DASHBOARD_WRITE — that flag governs
+   * what a *browser* may do, and /api is already behind the same basic auth as
+   * everything else. A token is still returned exactly once, here in the
+   * create response, because there is nowhere to fetch it from afterwards.
+   */
+  app.get("/api/mcp-tokens", (c) =>
+    c.json(
+      listMcpTokens().map((t) => ({
+        id: t.id,
+        name: t.name,
+        scope: t.scope,
+        prefix: t.prefix,
+        createdAt: new Date(t.created_at).toISOString(),
+        // Null means it has never been used — which, for a token somebody has
+        // already configured somewhere, means it has never worked.
+        lastUsedAt: t.last_used_at === null ? null : new Date(t.last_used_at).toISOString(),
+        lastClient: t.last_client,
+        calls: t.calls,
+      })),
+    ),
+  );
+
+  app.post("/api/mcp-tokens", async (c) => {
+    const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
+    const name = String((body as any).name ?? "").trim();
+    const scope = String((body as any).scope ?? "read");
+    if (!name) return c.json({ error: "A token needs a name" }, 400);
+    if (!isScope(scope)) return c.json({ error: "scope must be 'read' or 'full'" }, 400);
+
+    const { token, id } = createMcpToken(name, scope);
+    return c.json({ id, name, scope, token }, 201);
+  });
+
+  app.delete("/api/mcp-tokens/:id", (c) =>
+    deleteMcpToken(c.req.param("id"))
+      ? c.json({ ok: true })
+      : c.json({ error: "No such token" }, 404),
+  );
+
   app.get("/api/runs", (c) =>
     c.json(store.recentRuns(Number(c.req.query("limit") ?? 50))),
   );
@@ -1461,46 +1598,6 @@ export function createApp(registry: Registry): Hono {
   });
 
   return app;
-}
-
-type ReplayPlan =
-  | { run: RunRecord; wf: LoadedWorkflow; input: unknown }
-  | { error: string; code: 404 | 409 };
-
-/**
- * Everything that can stop a replay, decided in one place so the HTML and JSON
- * routes can't drift. Each refusal names its cause: a replay that quietly
- * substituted `{}` for a missing input would look like it worked.
- */
-function planReplay(registry: Registry, id: string): ReplayPlan {
-  const run = store.getRun(id);
-  if (!run) return { error: "Unknown run", code: 404 };
-
-  const wf = registry.get(run.workflow);
-  if (!wf) return { error: `Workflow "${run.workflow}" no longer exists`, code: 409 };
-
-  if (!run.input) {
-    return {
-      error:
-        "This run has no recorded input — it predates the input column, or " +
-        "CAPTURE_DATA was off when it ran.",
-      code: 409,
-    };
-  }
-  if (isTruncated(run.input)) {
-    return {
-      error:
-        "This run's input was too large to record whole (CAPTURE_MAX_BYTES), " +
-        "so replaying it would feed the workflow a truncated payload.",
-      code: 409,
-    };
-  }
-
-  try {
-    return { run, wf, input: JSON.parse(run.input) };
-  } catch {
-    return { error: "This run's recorded input is not readable back", code: 409 };
-  }
 }
 
 /**

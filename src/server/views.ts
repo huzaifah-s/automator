@@ -163,6 +163,7 @@ border-bottom:1.6px solid var(--faint);transform:rotate(-45deg);margin-left:2px;
 .cr{grid-template-columns:minmax(0,1fr) 120px 96px 210px}
 .sc{grid-template-columns:minmax(0,1fr) 96px 150px}
 .vr{grid-template-columns:minmax(0,1fr) 190px minmax(0,1fr) 92px 104px}
+.mr{grid-template-columns:minmax(0,1fr) 74px 132px minmax(0,1fr) 70px 78px}
 .acts{display:flex;gap:6px;justify-content:flex-end}
 .acts form{display:contents}
 .acts .tag{cursor:pointer;border:1px solid var(--border);font-family:inherit}
@@ -663,7 +664,7 @@ const ICON_PLAY = raw(
   `<svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-hidden="true"><path d="M4.6 3.1v9.8c0 .4.45.65.79.43l7.7-4.9a.5.5 0 0 0 0-.86l-7.7-4.9a.5.5 0 0 0-.79.43Z"/></svg>`,
 );
 
-type Tab = "workflows" | "executions" | "credentials" | "variables" | null;
+type Tab = "workflows" | "executions" | "credentials" | "variables" | "mcp" | null;
 
 interface Shell {
   /** Browser title and, on detail pages, the breadcrumb next to the tabs. */
@@ -674,7 +675,13 @@ interface Shell {
   /** Rendered next to the tabs on pages that are not a tab themselves. */
   crumb?: HtmlEscapedString | Promise<HtmlEscapedString> | null;
   /** Tab badges — kept out of the pages so every page can show them. */
-  badges?: { workflows?: number | null; failed?: number | null; unconnected?: number | null };
+  badges?: {
+    workflows?: number | null;
+    failed?: number | null;
+    unconnected?: number | null;
+    /** Tokens that have been used at least once — "how many things are connected". */
+    agents?: number | null;
+  };
 }
 
 function layout(shell: Shell, body: HtmlEscapedString | Promise<HtmlEscapedString>) {
@@ -699,6 +706,9 @@ function layout(shell: Shell, body: HtmlEscapedString | Promise<HtmlEscapedStrin
         badges.unconnected ? html`<span class="n bad">${badges.unconnected}</span>` : ""
       }</a>
       <a class="tab" href="/variables" ${tab === "variables" ? raw('aria-current="page"') : ""}>Variables</a>
+      <a class="tab" href="/mcp-tokens" ${tab === "mcp" ? raw('aria-current="page"') : ""}>MCP${
+        badges.agents ? html`<span class="n">${badges.agents}</span>` : ""
+      }</a>
     </nav>
     <span class="grow"></span>
     ${crumb ?? ""}
@@ -2345,6 +2355,186 @@ export function secretFormPage(args: {
           </div>
         </div>
       </form>
+    `,
+  );
+}
+
+export interface McpTokenView {
+  id: string;
+  name: string;
+  scope: "read" | "full";
+  prefix: string;
+  createdAt: number;
+  lastUsedAt: number | null;
+  lastClient: string | null;
+  calls: number;
+}
+
+/**
+ * The MCP tab — the tokens an AI agent connects with, and the closest thing
+ * this page can honestly give you to "is it connected".
+ *
+ * There is no connection to report. MCP over HTTP is request and response: a
+ * client opens nothing and holds nothing, so a green dot would be a lie about
+ * a socket that does not exist. What the table shows instead is the true
+ * statement underneath the question — this token, used by this client, this
+ * recently, this many times. A token that has never been used says so, which
+ * is the answer you actually want after pasting one into a config file.
+ *
+ * A new token's plaintext is rendered exactly once, on the response to the
+ * POST that created it. That is why this page is returned from the POST rather
+ * than redirecting to a GET the way every other form here does: the value
+ * cannot go in a query string, and it is not in the database to be fetched on
+ * the next request even if it could.
+ */
+export function mcpTokensPage(args: {
+  tokens: McpTokenView[];
+  writable: boolean;
+  /** Set only on the response that just minted one. Shown once, then gone. */
+  created?: { name: string; token: string } | null;
+  /** True when DASHBOARD_USER/PASS are set — minting is refused without them. */
+  authenticated: boolean;
+  envToken: boolean;
+  publicUrl: string | null;
+  failedInWindow: number;
+  workflowCount: number;
+  unconnected: number;
+  error?: string | null;
+}) {
+  const { tokens, writable, created, authenticated, envToken } = args;
+  const base = args.publicUrl ?? "https://your-runner";
+  const canMint = writable && authenticated;
+
+  return layout(
+    {
+      title: "MCP",
+      tab: "mcp",
+      // No background refresh: there is a form on this page, and a swap would
+      // discard a half-typed name — or worse, a token still being copied.
+      refresh: null,
+      badges: {
+        workflows: args.workflowCount,
+        failed: args.failedInWindow,
+        unconnected: args.unconnected || null,
+        agents: tokens.filter((t) => t.lastUsedAt !== null).length || null,
+      },
+    },
+    html`
+      ${args.error ? html`<div class="flash">${args.error}</div>` : ""}
+
+      ${created
+        ? html`<div class="flash quiet">
+            <b>Copy this now — it is not stored and cannot be shown again.</b>
+            <div class="mono" style="margin:9px 0;word-break:break-all;font-size:13px">
+              ${created.token}
+            </div>
+            Connect a client with:
+            <div class="mono" style="margin-top:7px;word-break:break-all;font-size:11.5px">
+              claude mcp add --transport http automator ${base}/mcp --header
+              "Authorization: Bearer ${created.token}"
+            </div>
+          </div>`
+        : ""}
+
+      <div class="note">
+        Tokens an AI agent authenticates with at
+        <code class="mono">POST ${base}/mcp</code>. One per place you connect from, so
+        losing a laptop is one deletion rather than a rotation.
+        <br><br>
+        <b>There is nothing here that is "connected".</b> MCP over HTTP is a request and
+        a reply — nothing stays open — so the honest version of that question is the
+        <b>Last used</b> column: which client called, and how long ago. A token that has
+        never been used has never worked; check the header your client is sending.
+        <br><br>
+        Only the digest of a token is stored, so a copy of the database is not a set of
+        working keys, and a lost token is replaced rather than recovered.
+        ${envToken
+          ? html`<br><br><code class="mono">MCP_TOKEN</code> is also set in the
+              environment. It always has full scope and is not listed here — it is the way
+              back in if every token below is deleted.`
+          : ""}
+      </div>
+
+      ${canMint
+        ? html`
+            <form class="card" method="post" action="/mcp-tokens">
+              <div class="form">
+                <div class="field">
+                  <label for="tname">Name <span class="req">— where this one lives</span></label>
+                  <input type="text" id="tname" name="name" required maxlength="40"
+                         placeholder="laptop" value="">
+                </div>
+                <div class="field">
+                  <label for="tscope">Access</label>
+                  <select id="tscope" name="scope">
+                    <option value="read">Read only — look at everything, change nothing</option>
+                    <option value="full">Full — can also trigger, replay, resume and pause</option>
+                  </select>
+                  <div class="help">
+                    A read token is not even shown the write tools. Full scope can replay a
+                    run, which re-sends whatever that run sent.
+                  </div>
+                </div>
+                <div class="bar">
+                  <button class="btn primary" type="submit">Create</button>
+                </div>
+              </div>
+            </form>
+          `
+        : html`<div class="note">
+            ${!authenticated
+              ? html`Set <code class="mono">DASHBOARD_USER</code> and
+                  <code class="mono">DASHBOARD_PASS</code> before minting a token. This
+                  dashboard is currently unauthenticated, and a form that hands out
+                  credentials for an endpoint that can run production workflows is not
+                  something to leave open to whoever finds the port.`
+              : html`The dashboard is read-only. Set
+                  <code class="mono">DASHBOARD_WRITE=1</code> to create tokens here.`}
+          </div>`}
+
+      ${tokens.length === 0
+        ? html`<div class="empty">
+            <b>No tokens yet</b>
+            Nothing can reach the MCP endpoint${envToken ? " except MCP_TOKEN" : ""}.
+          </div>`
+        : html`
+            <div class="card">
+              <div class="row mr head">
+                <div>Name</div>
+                <div>Access</div>
+                <div class="hide-sm">Starts with</div>
+                <div class="hide-sm">Last used</div>
+                <div class="hide-sm">Calls</div>
+                <div></div>
+              </div>
+              ${tokens.map(
+                (t) => html`
+                  <div class="row mr">
+                    <div class="name"><b>${t.name}</b></div>
+                    <div class="muted">${t.scope === "full" ? "full" : "read only"}</div>
+                    <div class="mono muted trunc hide-sm">${t.prefix}…</div>
+                    <div class="muted trunc hide-sm"
+                         title="${t.lastUsedAt === null ? "never used" : fmt(t.lastUsedAt)}">
+                      ${t.lastUsedAt === null
+                        ? html`<span class="muted">never used</span>`
+                        : html`${relative(t.lastUsedAt)}${t.lastClient
+                            ? html` · ${t.lastClient}`
+                            : ""}`}
+                    </div>
+                    <div class="muted hide-sm">${t.calls}</div>
+                    ${writable
+                      ? html`<div class="acts">
+                          <form method="post" action="/mcp-tokens/${t.id}/delete"
+                                onsubmit="return confirm('Delete ${t.name}? Anything using it stops working immediately.')">
+                            <button class="tag" type="submit">Delete</button>
+                          </form>
+                        </div>`
+                      : html`<div></div>`}
+                  </div>
+                `,
+              )}
+            </div>
+          `}
     `,
   );
 }

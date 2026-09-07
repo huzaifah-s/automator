@@ -8,6 +8,40 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-07
 
+### The two things that need a person now say so on the alert channel
+
+Reloading turned most pushes into no-ops for the operator. The two cases that
+still need somebody were both a line in a container log, which is not a place
+anybody looks — so the automation quietly stopped working and looked exactly
+like it working.
+
+**A shared `_` file switching reloading off** now alerts. It is the only
+refusal that does not fix itself: a file that will not load is retried on the
+next save, with the person who saved it watching. This one stays off until a
+restart, and until then every *later* workflow change silently does not apply
+either — which is the compounding failure worth a message.
+
+**`pull-workflows.sh` refusing a `src/` change** now alerts too, naming the
+short sha and the blocking files. Without it the script's whole design — refuse
+rather than half-apply — degrades into changes that silently never ship.
+
+**The script sends through the container, not from the host.** New `--alert`
+flag on `src/index.ts`, reached with `docker compose exec`. The host has no
+Telegram token and no reason to grow one; the container already holds it. The
+flag sits after the stores load and before the loader, for the same reason
+`--secret` does: telling somebody a deploy is waiting must not depend on the
+current code being loadable, which is frequently the exact situation.
+
+**The short sha is in the message deliberately.** It makes each waiting commit
+its own alert, so a second push while the first is undeployed is heard, while
+the existing 30-minute cooldown collapses the per-minute repeats of one. A
+reminder every half hour that a deploy is pending is the correct amount of
+nagging.
+
+**Every alert failure is swallowed on both paths.** A Telegram outage must not
+turn "a deploy is waiting" into "the pull script is broken", and must not make
+a cron job report a failure its real work did not have.
+
 ### And a push can now apply itself, without becoming a deploy
 
 Reloading made a `git pull` on the server a live workflow update. This closes

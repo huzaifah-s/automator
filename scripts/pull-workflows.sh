@@ -25,6 +25,17 @@ set -eu
 
 cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 
+# Says something on the alert channel — Telegram, Slack, wherever ALERT_CHANNEL
+# points. Through the container on purpose: it already holds the token, and the
+# host has no business holding a second copy of it.
+#
+# Every failure here is swallowed. This is a notification about a cron job whose
+# real work has already been decided, and a Telegram outage must not turn "there
+# is a deploy waiting" into "the pull script is broken".
+notify() {
+  docker compose exec -T automator bun src/index.ts --alert "$1" >/dev/null 2>&1 || true
+}
+
 # Paths whose contents the running container does *not* re-read. A change to
 # any of them is baked into the image, so pulling it would leave the checkout
 # claiming to be something the container is not — and the next person to read
@@ -64,9 +75,14 @@ fi
 changed=$(git diff --name-only HEAD "$target")
 
 if printf '%s\n' "$changed" | grep -Eq "$RUNTIME_PATHS"; then
+  blocking=$(printf '%s\n' "$changed" | grep -E "$RUNTIME_PATHS" | sed 's/^/  /')
   echo "not pulling: $target changes code the running container cannot re-read —"
-  printf '%s\n' "$changed" | grep -E "$RUNTIME_PATHS" | sed 's/^/  /'
+  printf '%s\n' "$blocking"
   echo "deploy it instead."
+  # The short sha is in the message on purpose: it makes each waiting commit its
+  # own alert, so a second push while the first is still undeployed is heard,
+  # and the alert cooldown still collapses the per-minute repeats of one.
+  notify "$(printf 'A deploy is waiting — %s changes code the running container cannot reload:\n%s\n\nDeploy it in Coolify.' "$(git rev-parse --short "$target")" "$blocking")"
   exit 1
 fi
 

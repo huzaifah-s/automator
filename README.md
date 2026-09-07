@@ -1543,6 +1543,12 @@ warn  _studentqr.ts is shared code, not a workflow — it cannot be swapped in o
       its own, so reloading is off until the next restart
 ```
 
+**That one goes to your alert channel too**, not just the log. It is the only
+refusal that does not fix itself: a file that would not load is retried on your
+next save, but this one stays off until somebody restarts — and until they do,
+every later workflow change silently does not apply either. Nobody finds that
+out by reading a container log.
+
 **It only reaches `workflows/`.** A change under `src/`, a new dependency, or a
 new environment variable is still a restart — the runner cannot rebuild itself
 while it is running.
@@ -1581,6 +1587,24 @@ The script refuses more often than it acts, which is the point:
 It blocks on *what runs* rather than on "anything outside `workflows/`" because
 nearly every commit here also touches `CHANGELOG.md`, and blocking on that
 would block almost every push.
+
+**When it refuses for a `src/` change, it says so on your alert channel:**
+
+```
+⚠️ A deploy is waiting — 84a5b1b changes code the running container cannot
+reload:
+  src/core/runner.ts
+
+Deploy it in Coolify.
+```
+
+It sends that through the container (`docker compose exec … --alert`) rather
+than holding a Telegram token on the host — the container already has one, and
+a second copy on disk is a second thing to leak. The short sha is in the
+message so a further push while the first is still undeployed is heard, while
+the [alert cooldown](#alerts--being-told-when-something-breaks) collapses the
+per-minute repeats of one. Delivery failures are swallowed: a Telegram outage
+must not turn "a deploy is waiting" into "the pull script is broken".
 
 ## Deploying
 

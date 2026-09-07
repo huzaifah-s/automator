@@ -79,6 +79,38 @@ if (credentialFields > 0) log.info(`Loaded ${credentialFields} credential field(
 const registered = registerIntegrationSecrets();
 if (registered > 0) log.debug(`Redacting ${registered} integration credential(s)`);
 
+/*
+ * Sending one message through the configured alert channel and exiting.
+ *
+ * It exists for `scripts/pull-workflows.sh`, which runs on the *host* — it has
+ * no Telegram token, no ALERT_CHANNEL, and no business holding either. The
+ * container has all of it, so the script reaches this through `docker compose
+ * exec` and the credential never leaves the place it was already kept.
+ *
+ * Placed after the stores have loaded and before the loader, for the same
+ * reason `--secret` sits where it does: telling somebody a deploy is waiting
+ * must not depend on the current code being loadable. That is frequently the
+ * exact situation.
+ */
+if (args[0] === "--alert") {
+  const text = args.slice(1).join(" ").trim();
+  if (!text) {
+    log.error("Usage: bun src/index.ts --alert <message>");
+    process.exit(1);
+  }
+  if (!describeAlertChannel()) {
+    log.error("No alert channel configured — set ALERT_CHANNEL");
+    process.exit(1);
+  }
+  // Deliberately not `.catch(exit 1)`. The caller is a cron job whose real work
+  // already succeeded or already failed; a Telegram outage must not turn that
+  // into a second, wrong, exit code.
+  await alertBoot(text).catch((err) =>
+    log.error(`Could not send the alert — ${err instanceof Error ? err.message : err}`),
+  );
+  process.exit(0);
+}
+
 /**
  * Whether this process is the long-running server rather than somebody at a
  * terminal. Boot alerts are for the former: `bun run list` failing is already

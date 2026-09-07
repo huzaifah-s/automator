@@ -4,6 +4,7 @@ import { loadWorkflows, type Registry } from "./loader.ts";
 import { startScheduler, stopScheduler } from "./scheduler.ts";
 import { reconcileWebhooks } from "./webhooks.ts";
 import { store } from "./db.ts";
+import { alertBoot } from "./alerts.ts";
 import { log } from "./logger.ts";
 
 /**
@@ -132,10 +133,16 @@ async function reload(root: string, registry: Registry): Promise<void> {
     if (changed) {
       sharedStale = true;
       sharedHashes = now;
-      log.warn(
+      const message =
         `${changed} is shared code, not a workflow — it cannot be swapped in on its ` +
-          `own, so reloading is off until the next restart`,
-      );
+        `own, so reloading is off until the next restart`;
+      log.warn(message);
+      // Alerted rather than only logged, because this is the one refusal that
+      // does not fix itself. A failed load is retried on the next save and the
+      // person saving is watching; this one stays off until somebody restarts,
+      // and until they do, every later workflow change silently does not apply
+      // either. Nobody is reading the container log to find that out.
+      await alertBoot("Workflow reloading is off until a restart", message);
       return;
     }
 

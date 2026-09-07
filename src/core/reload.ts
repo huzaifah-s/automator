@@ -27,6 +27,7 @@ import { log } from "./logger.ts";
  * below.
  */
 
+// deploy-alert smoke test — reverted in the next commit
 /** Set `WORKFLOW_RELOAD=0` to switch this off and go back to restart-only. */
 const ENABLED = (process.env.WORKFLOW_RELOAD ?? "1") !== "0";
 

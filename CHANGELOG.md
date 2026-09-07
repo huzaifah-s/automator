@@ -6,6 +6,41 @@ Entries record the *reasoning*, not just the diff — `git log` already has the
 diff. If a change settled a question, say what was settled and what the losing
 option was, so nobody relitigates it from scratch.
 
+## 2026-09-08
+
+### The deploy-waiting alert now stops when you deploy
+
+`scripts/pull-workflows.sh` refuses to fast-forward a commit that touches
+`src/` and says so on Telegram, because that code is baked into the image. What
+it never had was a way to learn that the deploy it asked for had happened. Its
+own HEAD is the only thing it consults, the refusal is the only thing that
+holds HEAD still, and a deploy moves neither — so one `src/` push produced an
+identical alert every minute for as long as the server ran, collapsed by the
+half-hour cooldown into a message that said "go and deploy" to somebody who
+had. Thirty of them in an afternoon, all about a commit that went live in the
+first hour.
+
+**Coolify's checkout is the answer, so it is now asked.** Before alerting, the
+script compares the deployed directory's copy of each changed file against that
+commit's blob. If they match, the deploy already happened and this clone
+fast-forwards to catch up — which is also what makes the *next* refusal
+truthful, since it is then measured from the commit the container is running
+rather than from one that went live hours ago.
+
+**Reading those files is not a git operation in that directory.** The rule that
+no git command may run in Coolify's checkout stands: `git hash-object` runs in
+the clean clone against a path over there, and that checkout's own dirt — the
+injected `ARG` lines, the rebuilt compose file, the overwritten `README.md` —
+is never consulted, because those three files are excluded from the comparison.
+So is `workflows/`, which this script writes itself and which would therefore
+only ever report its own HEAD back to it.
+
+**Judged on every trustworthy changed file, not just the blocking ones.** A
+commit touching nothing but the `Dockerfile` is still answerable through its
+`CHANGELOG.md` line. When a diff leaves nothing trustworthy at all, the honest
+answer is "cannot tell" and it alerts: a deploy wrongly asked for costs one
+message, a deploy wrongly assumed done costs the deploy.
+
 ## 2026-09-07
 
 ### MCP tokens are made on the dashboard, and carry their own scope

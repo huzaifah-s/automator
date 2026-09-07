@@ -1608,6 +1608,7 @@ The script refuses more often than it acts, which is the point:
 | Nothing new | Nothing, silently |
 | Only `workflows/` (and docs) changed | Fast-forwards; the runner reloads |
 | `src/`, `package.json`, `bun.lock`, `Dockerfile`, compose or tsconfig changed | **Refuses.** That code is baked into the image, so pulling it would leave the checkout claiming to be something the container is not. Deploy instead |
+| Those same changes, once the deploy has happened | Fast-forwards quietly. The refusal already did its job; only this checkout was left behind |
 | Only docs changed | Fast-forwards quietly, so the server's checkout is not stale |
 | Uncommitted changes, a detached HEAD, or a branch that is not a fast-forward | Refuses and says which |
 
@@ -1632,6 +1633,26 @@ reload:
 
 Deploy it in Coolify.
 ```
+
+**It stops once you deploy.** Nothing else moves this checkout — the refusal
+above is what keeps it pinned — so left alone it would go on deciding, every
+minute forever, that the same deploy is still waiting, and the cooldown would
+turn that into the same message every half hour arriving at somebody who had
+already deployed. Coolify's checkout *is* the commit it last deployed, so
+before alerting the script asks it: does the deployed directory already hold
+this commit's version of the files that changed? If it does, the deploy
+happened and this clone fast-forwards to catch up. Nothing runs git over there
+— the hashing happens in the clean clone, against paths in the other
+directory — because that checkout is permanently dirty and no git operation in
+it is safe.
+
+It judges by every changed file it can trust rather than only the blocking
+ones, so a commit that changes nothing but the `Dockerfile` is still answerable
+as long as it carries anything else. `workflows/` is not evidence (this script
+writes it), and neither are the three files Coolify rewrites in place: the
+`Dockerfile`, `docker-compose.yml`, and `README.md`. When the diff holds
+nothing but those, the answer is "cannot tell" and it alerts — a deploy wrongly
+asked for costs a message, one wrongly assumed done costs the deploy.
 
 It sends that through the container (`docker exec … --alert`) rather
 than holding a Telegram token on the host — the container already has one, and

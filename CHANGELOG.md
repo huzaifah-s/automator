@@ -8,6 +8,63 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-08
 
+### The sync script locked itself out, and took workflow deploys with it
+
+`scripts/pull-workflows.sh` runs from cron out of a clean clone at
+`/opt/automator-sync`. That clone sat at `9cf9c1c` for six hours, refusing to
+move, alerting once every half hour that a deploy was waiting for code that had
+already been deployed.
+
+**The fix for this was already written and could not reach the machine.**
+`already_deployed()` arrived in `d87fe11`, which is *after* `9cf9c1c`. So the
+script cron was executing had no such function — it was the older version, the
+one that assumes forever that the deploy it asked for has not happened. The
+only thing that installs a new version of the script is the script
+fast-forwarding its own clone, and it refuses to fast-forward while it believes
+a deploy is pending. It believed that because it lacked the check that would
+have told it otherwise. A fix that cannot be delivered by the mechanism it
+fixes is not delivered at all.
+
+Recovery was one `git merge --ff-only origin/main` on the host, by hand. There
+is no version of this the script could have done for itself.
+
+**The half that was not noisy is the half that mattered.** `sync_live` runs
+*before* the refusal — line 120 in the stranded version — so every minute it
+copied `workflows/` out of the pinned clone and into the deployed directory. A
+workflow pushed during those six hours would have been reverted to its
+`9cf9c1c` content once a minute: no error, no alert, no failed run. Editing a
+workflow and watching nothing happen, on the one path this project exists to
+make instant. Nothing was actually lost, and only because the stranded range
+happened to contain no `workflows/` changes at all. That is luck, not a
+property of the design.
+
+**What this says about the arrangement.** The clone is updated by nothing but
+the script inside it. Coolify updates its own deploy directory and never
+touches this one, which is deliberate — `dad7d43` moved git out of the
+directory Coolify rewrites for good reasons that still hold. But the
+consequence is that a bad version of the script is self-sustaining, and its
+blast radius is not "alerts are wrong", it is "pushes to `workflows/` silently
+do not land". The alert being wrong is what you see; the workflow revert is
+what costs you.
+
+**Two real problems found while diagnosing this, neither of which caused it.**
+Recorded so they are not re-derived. First, the alert names
+`git rev-parse --short "$target"` — origin/main's tip — while listing the
+runtime files from the *whole* gap between the stale checkout and that tip. A
+documentation commit therefore gets blamed by name for `src/` files from
+commits hours older, which is what sent this diagnosis down the wrong path
+twice. Second, `already_deployed()` judges by every changed file outside
+`UNSPOKEN_FOR`, and that includes `CHANGELOG.md`. A docs commit landing between
+a runtime push and its deploy makes a trusted witness mismatch and reports the
+runtime files as undeployed when they are live. Both are worth fixing; neither
+is what happened here.
+
+**Still open.** The script cannot tell when it is itself out of date. It has
+`origin/$branch` fetched and its own path on disk, so noticing that
+`scripts/pull-workflows.sh` differs from the tip is available to it — and "the
+script is stale, fast-forward by hand" is a different instruction from "deploy
+in Coolify", which is the one it kept giving while being unable to act on it.
+
 ### The chat id alerts go to is configuration, not a credential
 
 `TELEGRAM_CHAT_ID_HUZAIFAH` moved out of the secret store and into Variables.

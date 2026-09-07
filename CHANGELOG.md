@@ -8,6 +8,57 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-08
 
+### The chat id alerts go to is configuration, not a credential
+
+`TELEGRAM_CHAT_ID_HUZAIFAH` moved out of the secret store and into Variables.
+It is the destination for nine alerts across the-mantra and pblsh, it
+authenticates nothing on its own, and while it sat in Secrets it was registered
+with the log redactor — so "which chat did this alert go to" read `••••` on
+every run page that could have answered it.
+
+**This was already settled; it just had not been done.** The entry that split
+the Telegram bots into credentials decided that the bot is a credential and the
+recipient is not, and said the chat id would be read straight from the
+environment for exactly this reason. It ended up in the secret store anyway,
+which is the outcome that entry was written to avoid.
+
+**Nothing in the code changed, and nothing had to.** All nine call sites are
+bare `process.env.TELEGRAM_CHAT_ID_HUZAIFAH` reads; none declares it with
+`defineSecrets`, so there was no schema, no boot check and no lookalike warning
+to update. Both stores mirror into `process.env` identically — `apply()` in
+variables.ts and `setSecret()` in secret-store.ts do the same assignment and the
+same baseline restore on delete — so the read path is byte-identical either side
+of the move. The stored value is deliberately the same `443332004` that
+notion-contents-update-notification.ts already carries as its literal fallback,
+so the two agree rather than quietly disagreeing.
+
+**What it buys beyond being readable: the dashboard can see the name now.** That
+same earlier entry recorded as an accepted cost that a bare env read is
+invisible to everything — the wanted list on Credentials is built from
+`defineCredential`, the boot check from `defineSecrets`, and a loose
+`process.env` read is neither, so nothing knew the name existed to report it
+missing. As a variable it is a row with a note saying what it is for.
+
+**The risk, now carried in the open.** Every call site falls back — eight to the
+workflow's own Telegram credential chat id, one to the literal. A deleted or
+mistyped value therefore does not fail; it silently redirects alerts to whichever
+chat each bot defaults to. That was already true. Moving the value into a store
+whose whole point is that you can read it makes it likelier somebody notices
+before it matters.
+
+**Nothing else in the store is a candidate, recorded so the audit is not
+redone.** The other loose secrets are all keys, tokens or HMAC secrets. The
+twelve `field of …` rows cannot move at all: a credential is several values that
+are only meaningful together, there is no second store, and the provider's test
+probe needs them together. But the ones among them that are not credentials —
+`R2_*_BUCKET`, `_ENDPOINT`, `_PUBLIC_URL`, `META_*_PAGE_ID`, `_IG_USER_ID`,
+`WHATSAPP_*_PHONE_NUMBER_ID`, `TELEGRAM_AI_DIVISION_CHAT_ID` — are already
+`secret: false` in providers.ts and already excluded from the redactor, so they
+read in plain text where it matters without leaving the bundle.
+`WHATSAPP_VERIFY_TOKEN` was the one genuine near-miss and stays put: it is a
+shared handshake secret, and the variable store's name guard refuses a `_TOKEN`
+suffix regardless.
+
 ### Variables and MCP now look like the rest of the dashboard
 
 Both tabs were built form-first: a wall of explanation, then an always-open

@@ -237,7 +237,10 @@ async function shutdown(signal: string, code = 0): Promise<never> {
   stopSecretRefresh();
   stopVariableRefresh();
 
-  // Give in-flight runs a chance to finish before the process goes away.
+  // Give in-flight runs a chance to finish before the process goes away. This
+  // budget is only ever the smaller of two: the container runtime sends SIGKILL
+  // at its own grace period regardless, 10s by default, so compose sets
+  // stop_grace_period above this number. Raising this alone buys nothing.
   const deadline = Date.now() + Number(process.env.SHUTDOWN_TIMEOUT_MS ?? 20_000);
   // activeCount() covers queued runs too, so the loop stays alive long enough
   // for each of them to reach its turn and record itself as skipped.

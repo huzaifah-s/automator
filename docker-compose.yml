@@ -3,6 +3,13 @@ services:
     build: .
     restart: unless-stopped
 
+    # Longer than the runner's own SHUTDOWN_TIMEOUT_MS (20s), because Docker's
+    # default grace period is 10s and it is the shorter of the two that decides.
+    # Left unset, SIGKILL arrived while index.ts was still counting down, so a
+    # run that would have finished at second 15 was killed anyway and the
+    # documented 20s meant nothing. Raise both together or neither.
+    stop_grace_period: 30s
+
     # Reachable on the compose network, not published on the host. Coolify's
     # proxy terminates TLS and routes to it; publishing 3000 as well would make
     # the dashboard answerable over plain HTTP around that proxy, on basic auth

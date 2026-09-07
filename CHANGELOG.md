@@ -8,6 +8,31 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-07
 
+### The shutdown grace period was half a promise
+
+`SHUTDOWN_TIMEOUT_MS` is 20s and the README said so, but nothing told Docker
+about it. Docker's own grace period defaults to 10s, and it is the shorter of
+the two that decides: SIGKILL landed while `index.ts` was still counting down,
+so a run that would have finished at second 15 was killed anyway. The drain
+loop, its log lines, and the documented number were all describing a window
+that did not exist.
+
+`docker-compose.yml` now sets `stop_grace_period: 30s`. Coolify starts the
+stack with `docker compose up -d --build`, so the compose path and the Coolify
+path both pick it up — there is no second place to set this.
+
+**30s rather than exactly 20s**, so the two numbers are not tied together by
+coincidence. The runner's timeout is the one that should decide when to give
+up; the container's job is to be comfortably out of the way while it does.
+Setting them equal makes every future rise in `SHUTDOWN_TIMEOUT_MS` silently
+ineffective again, which is the bug this entry is about.
+
+**Not fixed here, and worth knowing they exist:** a cron tick due during the
+restart window is still never caught up, and webhook recovery is still
+at-least-once, so a run killed mid-way repeats the steps it had already done.
+Both are documented behaviour rather than accidents, and neither is what this
+change was about.
+
 ### The issue board's phone column was renamed out from under us
 
 Every technical-issue notification since the "BORANG MASALAH TEKNIKAL" form was

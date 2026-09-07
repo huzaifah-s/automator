@@ -1355,7 +1355,10 @@ docker compose logs -f automator
   it on purpose.
 - `SIGTERM` stops the scheduler and waits up to `SHUTDOWN_TIMEOUT_MS` (20s) for
   in-flight runs before exiting. A run still queued when that starts is
-  recorded as `skipped`, not silently dropped.
+  recorded as `skipped`, not silently dropped. Your container runtime gets the
+  last word: Docker kills the process at its own grace period, 10s by default,
+  so `docker-compose.yml` sets `stop_grace_period: 30s` to leave the 20s room
+  to actually elapse. Raise one of the two and raise the other.
 - At most `MAX_CONCURRENT_RUNS` runs execute at once across every workflow
   (default 10, `0` = unlimited). Runs past the cap **queue** — a webhook that
   arrives during a burst is slow, never lost. `/healthz` reports `running` and

@@ -13,6 +13,20 @@
 #
 #   * * * * * /path/to/checkout/scripts/pull-workflows.sh >> /var/log/pull-workflows.log 2>&1
 #
+# On Coolify, run it from a *separate clean clone* and point AUTOMATOR_LIVE_DIR
+# at the deployed checkout:
+#
+#   * * * * * AUTOMATOR_LIVE_DIR=/data/coolify/applications/<uuid> \
+#     /opt/automator-sync/scripts/pull-workflows.sh >> /var/log/pull-workflows.log 2>&1
+#
+# The separation is forced, not tidiness. Coolify rewrites tracked files in the
+# directory it deploys from — it injects ARG lines into the Dockerfile and
+# rebuilds docker-compose.yml — so that checkout is permanently dirty and no
+# git operation there is safe. With AUTOMATOR_LIVE_DIR set, git only ever runs
+# in the clean clone and the deployed directory is touched in exactly one way:
+# workflows/ is copied into it. Coolify does not modify workflows/, so nothing
+# collides.
+#
 # and turn Coolify's automatic deploy off, or the two race: a push would start
 # a redeploy (a restart) and this pull at the same time. Pick one. With auto
 # deploy off, a push carrying only workflow changes goes live within a minute
@@ -24,6 +38,25 @@
 set -eu
 
 cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+# Where the running container reads workflows/ from, when that is not this
+# checkout. Unset means the two are the same directory, which is the plain
+# Compose deployment and the simpler case.
+LIVE_DIR=${AUTOMATOR_LIVE_DIR:-}
+if [ -n "$LIVE_DIR" ] && [ ! -d "$LIVE_DIR/workflows" ]; then
+  echo "refusing: AUTOMATOR_LIVE_DIR=$LIVE_DIR has no workflows/ directory"
+  exit 2
+fi
+
+# Copies workflows/ into the deployed checkout. Every run, not only after a
+# pull: rsync writes nothing when the files already match, so it costs nothing
+# and it repairs the case where a Coolify deploy reset the directory underneath
+# us. --delete because a workflow deleted upstream has to disappear here too,
+# and workflows/ holds nothing Coolify put there.
+sync_live() {
+  [ -n "$LIVE_DIR" ] || return 0
+  rsync -a --delete workflows/ "$LIVE_DIR/workflows/"
+}
 
 # Says something on the alert channel — Telegram, Slack, wherever ALERT_CHANNEL
 # points. Through the container on purpose: it already holds the token, and the
@@ -57,6 +90,14 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
   echo "refusing: the checkout has uncommitted changes — fast-forwarding would fight them"
   exit 2
 fi
+
+# Before anything is decided about pulling. Whatever is checked out here is
+# what the container is meant to be running, and every exit below — a refusal,
+# an unreachable remote, nothing to do — has to leave that true. Syncing only
+# after a successful pull meant a Coolify deploy that reset the live directory
+# stayed reset until the next workflow change, which on a pending src/ refusal
+# could be days.
+sync_live
 
 # Retried, and a total failure is a silent exit rather than an error.
 #
@@ -112,10 +153,12 @@ if ! printf '%s\n' "$changed" | grep -q '^workflows/'; then
   # may as well be current — reading a stale README on the server is its own
   # small trap.
   git merge --ff-only --quiet "$target"
+  sync_live
   exit 0
 fi
 
 git merge --ff-only --quiet "$target"
+sync_live
 echo "pulled $(git rev-parse --short "$target") — workflow files changed:"
 printf '%s\n' "$changed" | grep '^workflows/' | sed 's/^/  /'
 echo "the runner reloads them on its own; check its log for the swap."

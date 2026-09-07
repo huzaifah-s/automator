@@ -42,6 +42,38 @@ nagging.
 turn "a deploy is waiting" into "the pull script is broken", and must not make
 a cron job report a failure its real work did not have.
 
+### Coolify's checkout is not a place git can be run
+
+Measured on the live deployment: Coolify rewrites tracked files in the
+directory it deploys from. It injects eight `ARG` lines into the `Dockerfile`
+and rebuilds `docker-compose.yml` with its own labels and networks. `git
+status` there is permanently dirty, so `pull-workflows.sh` — which refuses on a
+dirty checkout, correctly — could never have run on that deployment at all.
+
+So git stops running there. `AUTOMATOR_LIVE_DIR` points at the deployed
+directory, a separate clean clone does all the git work, and the deployed
+directory is touched in exactly one way: `workflows/` is rsynced into it.
+Coolify does not modify `workflows/`, so the two never collide.
+
+**Relaxing the dirty check instead was the obvious alternative and is wrong.**
+The files Coolify rewrites are tracked, so a fast-forward that touched any of
+them would either fail or silently discard Coolify's build configuration. An
+ignore-list of "files Coolify is allowed to have modified" would be a guess
+about another tool's internals, revised every time it changed.
+
+**The sync runs on every invocation, before any decision about pulling.** It
+was written to run only after a successful pull, and testing found the hole:
+with a `src/` change pending — so every run refuses — a Coolify deploy that
+reset the live directory would stay reset until somebody deployed. Whatever is
+checked out is what the container is meant to be running, and every exit path
+has to leave that true.
+
+**`rsync --delete`, and it is safe because `workflows/` is ours.** A workflow
+deleted upstream has to disappear from the running deployment too, and nothing
+else puts files in that directory. rsync writes nothing when the files already
+match, so the every-run sync costs nothing and cannot wake the file watcher
+spuriously.
+
 ### The pull script shrugs at a network that drops connections
 
 Measured on the deployment host: about 30% of TCP connections to GitHub never

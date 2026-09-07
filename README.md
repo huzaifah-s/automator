@@ -1569,6 +1569,33 @@ has no git.
 * * * * * /path/to/checkout/scripts/pull-workflows.sh >> /var/log/pull-workflows.log 2>&1
 ```
 
+**On Coolify it needs a separate clean clone**, and this is forced rather than
+tidiness. Coolify rewrites tracked files in the directory it deploys from — it
+injects `ARG` lines into the `Dockerfile` and rebuilds `docker-compose.yml` —
+so that checkout is permanently dirty and no git operation there is safe. Clone
+the repo somewhere of its own, and point `AUTOMATOR_LIVE_DIR` at the deployed
+directory:
+
+```bash
+git clone git@github.com:you/automator.git /opt/automator-sync
+```
+
+```bash
+* * * * * AUTOMATOR_LIVE_DIR=/data/coolify/applications/<uuid> /opt/automator-sync/scripts/pull-workflows.sh >> /var/log/pull-workflows.log 2>&1
+```
+
+git then only ever runs in the clean clone, and the deployed directory is
+touched in exactly one way: `workflows/` is rsynced into it. Coolify does not
+modify `workflows/`, so nothing collides — and `--delete` means a workflow
+removed upstream disappears there too.
+
+The sync runs on **every** invocation, before any decision about pulling.
+Whatever is checked out is what the container is meant to be running, and every
+exit — a refusal, an unreachable remote, nothing to do — has to leave that
+true. Syncing only after a successful pull meant a Coolify deploy that reset
+the live directory stayed reset until the next workflow change, which behind a
+pending `src/` refusal could be days.
+
 **Turn Coolify's automatic deploy off if you use this**, or a push starts a
 redeploy and this pull at the same time and you get the restart anyway. It is
 one or the other: automatic redeploy on every push, or automatic *reload* on

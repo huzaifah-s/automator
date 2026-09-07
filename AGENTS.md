@@ -175,6 +175,31 @@ button was clicked), not the mechanism; leaving the job running and dropping
 the run at the last moment would print a next run every fifteen seconds that
 never happens.
 
+**A reload must leave the process either fully old or fully new, never mixed.**
+`src/core/reload.ts` validates the whole set before `Registry.replace()` swaps
+it in one assignment, and every refusal path leaves the previous set running.
+The failure mode of a reload has to be "your change is not live yet", which is
+visible and fixable; it must never be "the runner is down", which is what
+restarts already cost. In-flight runs are safe for free — a run holds the
+workflow object it started with — so do not "fix" that by looking the workflow
+up again by name mid-run.
+
+**`_`-prefixed files are why the reloader can refuse.** The loader's `?v=`
+query does not reach a relative import: `new URL("./_x.ts", ".../w.ts?v=3")`
+drops the query, so the shared module already in memory is the one used. A
+changed shared file therefore sets `sharedStale` and switches reloading off
+until a restart. Do not soften this into a warning that reloads anyway — new
+workflow code against a stale helper is the one outcome worse than not
+reloading, because nothing on the dashboard shows it.
+
+**`loadWorkflows` clears the secret and credential accumulators before it
+imports.** `problems` in `secrets.ts` and `requirements` in `credentials.ts`
+are module state that only ever grew. At boot that is invisible; on a reload it
+means a fixed declaration keeps failing forever and a deleted workflow stays
+blocked forever. Anything else that accumulates at workflow-import time needs
+the same treatment, and the reset belongs in the loader — it is the only thing
+that imports workflow files.
+
 **Missed cron ticks are reported at boot, never re-run.** `reportMissedTicks`
 in `src/core/scheduler.ts` asks each job what it would have fired since that
 workflow's last `cron` run and writes one `skipped` row. Do not "finish the

@@ -14,6 +14,7 @@ import {
   setRegistry,
 } from "./core/runner.ts";
 import { createApp } from "./server/app.ts";
+import { startWorkflowWatch, stopWorkflowWatch } from "./core/reload.ts";
 import { reconcileWebhooks } from "./core/webhooks.ts";
 import { recoverInbox } from "./core/inbox.ts";
 import { store, db } from "./core/db.ts";
@@ -226,6 +227,11 @@ void recoverInbox(registry).catch((err) =>
   log.error(`Inbox recovery failed: ${err instanceof Error ? err.message : err}`),
 );
 
+// Last, because a reload swaps the registry every one of the lines above has
+// already read. Starting it earlier would let a change land mid-boot, against
+// a scheduler or a webhook reconciliation that had not finished setting up.
+startWorkflowWatch(process.env.WORKFLOWS_DIR ?? "./workflows", registry);
+
 if (registry.enabled().some((w) => w.trigger.kind === "cron")) {
   const soonest = registry
     .enabled()
@@ -243,6 +249,7 @@ async function shutdown(signal: string, code = 0): Promise<never> {
 
   log.info(`${signal} received — shutting down`);
   beginShutdown();
+  stopWorkflowWatch();
   stopScheduler();
   stopSecretRefresh();
   stopVariableRefresh();

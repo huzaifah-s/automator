@@ -8,6 +8,61 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-07
 
+### A workflow change no longer costs a restart
+
+Everything above shortens the restart. This removes it for the case that
+actually happens daily.
+
+Workflow files are leaves — nothing in `src/` imports them — so a changed one
+can be imported again and swapped into the registry while the process keeps
+running. `src/core/reload.ts` watches `workflows/`, waits a second for the
+filesystem to go quiet, revalidates the whole set, and replaces it in one
+assignment. Runs in flight, the queue, the cron timers, the open sockets and
+the SQLite handle are all untouched.
+
+**A run holds the workflow object it started with, and that is the whole safety
+argument.** A run half way through when you save finishes on the code it
+started with; the next trigger gets the new code. There is no run that is half
+old and half new, and this falls out of how JavaScript modules work rather than
+being something the reloader has to arrange.
+
+**A file that does not load changes nothing.** Validation happens before the
+swap, so a typo leaves the previous set running with an error in the log — the
+opposite of boot, which stops the process. Both are right: at boot there is no
+good version to keep, and here there is. A reload's failure mode has to be
+"your change is not live yet" and never "the runner is down".
+
+**`_`-prefixed shared files switch reloading off until a restart, rather than
+reloading anyway.** The cache-busting query the loader appends does not reach a
+relative import — `new URL("./_x.ts", ".../w.ts?v=3")` drops it — so a changed
+helper would stay the copy already in memory while the workflows around it went
+new. That mixed state is worse than not reloading and, unlike a refusal,
+invisible. The warning names the file and says a restart is needed, which is
+what you were going to do anyway.
+
+**`loadWorkflows` now clears the secret and credential accumulators first.**
+`problems` and `requirements` are module-level arrays that only ever grew,
+which is invisible at boot and wrong on a reload: a declaration that was broken
+and has since been fixed would keep failing every future reload, and a deleted
+workflow would stay reported as blocked forever. The loader is the only thing
+that imports workflow files, so it is the only place that can honestly reset
+them.
+
+**The scheduler is rebuilt wholesale rather than diffed.** Cron expressions are
+absolute — croner computes the next 09:00 from the expression, not from when
+the timer was made — so a job taken down and put straight back up fires at the
+same moment it would have. Diffing would buy nothing and would add a second
+place for "is this scheduled" to disagree with the registry.
+
+**On by default, `WORKFLOW_RELOAD=0` to switch off.** A flag you have to
+remember defeats the point, and the watcher is inert on a deployment whose
+files only change when the container is replaced anyway.
+
+**What it does not reach:** `src/`, dependencies, and environment variables.
+Those are still a restart, and a `git push` is still a restart too — that
+triggers a redeploy, and a replaced container is a restart whatever this does.
+What it buys is that a `git pull` on the server is now a live workflow update.
+
 ### The 503 after a deploy was our own health check, not the proxy
 
 A redeploy left the public URL answering 503 for about thirty seconds, and the

@@ -443,6 +443,16 @@ export function credentialRequirements(): CredentialRequirement[] {
 }
 
 /**
+ * Forgets which workflows declared what. Same contract, and same reason, as
+ * resetSecretProblems(): on a reload a workflow that has been deleted or had
+ * its `defineCredential` removed would otherwise go on being reported as
+ * blocked forever, because nothing ever takes an entry back out.
+ */
+export function resetCredentialRequirements(): void {
+  requirements.length = 0;
+}
+
+/**
  * Declares the credential a workflow needs and returns a live view of it.
  *
  *   const smtp = defineCredential("smtp", "primary");

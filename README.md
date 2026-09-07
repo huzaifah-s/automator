@@ -1506,6 +1506,52 @@ delivery is older than `INBOX_MAX_AGE_MS` (24h) — are recorded as `abandoned`
 with a log line, rather than deleted or retried forever. Settled rows age out
 with `RUN_RETENTION_DAYS`; pending ones are never pruned at any age.
 
+### Changing a workflow without a restart
+
+The runner watches `workflows/` and swaps in a changed file on its own. No
+restart, no downtime, nothing in flight lost. Set `WORKFLOW_RELOAD=0` to switch
+it off.
+
+What makes it safe is that **a run holds the workflow object it started with**.
+A run that is half way through when you save finishes on the code it started
+with; the next trigger gets the new code. There is no such thing as a run that
+is half old and half new.
+
+```
+info  Reloaded 3 workflow(s) without a restart — changed: studentqr-welcome-message
+```
+
+Adding a file, deleting one, and changing a webhook path or a cron expression
+all work — routes are resolved per request and the scheduler is rebuilt on
+every swap, so a new `/hooks/...` answers immediately and a removed one stops.
+
+**A file that does not load changes nothing.** The whole set is validated
+before anything is swapped, so a typo leaves the previous set running and says
+so in the log. Fix it and the next save goes through. This is a real difference
+from boot, where a broken workflow stops the process: there is a good version
+already running here, and keeping it beats taking the runner down.
+
+**`_`-prefixed shared files switch reloading off until a restart.** A relative
+import inside a workflow resolves without the cache-busting the reloader adds,
+so a changed `_helper.ts` would stay the copy already in memory — new workflow
+code running against a stale helper. That mixed state is worse than not
+reloading, and invisible, so a shared change refuses the swap outright and says
+what to do:
+
+```
+warn  _studentqr.ts is shared code, not a workflow — it cannot be swapped in on
+      its own, so reloading is off until the next restart
+```
+
+**It only reaches `workflows/`.** A change under `src/`, a new dependency, or a
+new environment variable is still a restart — the runner cannot rebuild itself
+while it is running.
+
+On the Compose deployment `workflows/` is bind-mounted from the host, so a
+`git pull` on the server is a live workflow update. A `git push` is not: that
+triggers a redeploy, which replaces the container, and a replaced container is
+a restart no matter what this does.
+
 ## Deploying
 
 Any Docker host. The `Dockerfile` runs as a non-root user, reaps zombies
@@ -1517,8 +1563,10 @@ is the whole of your run history, durable state, and OAuth refresh tokens.
 
 `docker-compose.yml` is the whole deployment — see [Quick start](#quick-start).
 `workflows/` is bind-mounted read-only from the host, so the running container
-reads them from the checkout rather than from the image. That makes
-`docker compose restart` (~0.2s, no build) enough to pick up a workflow change.
+reads them from the checkout rather than from the image. Together with
+[reloading](#changing-a-workflow-without-a-restart) that makes a `git pull` on
+the server enough to apply a workflow change, with no build and no restart at
+all.
 
 The port is published by `compose.local.yml`, which is only ever loaded when
 named. It is deliberately *not* called `docker-compose.override.yml`: Compose
@@ -1634,16 +1682,16 @@ app down for about two of them.
 
 Worth knowing before you commit:
 
-- **Workflows live in the repo.** Changing one means a redeploy, and on a
-  single-process SQLite app that means a restart — two overlapping processes
-  would double-fire every cron and both write the same database, so a
-  zero-downtime rolling deploy is not available here. The redeploy itself is
-  cheap — Docker's layer cache reduces a workflow change to one small `COPY`
-  layer — so the cost is a couple of seconds of downtime, not a long build. In
-  exchange for all of it there is no
-  code sandbox to secure. Credentials are the exception and no longer need any
-  of this — see the
-  [secret store](#the-secret-store--changing-a-credential-without-a-redeploy).
+- **Workflows live in the repo**, and a `src/` change means a restart — two
+  overlapping processes would double-fire every cron and both write the same
+  database, so a zero-downtime rolling deploy is not available here. The
+  redeploy itself is cheap — Docker's layer cache reduces it to one small
+  `COPY` layer — so the cost is a couple of seconds of downtime, not a long
+  build. In exchange there is no code sandbox to secure. Two things are exempt
+  and no longer pay any of this: credentials, through the
+  [secret store](#the-secret-store--changing-a-credential-without-a-redeploy),
+  and workflow files themselves, through
+  [reloading without a restart](#changing-a-workflow-without-a-restart).
 - **The dashboard is read-only about what a workflow *is*.** No workflow editor,
   no way to change what one does from a browser. There are two deliberate holes
   and they are different sizes. Credentials get a real form, closed again by

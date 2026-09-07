@@ -1,11 +1,12 @@
 import { basename, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { log } from "./logger.ts";
-import { collectSecretProblems } from "./secrets.ts";
+import { collectSecretProblems, resetSecretProblems } from "./secrets.ts";
 import {
   credentialRef,
   credentialRequirements,
   credentialReady,
+  resetCredentialRequirements,
   setLoadingFile,
 } from "./credentials.ts";
 import { isEnabled } from "./pause.ts";
@@ -15,13 +16,35 @@ import type { LoadedWorkflow, WorkflowDef } from "./types.ts";
  * Imports every .ts file under the workflows directory and collects the default
  * export. Everything is validated up front — a bad name, a duplicate, or a
  * missing secret stops the boot rather than failing on the first trigger.
+ *
+ * `version` is for reloads: appended as a query string it makes the runtime
+ * treat each file as a module it has not seen, which is the only way to get a
+ * second copy of something already imported. Left off at boot, where there is
+ * nothing to bust.
+ *
+ * Note what that does *not* reach. A relative import inside a workflow file
+ * resolves against the file's own URL with the query dropped, so a shared
+ * `_helper.ts` next to it stays the copy already in memory. `reload.ts` is
+ * responsible for refusing to reload at all when one of those has changed —
+ * new workflow code running against a stale helper is the one outcome worse
+ * than not reloading.
  */
-export async function loadWorkflows(dir = "./workflows"): Promise<LoadedWorkflow[]> {
+export async function loadWorkflows(
+  dir = "./workflows",
+  version?: string,
+): Promise<LoadedWorkflow[]> {
   const root = resolve(dir);
   if (!existsSync(root)) {
     log.warn(`No workflows directory at ${root} — nothing to run`);
     return [];
   }
+
+  // Both are module-level accumulators filled by importing workflow files, and
+  // nothing else fills them. Cleared here rather than by the caller so a reload
+  // cannot inherit a problem, or a blocked credential, from code that no longer
+  // exists — see resetSecretProblems.
+  resetSecretProblems();
+  resetCredentialRequirements();
 
   const workflows: LoadedWorkflow[] = [];
   const errors: string[] = [];
@@ -51,7 +74,7 @@ export async function loadWorkflows(dir = "./workflows"): Promise<LoadedWorkflow
     // which workflow asked for it, so the importer says so first.
     setLoadingFile(rel);
     try {
-      mod = await import(file);
+      mod = await import(version === undefined ? file : `${file}?v=${version}`);
     } catch (err) {
       errors.push(`${rel}: failed to import — ${err instanceof Error ? err.message : err}`);
       continue;
@@ -155,10 +178,25 @@ export async function loadWorkflows(dir = "./workflows"): Promise<LoadedWorkflow
 }
 
 export class Registry {
-  constructor(private readonly workflows: LoadedWorkflow[]) {}
+  constructor(private workflows: LoadedWorkflow[]) {}
 
   all(): LoadedWorkflow[] {
     return this.workflows;
+  }
+
+  /**
+   * Swaps in a freshly loaded set. Mutates rather than handing back a new
+   * Registry on purpose: the server, the runner and the scheduler are all
+   * holding this exact object, and replacing it everywhere would be four
+   * places to keep in step instead of one.
+   *
+   * One assignment, so nothing can observe a half-swapped registry. A run
+   * already in flight is unaffected either way — it is holding the workflow
+   * object it started with, and finishes on the code it started with, which is
+   * the behaviour we want rather than an accident of this design.
+   */
+  replace(workflows: LoadedWorkflow[]): void {
+    this.workflows = workflows;
   }
 
   /**

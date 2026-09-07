@@ -89,6 +89,21 @@ export function collectSecretProblems(): string[] {
 }
 
 /**
+ * Empties the collected problems. The loader calls this before it starts
+ * importing, which matters only on a reload: `problems` is module state, so a
+ * declaration that was broken and has since been fixed would otherwise keep
+ * failing every future reload with an error that is no longer true. A boot
+ * calls it against an already-empty array.
+ *
+ * Safe because the loader is the only importer of workflow files, and a reload
+ * re-imports every one of them — so every problem that still exists is
+ * collected again on the way through.
+ */
+export function resetSecretProblems(): void {
+  problems.length = 0;
+}
+
+/**
  * Declares a family of same-shaped secrets — several accounts for one service.
  *
  *   const github = defineSecretGroup("GITHUB_TOKEN", z.string().min(10));

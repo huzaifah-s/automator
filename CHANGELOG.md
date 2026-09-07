@@ -42,6 +42,25 @@ nagging.
 turn "a deploy is waiting" into "the pull script is broken", and must not make
 a cron job report a failure its real work did not have.
 
+### The pull script shrugs at a network that drops connections
+
+Measured on the deployment host: about 30% of TCP connections to GitHub never
+open at all, on the host and inside Docker alike, while the ones that do
+connect in five milliseconds. Coolify's deploy opens several connections for a
+full clone and so fails most of the time; a `git ls-remote` opens one and
+usually works. That is somebody else's network, and this script has to live
+with it rather than report it.
+
+So the fetch is retried three times and a total failure exits 0 silently. The
+next run is sixty seconds away and a fetch that fails now and succeeds then has
+cost nothing; treating it as a fault would fill the log with failures and teach
+whoever reads it to stop.
+
+**What it must never do is fall through.** A failed fetch reaching the
+comparison below would compare against a stale `origin/<branch>` and could
+conclude there was nothing to do — which looks identical to being up to date
+and is not.
+
 ### And a push can now apply itself, without becoming a deploy
 
 Reloading made a `git pull` on the server a live workflow update. This closes

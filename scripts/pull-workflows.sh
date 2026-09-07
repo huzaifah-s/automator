@@ -58,7 +58,28 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
   exit 2
 fi
 
-git fetch --quiet origin "$branch"
+# Retried, and a total failure is a silent exit rather than an error.
+#
+# Reaching GitHub is the one part of this that is somebody else's network, and
+# it does not have to work on the first try — the next run is sixty seconds
+# away, and a fetch that fails now and succeeds then has cost nothing. Treating
+# it as a fault would mean a log full of failures on a lossy link, and a person
+# learning to ignore the log this script writes to.
+#
+# The important half is that a failed fetch must never reach the code below: the
+# comparison would then be against a stale origin/$branch and could conclude
+# there is nothing to do.
+fetched=0
+for attempt in 1 2 3; do
+  if git fetch --quiet origin "$branch" 2>/dev/null; then
+    fetched=1
+    break
+  fi
+  [ "$attempt" -lt 3 ] && sleep 5
+done
+if [ "$fetched" -eq 0 ]; then
+  exit 0
+fi
 
 target="origin/$branch"
 if [ "$(git rev-parse HEAD)" = "$(git rev-parse "$target")" ]; then

@@ -1588,6 +1588,14 @@ It blocks on *what runs* rather than on "anything outside `workflows/`" because
 nearly every commit here also touches `CHANGELOG.md`, and blocking on that
 would block almost every push.
 
+**A `git fetch` that cannot reach the remote is retried three times and then
+exits silently.** Reaching GitHub is somebody else's network and does not have
+to work on the first try — the next run is sixty seconds away. Treating a lossy
+link as a fault would fill the log with failures and teach you to stop reading
+it. It never falls through to the comparison below on a failed fetch, which
+would otherwise be made against a stale `origin/<branch>` and could conclude
+there was nothing to do.
+
 **When it refuses for a `src/` change, it says so on your alert channel:**
 
 ```

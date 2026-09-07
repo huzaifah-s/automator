@@ -1645,6 +1645,143 @@ no alert at all. The container is found by name pattern
 (`AUTOMATOR_CONTAINER`, default `^automator[-_]`), since Coolify appends a
 per-deployment suffix that changes every time.
 
+### Letting Claude read the runner
+
+`POST /mcp` is an [MCP](https://modelcontextprotocol.io) endpoint, which is how
+Claude — in the terminal, in the desktop app, on your phone — asks this runner
+questions and gets answers back. "What broke overnight?", "why is the
+cross-poster failing?", "show me what that webhook actually sent."
+
+**Tokens are made on the MCP tab**, one per place you connect from — a
+`laptop`, a `phone`, whatever. Each is read-only or full, each is deleted on
+its own, and the token is shown exactly once when it is created:
+
+```bash
+claude mcp add --transport http automator https://<PUBLIC_URL>/mcp --header "Authorization: Bearer <token>"
+```
+
+Only the digest is stored, so a copy of the database is not a set of working
+keys and a lost token is replaced rather than recovered. Minting one needs
+`DASHBOARD_WRITE=1` *and* a dashboard that actually authenticates — a form that
+hands out credentials for an endpoint which can run production workflows is not
+something to leave open on an unauthenticated port.
+
+`MCP_TOKEN` in the environment still works, always at full scope. It is the
+bootstrap and the way back in when every stored token has been deleted. With
+neither, the endpoint answers 503 and says so at boot — stricter than the
+dashboard, which only warns when `DASHBOARD_USER`/`DASHBOARD_PASS` are missing,
+because this endpoint can start a run.
+
+#### Read-only and full
+
+A `read` token is refused the write tools **and never shown them**, which is
+both safer and cheaper — a tool list is re-sent on every turn whether or not
+anything calls it, so a read token's list is about a third smaller. Give the
+phone a read token and the laptop a full one, and no amount of coaxing will get
+the phone to replay a cross-post.
+
+#### Knowing whether it is connected
+
+There is nothing to be connected. MCP over HTTP is a request and a reply —
+nothing stays open — so a green dot would be a lie about a socket that does not
+exist. What the tab shows instead is the true statement underneath the
+question: **which client used this token, how recently, and how many times.**
+Claude Code sends its name on the handshake, so a working laptop token reads
+`3m ago · claude-code 2.0.1`.
+
+A token that says **never used** has never worked. That is the useful case: you
+pasted it somewhere, and whatever you pasted it into is not reaching the
+server, or is not sending the header. `/healthz` carries the same fact
+unauthenticated, as `mcp.tokens` and `mcp.lastUsed`, and on Claude's side
+`claude mcp list` reports reachability.
+
+**Seventeen tools.** Eleven read — every token gets these — and six that act,
+which a read token never sees.
+
+| | |
+|---|---|
+| `overview` | the whole state in one call — start here |
+| `workflows` | trigger, state, 7-day success rate, last outcome |
+| `runs` | one line per run; `contains` searches errors and log lines |
+| `run` | one run whole: steps, HTTP calls with bodies, logs |
+| `failures` | what is failing and how often, grouped by cause |
+| `rejections` | deliveries turned away at the door, and ones a filter declined |
+| `hotspots` | slowest steps, slowest endpoints, wasted retries |
+| `trend` | runs per day, and which workflows went quiet |
+| `config` | secrets, variables and credentials — set? connected? last test? |
+| `test_credential` | run a credential's connection test, report what came back |
+| `inbox` | deliveries accepted but never finished |
+| `trigger` | runs a workflow now, for real |
+| `replay` | re-runs a past run on its input — every step happens again |
+| `resume` | re-runs against the same checkpoints, skipping what worked |
+| `set_paused` | stops or restarts a workflow's triggers |
+| `set_variable` | sets configuration; refuses anything secret-shaped |
+| `clear_rejections` | zeroes the counters once a cause is fixed |
+
+**Three slash commands**, which MCP calls prompts. `/automator:triage` walks the
+morning check, `/automator:diagnose <workflow>` works one failure end to end,
+and `/automator:improve` reads the hotspots and the trend and ranks what is
+worth fixing. Unlike a tool, a prompt costs nothing until it is run — which is
+why a routine you repeat belongs in one rather than becoming an eighteenth
+tool.
+
+#### Why it is shaped like this
+
+The n8n MCP this replaces was unusable, and not for a subtle reason: asking it
+anything cost thousands of tokens. Four causes, each answered here.
+
+**It returned workflow graphs.** Node positions, `typeVersion`s, connection
+maps — mostly canvas layout, none of it actionable. Nothing here returns a
+workflow's definition at all. A workflow is a TypeScript file; an agent that
+needs to read one reads the repository, where it is already better written than
+any JSON summary of it.
+
+**It returned whole executions.** Every node's input and output, in full, to
+tell you about a 401. Here the list is one line per run and the detail is a
+second, deliberate call — and even that has a byte ceiling (`MCP_MAX_BYTES`,
+raisable per call) with a marker saying what was cut.
+
+**Its tool list was enormous.** Forty tools with paragraph descriptions is a
+fixed cost paid on *every* turn, before anything is called. Ten one-line
+descriptions is about a tenth of that.
+
+**It made the model do the counting.** "What's failing?" meant pulling two
+hundred executions into the conversation and tallying them there. `failures`
+groups by workflow and error signature in the server and returns eight lines.
+
+The visible result is that results are compact text tables rather than JSON —
+JSON repeats every key on every row, which on a twenty-row list is most of the
+payload — with relative ages (`14m`, `2d`) instead of timestamps and run ids
+abbreviated to eight characters, which every tool resolves back by prefix. A
+typical "what is wrong" answer is under 300 tokens.
+
+#### What it will and will not tell you
+
+Captured payloads are returned **whole**: step inputs and outputs, and every
+outbound HTTP request and response body. That is the setting that makes a
+failure diagnosable without opening the dashboard, and it is the same data the
+run page shows. It is redacted of secrets on the way into the database, so no
+credential reaches an agent — but it is *not* redacted of customer data. A
+StudentQR run carries the phone number it messaged. Bear that in mind about
+what ends up in a conversation.
+
+`trigger` and `replay` are the sharp ones. A replay re-runs every step against
+a fresh checkpoint key, so a cross-poster run replayed is a second post to
+Instagram, Facebook and Threads. Their descriptions say so, and Claude is asked
+to confirm with you before calling them — but the tools are there, because
+"re-run that failed delivery" is the thing you actually want at 9am. `resume`
+is the safer neighbour: same checkpoints, so the steps that already worked are
+reused rather than repeated. A read-only token cannot reach either.
+
+Three things are deliberately absent. **Workflow source**, because a workflow
+is a file and an agent that needs one reads the repository. **`ctx.state`**,
+because it is durable and never displayed, and a tool would be displaying it.
+And **`set_secret`** — a secret an agent types is a secret in a transcript,
+which is the same reasoning that put the Credentials form in the browser in the
+first place. `set_variable` exists because configuration is not a credential,
+and `src/core/variables.ts` refuses anything that looks like one.
+
+
 ## Deploying
 
 Any Docker host. The `Dockerfile` runs as a non-root user, reaps zombies

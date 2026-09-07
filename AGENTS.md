@@ -33,6 +33,8 @@ src/cli/           secrets — the write side of the store, run before the loade
 src/integrations/  index (barrel + lazy ctx clients) · http · messaging
                    ai · email · sql · sheets · scrape · oauth
 src/server/        app (webhooks + REST + dashboard routes) · views (HTML)
+                   mcp (the endpoint an AI agent connects to)
+                   inspect (what app.ts and mcp.ts must not decide twice)
 workflows/         user workflows — the only directory most changes touch
                    subdirectories just group them: workflows/pblsh/thing.ts
                    loads the same way, and names stay global and flat
@@ -649,6 +651,37 @@ These were decided deliberately. Raise a trade-off before changing any of them:
   consent — for a once-per-credential action. The connection test is not the
   thin end of this: it makes one read-only call with credentials that already
   exist, and never redirects anywhere.
+- **The MCP endpoint answers about runs, never about workflows.** `src/server/mcp.ts`
+  serves operational data — what failed, what a run did, what a hook rejected —
+  and deliberately has no tool that returns a workflow's definition. That is the
+  n8n shape again: its MCP shipped workflow graphs, and reading one cost
+  thousands of tokens of canvas layout to learn nothing a file would not say
+  better. A workflow here is a TypeScript file, so an agent that needs to read
+  one reads the repository.
+
+  Every tool result is a compact text table under a byte ceiling, and the
+  aggregates (`failures`, `hotspots`, `trend`) exist so nobody answers "what is
+  broken" by pulling two hundred rows into a context window. Adding a tool means
+  adding to a cost paid on every turn of every conversation, whether or not it is
+  called — so the bar is a question asked often that cannot be answered by
+  combining the ones already there. A routine that is just a *sequence* of
+  existing calls is a **prompt**, not a tool: prompts are fetched only when run.
+  Search is an argument on `runs` and not its own tool for exactly this reason.
+
+- **An MCP token is a row, scoped, and stored only as a digest.** `read` tokens
+  are filtered out of `tools/list` as well as refused at the call, so a token
+  that cannot use a tool never pays for its description. Minting one needs
+  `DASHBOARD_WRITE=1` *and* `DASHBOARD_USER`/`DASHBOARD_PASS` — stricter than
+  the Credentials tab, because this form emits a credential rather than
+  consuming one. Nothing anywhere returns a token's plaintext after the moment
+  it is created, and nothing should start.
+
+  The dashboard reports **last used**, not "connected", and that wording is
+  load-bearing: MCP over HTTP holds nothing open, so there is no connection to
+  observe and a status dot would be inventing one. `set_secret` is deliberately
+  absent for the same reason the Credentials form exists — see the store entry
+  below.
+
 - **A platform's fields and its test live in code.** `src/core/providers.ts`,
   not a browser form and not a database row. A test request the server executes,
   configured from a browser and stored as data, is configuration-as-code in the

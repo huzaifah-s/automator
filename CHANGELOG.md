@@ -8,6 +8,153 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-07
 
+### MCP tokens are made on the dashboard, and carry their own scope
+
+The endpoint shipped reading a single `MCP_TOKEN` from the environment, which
+made connecting a second machine a redeploy and revoking one a redeploy for
+everybody. Tokens are now rows: minted on the MCP tab, named for where they
+live, deleted individually.
+
+**Only the sha256 is stored.** The plaintext is rendered once, on the response
+to the POST that created it — which is also why that route answers with a page
+instead of redirecting the way every other form here does. The value cannot go
+in a query string and is not in the database to be fetched on the next request.
+A lost token is replaced, not recovered, and a copy of `automator.db` is not a
+set of working keys.
+
+**Scope is per token: `read` or `full`.** The point of having several is that
+they are not equally trusted — the phone can look, the laptop can replay. A
+read token is not merely refused the write tools, it is never shown them:
+`tools/list` is filtered by scope, which is safer *and* cheaper, since a tool
+list is re-sent on every turn whether or not anything calls it (978 tokens
+read-only against 1503 full). The call is still refused separately, because a
+client could be holding a list cached from a different token.
+
+**Minting needs `DASHBOARD_WRITE=1` and a dashboard that authenticates.** That
+is a stricter bar than the Credentials tab and deliberately so. The argument
+for that form was that a credential typed into it never passes through a
+transcript, and the flag lets a deployment decline the trade. This form is the
+mirror image — it *emits* a credential for an endpoint that can trigger and
+replay production workflows — so on an unauthenticated dashboard it would be a
+public "give me an API key" button.
+
+**"Connected" is not a thing that can be reported, and the tab says so.** MCP
+over HTTP is a request and a reply; nothing stays open. A green dot would be a
+lie about a socket that does not exist. What is recorded instead is the true
+statement underneath the question: which client used this token, how recently,
+how many times — the client name taken from the `clientInfo` on the handshake,
+which is the only message that carries one. The useful state is **never
+used**, which is the honest answer to "I pasted it in and nothing happened".
+`/healthz` carries the same fact for an uptime check.
+
+`MCP_TOKEN` still works and is always full scope. It is the bootstrap — the
+form that mints the first stored token is only reachable if you can already get
+in — and the way back after deleting every token.
+
+### Seven more MCP tools, and three prompts
+
+`hotspots` (slowest steps, slowest endpoints, wasted retries), `trend` (runs
+per day, and which workflows went quiet), `config` (secrets, variables and
+credentials: set, connected, last test — never values), `test_credential`,
+`inbox`, `set_variable` and `clear_rejections`. Search became a `contains`
+argument on `runs` rather than an eighteenth tool: a search is a run list with
+one more condition, and a separate tool would be a second description charged
+on every turn to say the same thing.
+
+**`trend`'s reason for existing is the DROPPED OFF section.** A workflow that
+stops being called does not fail, does not alert, and appears nowhere else —
+quiet is indistinguishable from healthy in every other view here. Comparing the
+two halves of the window is the only thing that catches it.
+
+**`hotspots` orders by total time, not by average.** The step worth looking at
+is the one the runner spends its life in, which is usually a merely-slowish
+step called constantly rather than the rare outlier a max would surface. It
+also reports retries, which are invisible in the run list: a run that failed
+twice and then succeeded is one green row.
+
+**Prompts, rather than more tools.** `/automator:triage`, `/automator:diagnose`
+and `/automator:improve` are canned questions the client turns into slash
+commands. A prompt is fetched only when it is run, where a tool description is
+re-sent every turn — so a routine worth writing down belongs in a prompt, and
+that is now the rule for anything that is a sequence of existing calls rather
+than a new question.
+
+**`set_secret` was refused.** A secret an agent types is a secret in a
+transcript, which is the reasoning already written into the Credentials tab.
+`set_variable` is fine because a variable is explicitly not a credential, and
+`src/core/variables.ts` refuses anything shaped like one at the door — that
+guard is what makes the tool safe to have.
+
+**A silent bug worth recording:** the first cut of `contains` escaped `%` and
+`_` in the LIKE pattern but the statement had no `ESCAPE` clause, so SQLite
+read the backslash literally and a search for `MONDAY_API_TOKEN` matched
+nothing at all — no error, just an empty list that looked like an answer.
+
+### Claude can read the runner directly, over MCP
+
+`POST /mcp` — ten tools over the run history, behind its own `MCP_TOKEN`. Six
+read (`overview`, `workflows`, `runs`, `run`, `failures`, `rejections`), four
+act (`trigger`, `replay`, `resume`, `set_paused`).
+
+**The whole design constraint was tokens, and the reference point was n8n's
+MCP, which was too expensive to use.** Four causes, each settled here:
+
+1. **No tool returns a workflow definition.** n8n's returned node graphs —
+   positions, `typeVersion`s, connection maps — thousands of tokens of canvas
+   layout per workflow. A workflow here is a TypeScript file, so an agent that
+   wants to read one reads the repository. This is the settled one: a
+   `get_workflow_source` tool was considered and refused, because in Claude
+   Code the repo is already open and duplicating it into a tool result is
+   paying twice for the same bytes.
+2. **The list and the detail are different calls.** n8n returned every node's
+   input and output to report a 401. `runs` is one line per run; `run` is the
+   only expensive call, and it carries a byte ceiling (`MCP_MAX_BYTES`,
+   default 24k ≈ 6k tokens) with a marker naming what was cut and how to get
+   it.
+3. **Ten tools, one-line descriptions.** A tool list is a fixed cost paid on
+   every turn of every conversation, called or not. Forty tools with paragraph
+   descriptions is most of a context window before anything happens.
+4. **The server aggregates.** `failures` groups failed runs by workflow and by
+   a normalised error signature and returns eight lines, rather than handing
+   over two hundred rows for the model to count. Ids and long numbers are
+   collapsed so one recurring fault is one group; three-digit HTTP statuses
+   survive, because a 429 and a 500 are not the same problem.
+
+Results are compact text tables, not JSON — JSON repeats every key on every
+row, which on a twenty-row list is most of the payload. Ages are relative
+(`14m`, `2d`), and run ids print as eight characters, resolved back by prefix
+through `store.resolveRunId` (which refuses an ambiguous prefix rather than
+guessing, since one caller is about to replay it).
+
+**Captured bodies are returned whole**, step payloads and HTTP request/response
+alike. Chosen deliberately over shape-only summaries: a failure you cannot
+diagnose without opening the dashboard defeats the point. The trade is that
+those bodies carry customer data — they are redacted of *secrets* on the way
+into the database, never of PII — so a StudentQR run puts a real phone number
+in a conversation. Documented rather than prevented.
+
+**Write tools are included, replay included.** The alternative was read-only,
+and it was rejected: "re-run that failed delivery" is the thing you actually
+want from an agent at 9am. The compensation is that the risk is stated in the
+tool description the model reads (`SIDE EFFECTS: … it posts or sends again`)
+and in the server's `initialize` instructions, which ask for confirmation
+before either is called.
+
+**No SDK.** MCP over HTTP is JSON-RPC in a POST body, and stateless — no
+sessions, no SSE — is about eighty lines. A dependency would buy server-
+initiated messages, which a query surface has no use for.
+
+**`MCP_TOKEN` unset closes the endpoint, rather than warning and opening it.**
+This deliberately breaks symmetry with `DASHBOARD_USER`/`DASHBOARD_PASS`, which
+warn and stay public. The dashboard is read-only about what a workflow *is*;
+this endpoint can start one. The failure mode of leaving it open is not a
+disclosure, it is somebody else's Instagram post.
+
+`planReplay` and the blocked-credential scan moved to `src/server/inspect.ts`.
+Both now have three callers — HTML, JSON, MCP — and a third copy of "why a
+replay is refused" is how one of them quietly starts lying.
+
+
 ### The two things that need a person now say so on the alert channel
 
 Reloading turned most pushes into no-ops for the operator. The two cases that

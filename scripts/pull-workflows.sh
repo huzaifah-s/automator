@@ -100,6 +100,51 @@ notify() {
 # block almost every push.
 RUNTIME_PATHS='^(src/|package\.json|bun\.lock|Dockerfile|docker-compose\.yml|compose\.local\.yml|tsconfig\.json)'
 
+# Files in the deployed directory whose contents say nothing about which commit
+# was deployed. workflows/ is copied in by sync_live above, from *this*
+# checkout, so it always reads as whatever HEAD is here. Coolify rewrites the
+# other three in the directory it deploys from: ARG lines injected into the
+# Dockerfile, docker-compose.yml rebuilt, README.md overwritten with a
+# deployment note.
+UNSPOKEN_FOR='^(workflows/|Dockerfile$|docker-compose\.yml$|README\.md$)'
+
+# Whether the deploy this run is about to ask for has already happened.
+#
+# Without this the answer was assumed to be no, forever. HEAD here only moves
+# when this script fast-forwards, and it refuses to on a runtime change — so
+# after the deploy it asks for, nothing advances this checkout and every run
+# for the rest of time re-decides that the same deploy is still waiting. The
+# cooldown collapses the per-minute repeats into one message every half hour,
+# which is worse than the flood would have been: the alert that means "go and
+# deploy" kept arriving, unchanged, at a person who already had.
+#
+# Coolify's checkout is the commit it last deployed, so those files are the
+# answer. Reading them is not a git operation in the directory where no git
+# operation is safe — the hashing runs here, against a path over there.
+#
+# It judges by every changed file it can trust rather than by the blocking ones
+# alone, so a commit that changes only a file Coolify rewrites is still
+# answerable as long as it carries anything else (a CHANGELOG entry, usually).
+# With nothing trustworthy in the diff the honest answer is "cannot tell", and
+# that alerts — a deploy wrongly asked for costs a message, one wrongly assumed
+# done costs the deploy.
+already_deployed() {
+  [ -n "$LIVE_DIR" ] || return 1
+  witnesses=$(printf '%s\n' "$changed" | grep -Ev "$UNSPOKEN_FOR" || true)
+  [ -n "$witnesses" ] || return 1
+  printf '%s\n' "$witnesses" | while IFS= read -r path; do
+    want=$(git rev-parse --quiet --verify "$target:$path" 2>/dev/null || true)
+    if [ -z "$want" ]; then
+      # Deleted by $target, so a deployed tree does not have it either.
+      [ ! -e "$LIVE_DIR/$path" ] || exit 1
+      continue
+    fi
+    [ -f "$LIVE_DIR/$path" ] || exit 1
+    got=$(git hash-object --no-filters -- "$LIVE_DIR/$path" 2>/dev/null || true)
+    [ "$got" = "$want" ] || exit 1
+  done
+}
+
 branch=$(git rev-parse --abbrev-ref HEAD)
 if [ "$branch" = "HEAD" ]; then
   echo "refusing: detached HEAD — this checkout is pinned to a commit, not following a branch"
@@ -157,6 +202,16 @@ fi
 changed=$(git diff --name-only HEAD "$target")
 
 if printf '%s\n' "$changed" | grep -Eq "$RUNTIME_PATHS"; then
+  if already_deployed; then
+    # The deploy happened; only this checkout was left behind. Catching up is
+    # what makes the refusal above true again — HEAD is once more the commit
+    # the container is running, and the next runtime change is measured from
+    # there rather than from a commit that went live hours ago.
+    git merge --ff-only --quiet "$target"
+    sync_live
+    echo "caught up to $(git rev-parse --short HEAD) — its runtime changes are already deployed"
+    exit 0
+  fi
   blocking=$(printf '%s\n' "$changed" | grep -E "$RUNTIME_PATHS" | sed 's/^/  /')
   echo "not pulling: $target changes code the running container cannot re-read —"
   printf '%s\n' "$blocking"

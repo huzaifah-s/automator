@@ -1572,6 +1572,12 @@ also on plain HTTP at `server-ip:3000`.
 
 Assign the domain in Coolify's UI and point its health check at `/healthz`.
 
+The compose file health-checks every 5s with a 3s start period, and those
+numbers are the length of a deploy's unreachable window rather than a
+monitoring preference: the proxy does not route to the container until the
+check passes, so Docker's 30s default meant half a minute of 503 on a process
+that had been answering since its first second.
+
 **Persistent storage.** The compose file declares the `automator-data` volume
 itself, so there is nothing to add in the UI. Everything lives there: run
 history, `ctx.state`, OAuth refresh tokens, and the secret store.

@@ -8,6 +8,31 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-07
 
+### The 503 after a deploy was our own health check, not the proxy
+
+A redeploy left the public URL answering 503 for about thirty seconds, and the
+container restart is two of them. The other twenty-eight were spent waiting for
+Docker to run its *first* health check: at `interval: 30s` nothing is asked
+until thirty seconds in, the container is not marked healthy until it answers,
+and a reverse proxy does not route to a container that is not healthy. The app
+was up and answering roughly a second after boot the whole time.
+
+`interval: 5s`, `start_period: 3s` in both `docker-compose.yml` and the
+`Dockerfile`. The unreachable window goes from ~32s to ~5s, which is the
+difference between a deploy that drops a webhook and one that probably does
+not.
+
+**`retries` went up, 3 → 5, at the same time.** Shortening the interval also
+shortens the time to *unhealthy* — 3 × 30s was 90s of grace, and 3 × 5s would
+have been 15s. The runner is a single process, and a heavy synchronous moment
+holding the event loop should not be able to flap it out of the proxy. 5 × 5s
+puts it back to a defensible 25s while keeping the fast half fast.
+
+**This does not close the window, it shrinks it.** A webhook that arrives while
+nothing is listening is one we never received, and nothing in-process can
+recover what it never saw — that part belongs to the sender's own retries. What
+this buys is six times less of it.
+
 ### A cron tick that lands in a deploy leaves a mark now
 
 A deploy takes a few seconds and a cron expression does not care. Croner

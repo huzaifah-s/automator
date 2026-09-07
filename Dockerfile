@@ -28,7 +28,9 @@ ENV NODE_ENV=production \
 EXPOSE 3000
 VOLUME ["/data"]
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+# Kept in step with docker-compose.yml's healthcheck, which overrides this one
+# on the compose path — the reasoning for the numbers is there.
+HEALTHCHECK --interval=5s --timeout=3s --start-period=3s --retries=5 \
   CMD wget -qO- http://127.0.0.1:3000/healthz > /dev/null || exit 1
 
 ENTRYPOINT ["/sbin/tini", "--"]

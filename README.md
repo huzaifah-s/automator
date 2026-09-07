@@ -1550,7 +1550,37 @@ while it is running.
 On the Compose deployment `workflows/` is bind-mounted from the host, so a
 `git pull` on the server is a live workflow update. A `git push` is not: that
 triggers a redeploy, which replaces the container, and a replaced container is
-a restart no matter what this does.
+a restart no matter what this does. To make a push do it, see below.
+
+### Making a push apply itself
+
+`scripts/pull-workflows.sh` fast-forwards the checkout on the server, which is
+all a push needs to become live — the container is already watching the files.
+It runs on the host, not in the container: the mount is read-only and the image
+has no git.
+
+```bash
+* * * * * /path/to/checkout/scripts/pull-workflows.sh >> /var/log/pull-workflows.log 2>&1
+```
+
+**Turn Coolify's automatic deploy off if you use this**, or a push starts a
+redeploy and this pull at the same time and you get the restart anyway. It is
+one or the other: automatic redeploy on every push, or automatic *reload* on
+every push with deploys you trigger yourself when they are actually needed.
+
+The script refuses more often than it acts, which is the point:
+
+| What it sees | What it does |
+| --- | --- |
+| Nothing new | Nothing, silently |
+| Only `workflows/` (and docs) changed | Fast-forwards; the runner reloads |
+| `src/`, `package.json`, `bun.lock`, `Dockerfile`, compose or tsconfig changed | **Refuses.** That code is baked into the image, so pulling it would leave the checkout claiming to be something the container is not. Deploy instead |
+| Only docs changed | Fast-forwards quietly, so the server's checkout is not stale |
+| Uncommitted changes, a detached HEAD, or a branch that is not a fast-forward | Refuses and says which |
+
+It blocks on *what runs* rather than on "anything outside `workflows/`" because
+nearly every commit here also touches `CHANGELOG.md`, and blocking on that
+would block almost every push.
 
 ## Deploying
 

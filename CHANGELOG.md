@@ -8,6 +8,40 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-07
 
+### And a push can now apply itself, without becoming a deploy
+
+Reloading made a `git pull` on the server a live workflow update. This closes
+the last gap: `scripts/pull-workflows.sh` on a minute's cron turns a `git push`
+into one, with no redeploy and no restart.
+
+**A shell script on the host, not a workflow.** The obvious-looking version —
+a cron workflow inside automator that pulls its own repo — cannot work and
+should not: `workflows/` is mounted read-only, the image has no git, and code
+that rewrites the source it is running from is a hole, not a feature.
+
+**It blocks on what the container actually runs, not on "anything outside
+`workflows/`".** `src/`, `package.json`, `bun.lock`, the Dockerfile, the
+compose files and tsconfig are baked into the image; pulling a change to any of
+them would leave the checkout claiming to be a version the container is not,
+and `git log` on the server would then lie about what is deployed. The obvious
+rule — refuse unless only `workflows/` changed — was tried and is wrong here:
+nearly every commit in this repo also touches `CHANGELOG.md`, so it would block
+almost every push.
+
+**Docs-only pushes fast-forward silently** rather than being refused. Nothing
+for the container to notice, but a stale README on the server is its own small
+trap.
+
+**It refuses a dirty checkout, a detached HEAD, and a non-fast-forward** and
+says which. Each of those means somebody has been working on the server, and a
+script that quietly resolved it would be destroying work to save a restart.
+
+**Coolify's automatic deploy has to come off to use this**, and the README says
+so where the cron line is: otherwise a push starts a redeploy and this pull at
+the same time and the restart happens anyway. It is a choice between automatic
+redeploy on every push, and automatic reload on every push with deploys
+triggered when they are actually needed.
+
 ### A workflow change no longer costs a restart
 
 Everything above shortens the restart. This removes it for the case that

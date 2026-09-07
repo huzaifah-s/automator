@@ -42,6 +42,11 @@ cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 # Where the running container reads workflows/ from, when that is not this
 # checkout. Unset means the two are the same directory, which is the plain
 # Compose deployment and the simpler case.
+# This file, relative to the checkout — so the staleness check below can ask
+# git about the script that is actually running.
+SELF=$(cd -- "$(dirname -- "$0")" && pwd)/$(basename -- "$0")
+SELF=${SELF#"$PWD"/}
+
 LIVE_DIR=${AUTOMATOR_LIVE_DIR:-}
 if [ -n "$LIVE_DIR" ] && [ ! -d "$LIVE_DIR/workflows" ]; then
   echo "refusing: AUTOMATOR_LIVE_DIR=$LIVE_DIR has no workflows/ directory"
@@ -130,7 +135,18 @@ UNSPOKEN_FOR='^(workflows/|Dockerfile$|docker-compose\.yml$|README\.md$)'
 # done costs the deploy.
 already_deployed() {
   [ -n "$LIVE_DIR" ] || return 1
-  witnesses=$(printf '%s\n' "$changed" | grep -Ev "$UNSPOKEN_FOR" || true)
+  # The question is whether the files that *block* are live, not whether every
+  # file in the gap is. A documentation commit landing between a runtime push
+  # and its deploy changes CHANGELOG.md without changing anything the container
+  # runs; counting it as a witness answers "not deployed" about code that is.
+  witnesses=$(printf '%s\n' "$blocking" | grep -Ev "$UNSPOKEN_FOR" || true)
+  # Every blocking file is one Coolify rewrites — a Dockerfile-only change. The
+  # blocking files cannot answer for themselves, so fall back to the rest of the
+  # diff, which at least says which commit is deployed. This is the case the
+  # whole-diff rule was written for, and the only one it was right about.
+  if [ -z "$witnesses" ]; then
+    witnesses=$(printf '%s\n' "$changed" | grep -Ev "$UNSPOKEN_FOR" || true)
+  fi
   [ -n "$witnesses" ] || return 1
   printf '%s\n' "$witnesses" | while IFS= read -r path; do
     want=$(git rev-parse --quiet --verify "$target:$path" 2>/dev/null || true)
@@ -201,7 +217,9 @@ fi
 
 changed=$(git diff --name-only HEAD "$target")
 
-if printf '%s\n' "$changed" | grep -Eq "$RUNTIME_PATHS"; then
+blocking=$(printf '%s\n' "$changed" | grep -E "$RUNTIME_PATHS" || true)
+
+if [ -n "$blocking" ]; then
   if already_deployed; then
     # The deploy happened; only this checkout was left behind. Catching up is
     # what makes the refusal above true again — HEAD is once more the commit
@@ -212,14 +230,28 @@ if printf '%s\n' "$changed" | grep -Eq "$RUNTIME_PATHS"; then
     echo "caught up to $(git rev-parse --short HEAD) — its runtime changes are already deployed"
     exit 0
   fi
-  blocking=$(printf '%s\n' "$changed" | grep -E "$RUNTIME_PATHS" | sed 's/^/  /')
+  listed=$(printf '%s\n' "$blocking" | sed 's/^/  /')
+
+  # The refusal is the one path that cannot repair itself: it is reached by
+  # deciding not to fast-forward, and fast-forwarding is what would install a
+  # newer version of this file. So a stale script refusing is a stale script
+  # refusing forever, and the only exit is a person running the merge by hand.
+  # `d87fe11` was a fix for exactly this failure and could not reach the machine
+  # that needed it, because the script it fixed was the one refusing to pull it.
+  # Saying it out loud costs one git call and turns six hours into one minute.
+  stale_note=""
+  if ! git diff --quiet HEAD "$target" -- "$SELF" 2>/dev/null; then
+    stale_note=$(printf '\n\nNOTE: this script is older than %s and may be judging this wrongly. It cannot update itself from here — fast-forward by hand:\n  git -C %s merge --ff-only %s' "$target" "$PWD" "$target")
+  fi
   echo "not pulling: $target changes code the running container cannot re-read —"
-  printf '%s\n' "$blocking"
+  printf '%s\n' "$listed"
   echo "deploy it instead."
+  [ -n "$stale_note" ] &&
+    echo "  (and this script is itself behind $target — fast-forward $PWD by hand)"
   # The short sha is in the message on purpose: it makes each waiting commit its
   # own alert, so a second push while the first is still undeployed is heard,
   # and the alert cooldown still collapses the per-minute repeats of one.
-  notify "$(printf 'A deploy is waiting — %s changes code the running container cannot reload:\n%s\n\nDeploy it in Coolify.' "$(git rev-parse --short "$target")" "$blocking")"
+  notify "$(printf 'A deploy is waiting — %s is the tip; these files need one:\n%s\n\nDeploy it in Coolify.%s' "$(git rev-parse --short "$target")" "$listed" "$stale_note")"
   exit 1
 fi
 

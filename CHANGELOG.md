@@ -8,6 +8,50 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-08
 
+### The refusal path can now explain itself
+
+Three defects in `pull-workflows.sh`, all in the branch that refuses to pull and
+asks for a deploy — the one path that cannot repair itself, and the one that had
+never been exercised anywhere but production.
+
+**`already_deployed()` judged the wrong set of files.** It compared *every*
+changed file outside `UNSPOKEN_FOR` against the deployed directory, including
+`CHANGELOG.md`. So a documentation commit landing between a runtime push and its
+deploy made a witness mismatch and reported live code as undeployed. It now
+judges the files that actually block. The whole-diff rule is kept as a fallback
+for the case it was written for and was right about — a change to files Coolify
+rewrites, where the blocking files cannot answer for themselves and the rest of
+the diff is the only evidence of which commit is deployed.
+
+**The alert blamed a commit for files it did not contain.** It named
+`git rev-parse --short "$target"` — the tip — while listing runtime files from
+the *whole* gap between the stale checkout and that tip. A docs commit therefore
+arrived on Telegram as the apparent author of `src/` changes hours older. It now
+says the sha *is the tip* rather than implying authorship. This is not cosmetic:
+it sent the last diagnosis down the wrong path twice before the real cause was
+found.
+
+**The refusal now says when the script itself is out of date.** This is the one
+that mattered. `d87fe11` fixed a false "deploy is waiting" and could not reach
+the machine that needed it, because installing it required the fast-forward that
+the unfixed script was refusing to do. Six hours of alerts that nobody could act
+on, ended by a `git merge --ff-only` typed by hand. The refusal path now compares
+this file against the tip and, when they differ, says so and prints the exact
+recovery command. It cannot fix itself — nothing here can — but "the script is
+stale, fast-forward by hand" is a different instruction from "deploy in Coolify",
+and it is the true one.
+
+**Verified in a sandbox, because there is nowhere else to verify it.** A fake
+origin, a fake cron clone, a fake deployed directory, and a stub `docker` that
+captures what would have been sent to Telegram. Eight scenarios: nothing to do,
+docs-only, workflow-only, a runtime change pending, the same change once
+deployed, the docs-after-deploy false positive, a stale script refusing, and a
+workflow push still going live afterwards. Two alerts fire across all eight, both
+correct; before these changes the docs-after-deploy case fired a third that was
+wrong. This file has now had three bugs in three attempts while being the single
+component that can lock a person out of fixing it, and reasoning about shell
+control flow by reading it is what produced the previous two.
+
 ### The sync script locked itself out, and took workflow deploys with it
 
 `scripts/pull-workflows.sh` runs from cron out of a clean clone at

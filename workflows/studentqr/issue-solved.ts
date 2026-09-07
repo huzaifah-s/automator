@@ -7,7 +7,7 @@ import {
   webhook,
   type MondayEvent,
 } from "../../src/core/define.ts";
-import { ISSUE_COLUMN, firstOf, issueSolved, notify } from "./_studentqr.ts";
+import { ISSUE_COLUMN, firstOf, firstPhoneOf, issueSolved, notify } from "./_studentqr.ts";
 
 /**
  * StudentQR — technical issue resolved.
@@ -61,7 +61,7 @@ export default defineWorkflow<MondayEvent>({
         info: firstOf(f, ISSUE_COLUMN.info),
         nama_sekolah: f.text(ISSUE_COLUMN.school),
         nama_guru: f.text(ISSUE_COLUMN.teacher),
-        phone: f.text(ISSUE_COLUMN.phone),
+        phone: firstPhoneOf(f, ISSUE_COLUMN.phone),
         remarks: f.text(ISSUE_COLUMN.remarks),
       };
     });

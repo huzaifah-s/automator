@@ -7,7 +7,7 @@ import {
   webhook,
   type MondayEvent,
 } from "../../src/core/define.ts";
-import { ISSUE_COLUMN, firstOf, issueReceived, notify } from "./_studentqr.ts";
+import { ISSUE_COLUMN, firstOf, firstPhoneOf, issueReceived, notify } from "./_studentqr.ts";
 
 /**
  * StudentQR — technical issue acknowledged.
@@ -56,12 +56,12 @@ export default defineWorkflow<MondayEvent>({
         issue: firstOf(f, ISSUE_COLUMN.issue),
         nama_sekolah: f.text(ISSUE_COLUMN.school),
         nama_guru: f.text(ISSUE_COLUMN.teacher),
-        // Not normalised beyond stripping punctuation, and deliberately: the
-        // form accepts whatever a teacher types, so this is often a local
-        // "0189…" with no country code. Meta rejects those, and a failed run
-        // that says so is better than this file guessing a country prefix and
-        // messaging a stranger who happens to hold 60189….
-        phone: f.text(ISSUE_COLUMN.phone),
+        // Not normalised beyond what the phone column itself stores, and
+        // deliberately: a teacher can still type a local "0189…" with no
+        // country code. Meta rejects those, and a failed run that says so is
+        // better than this file guessing a country prefix and messaging a
+        // stranger who happens to hold 60189….
+        phone: firstPhoneOf(f, ISSUE_COLUMN.phone),
       };
     });
 

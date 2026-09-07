@@ -301,10 +301,11 @@ export async function notify(
  * the form gets rebuilt, somebody updates the file they were looking at, and
  * from then on half the messages carry a blank school name.
  *
- * Not hypothetical here — that form has already been rebuilt once. `issue` and
- * `info` each list the new column id and then the old one, and both are read
- * newest-first, because items raised before the rebuild only populate the old
- * pair. Dropping the fallbacks would silently blank every historic issue.
+ * Not hypothetical here — that form has already been rebuilt once. `issue`,
+ * `info` and `phone` each list the new column id and then the old one, and all
+ * are read newest-first, because items raised before the rebuild only populate
+ * the old one. Dropping the fallbacks would silently blank every historic
+ * issue.
  */
 export const ISSUE_COLUMN = {
   status: "status_1",
@@ -312,8 +313,19 @@ export const ISSUE_COLUMN = {
   info: ["text_mkp4610v", "short_text3"],
   school: "short_text0",
   teacher: "short_text9",
-  /** A plain text column on this board, not a Monday phone column. */
-  phone: "short_text8",
+  /**
+   * A real Monday phone column since the rebuild, so it is read with `f.phone`
+   * rather than `f.text` — a phone column's display text carries whatever
+   * Monday appends for the country.
+   *
+   * The pre-rebuild id was `short_text8`, and it is not in this list because
+   * that column was deleted rather than left in place like `status5` and
+   * `short_text3` were: no item on the board has it, historic ones included.
+   * Reading it is what made every issue since the rebuild report "the board
+   * has no phone number for this teacher" while the cell on screen was filled
+   * in — support got the message and the teacher did not.
+   */
+  phone: ["phone50au8vfa", "phone0sr74d1s"],
   remarks: "text",
 } as const;
 
@@ -323,6 +335,14 @@ export function firstOf(
   ids: readonly string[],
 ): string | undefined {
   return ids.map((id) => fields.text(id)).find(Boolean);
+}
+
+/** The same, for a phone column — the number in the JSON, not the display text. */
+export function firstPhoneOf(
+  fields: { phone(id: string): string | undefined },
+  ids: readonly string[],
+): string | undefined {
+  return ids.map((id) => fields.phone(id)).find(Boolean);
 }
 
 /* ------------------------------------------------ the order-status workflows */

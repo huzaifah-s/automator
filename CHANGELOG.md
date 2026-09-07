@@ -6,6 +6,37 @@ Entries record the *reasoning*, not just the diff — `git log` already has the
 diff. If a change settled a question, say what was settled and what the losing
 option was, so nobody relitigates it from scratch.
 
+## 2026-09-07
+
+### The issue board's phone column was renamed out from under us
+
+Every technical-issue notification since the "BORANG MASALAH TEKNIKAL" form was
+rebuilt went to support and to nobody else. The run was green, the message was
+sent, and the teacher who reported the problem never heard back. The run page
+said "the board has no phone number for this teacher", which was true of the
+column the code was reading and false of the board.
+
+The rebuild moved the number from a plain text column, `short_text8`, to a real
+Monday phone column, `phone50au8vfa`, and deleted the old one. `issue` and
+`info` already carried newest-first fallbacks for exactly this rebuild; `phone`
+was missed, and unlike those two it also changed *type*, so it now reads
+through `f.phone` — a phone column's display text carries whatever Monday
+appends for the country, and the number lives in the value JSON.
+
+**`short_text8` is not kept as a fallback, and that breaks the pattern the
+other two follow.** `status5` and `short_text3` are still on the board, so
+items raised before the rebuild still populate them and reading them still
+returns something. `short_text8` was deleted outright: no item has it, historic
+ones included, so listing it would be a fallback that can never fire.
+
+The wider point is that this class of bug is invisible from a run page. A
+missing column and an empty cell are the same `undefined`, and `notify()` is
+right to treat an absent number as "tell support only" rather than an error —
+a teacher who genuinely left the field blank is not a failure. What that costs
+is that a renamed column looks exactly like a board full of people who did not
+give their number, and it goes on looking like that until somebody tests with
+their own phone.
+
 ## 2026-09-06
 
 ### A switch that can only ever be flicked down

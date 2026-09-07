@@ -406,6 +406,27 @@ export interface RunRecord {
   input: string | null;
 }
 
+/**
+ * A token an MCP client authenticates with. The plaintext is not here and is
+ * not anywhere — only its digest — so this row cannot be turned back into a
+ * working credential. See `mcp_tokens` in db.ts.
+ */
+export interface McpTokenRecord {
+  id: string;
+  name: string;
+  /** 'read' can only call the read tools; 'full' can also trigger and replay. */
+  scope: "read" | "full";
+  hash: string;
+  /** First few characters of the plaintext, so a row can be told from its siblings. */
+  prefix: string;
+  created_at: number;
+  /** MCP has no persistent connection, so this is the whole of "is it connected". */
+  last_used_at: number | null;
+  /** Whatever the client called itself on the handshake, e.g. "claude-code 2.0.1". */
+  last_client: string | null;
+  calls: number;
+}
+
 /** One accepted webhook delivery — see the `inbox` table in db.ts. */
 export interface InboxRecord {
   id: string;

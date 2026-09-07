@@ -7,6 +7,7 @@ import type {
   CredentialRow,
   IgnoredRecord,
   InboxRecord,
+  McpTokenRecord,
   LogRecord,
   PollRecord,
   RejectionRecord,
@@ -332,7 +333,37 @@ db.exec(`
     test_detail TEXT,
     PRIMARY KEY (provider, id)
   ) WITHOUT ROWID;
+
+  -- Tokens an MCP client authenticates with, one row per place you connect
+  -- from. The token itself is NOT here: only its sha256, so a copy of this
+  -- database is not a set of working credentials. The prefix column is the
+  -- first few characters of the plaintext, kept so a row can be recognised
+  -- on the dashboard against what a client has configured -- a hash cannot
+  -- be read back, and "which of these three is the one on my phone" is
+  -- otherwise unanswerable.
+  --
+  -- scope is 'read' or 'full', per token rather than one global setting,
+  -- because the point of having several is that they are not equally
+  -- trusted: a read token cannot replay a run whatever asks it to.
+  --
+  -- last_used_at, last_client and calls exist because MCP over HTTP has no
+  -- connection to observe. There is no socket that is up or down -- a request
+  -- arrives and is answered -- so "is it connected?" can only ever be
+  -- answered as "it was used, by this client, this recently".
+  CREATE TABLE IF NOT EXISTS mcp_tokens (
+    id           TEXT PRIMARY KEY,
+    name         TEXT    NOT NULL,
+    scope        TEXT    NOT NULL DEFAULT 'full',
+    hash         TEXT    NOT NULL UNIQUE,
+    prefix       TEXT    NOT NULL,
+    created_at   INTEGER NOT NULL,
+    last_used_at INTEGER,
+    last_client  TEXT,
+    calls        INTEGER NOT NULL DEFAULT 0
+  );
 `);
+
+
 
 // Migration for databases created before checkpointing existed.
 const runColumns = new Set(
@@ -486,6 +517,107 @@ const stmts = {
        AND started_at >= ? AND started_at <= ?
      GROUP BY status`,
   ),
+  // Lean columns on purpose. The only caller groups these by error text to
+  // answer "what is failing, and how often" — it never renders a row, so
+  // pulling `result` and `input` along would be reading the biggest columns in
+  // the table to throw them away. See `failuresSince` below for the rest.
+  failedRunsSince: db.prepare(
+    `SELECT id, workflow, error, started_at FROM runs
+     WHERE status = 'failed' AND started_at >= ?
+     ORDER BY started_at DESC LIMIT ?`,
+  ),
+  // A prefix range over the primary key, for resolving an abbreviated run id.
+  // Two rows, not one: the second is only there to tell "unique" from
+  // "ambiguous", which is the difference between an answer and a guess.
+  runIdsByPrefix: db.prepare(
+    `SELECT id FROM runs WHERE id >= ? AND id < ? ORDER BY id LIMIT 2`,
+  ),
+  // Runs matching free text, in the error or in any of the run's log lines.
+  // EXISTS rather than a join so a run with forty matching log lines is still
+  // one row — DISTINCT over SELECT * would work too and costs a sort.
+  searchRuns: db.prepare(
+    `SELECT * FROM runs r
+     WHERE (? = '' OR r.status = ?) AND (? = '' OR r.workflow = ?)
+       AND r.started_at >= ?
+       AND (r.error LIKE ? ESCAPE '\\'
+            OR EXISTS (SELECT 1 FROM logs l
+                       WHERE l.run_id = r.id
+                         AND (l.msg LIKE ? ESCAPE '\\' OR l.data LIKE ? ESCAPE '\\')))
+     ORDER BY r.started_at DESC LIMIT ?`,
+  ),
+
+  // Where the time goes, per step. Ordered by TOTAL rather than by average:
+  // the step worth looking at is the one the runner spends its life in, which
+  // is usually a merely-slowish step called constantly rather than the rare
+  // outlier a max would surface.
+  stepHotspots: db.prepare(
+    `SELECT r.workflow AS workflow, s.name AS name, COUNT(*) AS runs,
+            SUM(s.duration_ms) AS total, MAX(s.duration_ms) AS worst,
+            SUM(CASE WHEN s.status = 'failed' THEN 1 ELSE 0 END) AS failed
+     FROM steps s JOIN runs r ON r.id = s.run_id
+     WHERE s.started_at >= ? AND s.duration_ms IS NOT NULL
+     GROUP BY r.workflow, s.name
+     ORDER BY total DESC LIMIT ?`,
+  ),
+
+  // Grouped on the exact URL here and re-grouped on a normalised one in the
+  // caller: collapsing `/items/123` and `/items/456` needs a regex, and doing
+  // it in SQL would mean either a stored function or reading every row.
+  callHotspots: db.prepare(
+    `SELECT r.workflow AS workflow, c.method AS method, c.url AS url,
+            COUNT(*) AS calls, SUM(c.duration_ms) AS total, MAX(c.duration_ms) AS worst,
+            SUM(CASE WHEN c.status IS NULL OR c.status >= 400 THEN 1 ELSE 0 END) AS errors
+     FROM calls c JOIN runs r ON r.id = c.run_id
+     WHERE c.ts >= ?
+     GROUP BY r.workflow, c.method, c.url
+     ORDER BY total DESC LIMIT 5000`,
+  ),
+
+  // Retries are invisible in the run list: a run that failed twice and then
+  // succeeded is one green row. `attempts` is the only place the cost shows.
+  retryRates: db.prepare(
+    `SELECT workflow, COUNT(*) AS runs,
+            SUM(CASE WHEN attempts > 1 THEN 1 ELSE 0 END) AS retried,
+            SUM(attempts) - COUNT(*) AS extra,
+            AVG(duration_ms) AS avg_ms
+     FROM runs WHERE started_at >= ?
+     GROUP BY workflow HAVING SUM(CASE WHEN attempts > 1 THEN 1 ELSE 0 END) > 0
+     ORDER BY extra DESC LIMIT ?`,
+  ),
+
+  // One row per workflow per UTC day. The division is integer, so the bucket
+  // is the same day the dashboard prints — see resolveRange() in server/app.ts
+  // for why days here are UTC and not local.
+  dailyCounts: db.prepare(
+    `SELECT workflow, started_at / 86400000 AS day, status, COUNT(*) AS count
+     FROM runs
+     WHERE started_at >= ? AND (? = '' OR workflow = ?)
+     GROUP BY workflow, day, status
+     ORDER BY day`,
+  ),
+
+  inboxByStatus: db.prepare(
+    `SELECT * FROM inbox WHERE status = ? ORDER BY received_at DESC LIMIT ?`,
+  ),
+  inboxCounts: db.prepare(`SELECT status, COUNT(*) AS count FROM inbox GROUP BY status`),
+
+  /* ------------------------------------------------------- mcp tokens */
+
+  allMcpTokens: db.prepare(`SELECT * FROM mcp_tokens ORDER BY created_at DESC`),
+  mcpTokenByHash: db.prepare(`SELECT * FROM mcp_tokens WHERE hash = ?`),
+  insertMcpToken: db.prepare(
+    `INSERT INTO mcp_tokens (id, name, scope, hash, prefix, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ),
+  deleteMcpToken: db.prepare(`DELETE FROM mcp_tokens WHERE id = ?`),
+  touchMcpToken: db.prepare(
+    `UPDATE mcp_tokens SET last_used_at = ?, calls = calls + 1,
+            last_client = COALESCE(?, last_client)
+     WHERE id = ?`,
+  ),
+  mcpTokenCount: db.prepare(`SELECT COUNT(*) AS count FROM mcp_tokens`),
+  mcpLastSeen: db.prepare(`SELECT MAX(last_used_at) AS at FROM mcp_tokens`),
+
   pruneRuns: db.prepare(`DELETE FROM runs WHERE started_at < ?`),
   pruneSteps: db.prepare(
     `DELETE FROM steps WHERE run_id NOT IN (SELECT id FROM runs)`,
@@ -838,6 +970,145 @@ export const store = {
       failed: number;
       last_run: number | null;
     },
+
+  /**
+   * Failed runs in a window, newest first, capped. The cap is a ceiling on how
+   * much the caller has to hold at once, not a page: a deployment failing more
+   * than this in one window has a bigger answer than a list anyway.
+   */
+  failedRunsSince: (since: number, limit = 2000) =>
+    stmts.failedRunsSince.all(since, limit) as Pick<
+      RunRecord,
+      "id" | "workflow" | "error" | "started_at"
+    >[],
+
+  /**
+   * Resolves a possibly-abbreviated run id to a whole one. Null for no match
+   * **and** for more than one: an ambiguous prefix must not silently pick a
+   * run, least of all for a caller about to replay it.
+   */
+  resolveRunId(prefix: string): string | null {
+    if (!prefix) return null;
+    if (stmts.getRun.get(prefix)) return prefix;
+    const last = prefix.charCodeAt(prefix.length - 1);
+    const upper = prefix.slice(0, -1) + String.fromCharCode(last + 1);
+    const rows = stmts.runIdsByPrefix.all(prefix, upper) as { id: string }[];
+    return rows.length === 1 ? rows[0]!.id : null;
+  },
+
+  /**
+   * Runs whose error or log lines contain `text`. Substring, case-insensitive
+   * the way SQLite's LIKE is for ASCII, and deliberately not an FTS index: the
+   * tables are small enough that a scan is instant, and an index would be a
+   * second thing to keep in step with pruning.
+   */
+  searchRuns: (
+    text: string,
+    filter: { workflow?: string; status?: string; since?: number } = {},
+    limit = 20,
+  ): RunRecord[] => {
+    const status = filter.status ?? "";
+    const workflow = filter.workflow ?? "";
+    // The ESCAPE clause in the statement is what makes this escaping mean
+    // anything. Without it SQLite reads the backslash as a literal character,
+    // so a search for a name containing "_" matches nothing and says nothing.
+    const like = `%${text.replace(/[%_]/g, (m) => `\\${m}`)}%`;
+    return stmts.searchRuns.all(
+      status,
+      status,
+      workflow,
+      workflow,
+      filter.since ?? 0,
+      like,
+      like,
+      like,
+      limit,
+    ) as RunRecord[];
+  },
+
+  /* ------------------------------------------------------------ analysis */
+
+  stepHotspots: (since: number, limit = 12) =>
+    stmts.stepHotspots.all(since, limit) as {
+      workflow: string;
+      name: string;
+      runs: number;
+      total: number;
+      worst: number;
+      failed: number;
+    }[],
+
+  callHotspots: (since: number) =>
+    stmts.callHotspots.all(since) as {
+      workflow: string;
+      method: string;
+      url: string;
+      calls: number;
+      total: number;
+      worst: number;
+      errors: number;
+    }[],
+
+  retryRates: (since: number, limit = 12) =>
+    stmts.retryRates.all(since, limit) as {
+      workflow: string;
+      runs: number;
+      retried: number;
+      extra: number;
+      avg_ms: number | null;
+    }[],
+
+  /** Runs per workflow per UTC day, one row per status. */
+  dailyCounts: (since: number, workflow?: string) => {
+    const name = workflow ?? "";
+    return stmts.dailyCounts.all(since, name, name) as {
+      workflow: string;
+      day: number;
+      status: string;
+      count: number;
+    }[];
+  },
+
+  /* -------------------------------------------------------------- inbox */
+
+  inboxByStatus: (status: string, limit = 20) =>
+    stmts.inboxByStatus.all(status, limit) as InboxRecord[],
+
+  inboxCounts: (): Record<string, number> =>
+    Object.fromEntries(
+      (stmts.inboxCounts.all() as { status: string; count: number }[]).map((r) => [
+        r.status,
+        r.count,
+      ]),
+    ),
+
+  /* --------------------------------------------------------- mcp tokens */
+
+  mcpTokens: () => stmts.allMcpTokens.all() as McpTokenRecord[],
+  mcpTokenByHash: (hash: string) =>
+    (stmts.mcpTokenByHash.get(hash) as McpTokenRecord | null) ?? null,
+  insertMcpToken: (row: {
+    id: string;
+    name: string;
+    scope: string;
+    hash: string;
+    prefix: string;
+  }): void => {
+    stmts.insertMcpToken.run(row.id, row.name, row.scope, row.hash, row.prefix, Date.now());
+  },
+  deleteMcpToken: (id: string): boolean => stmts.deleteMcpToken.run(id).changes > 0,
+
+  /**
+   * Records that a token was just used. The client name is only known on the
+   * handshake, so every other call passes null and COALESCE keeps the last one
+   * rather than blanking it.
+   */
+  touchMcpToken: (id: string, client: string | null): void => {
+    stmts.touchMcpToken.run(Date.now(), client, id);
+  },
+
+  mcpTokenCount: () => (stmts.mcpTokenCount.get() as { count: number }).count,
+  mcpLastSeen: () => (stmts.mcpLastSeen.get() as { at: number | null }).at,
 
   /* -------------------------------------------------- workflow versions */
 

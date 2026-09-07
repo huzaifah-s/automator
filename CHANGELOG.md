@@ -42,6 +42,25 @@ nagging.
 turn "a deploy is waiting" into "the pull script is broken", and must not make
 a cron job report a failure its real work did not have.
 
+### The deploy alert never sent, and said nothing about it
+
+Caught on the live deployment: the `src/` refusal fired correctly and wrote its
+log lines, and the Telegram message never arrived.
+
+`notify()` used `docker compose exec`, which resolves a project from the working
+directory. Once `AUTOMATOR_LIVE_DIR` moved the git work into a clean clone, the
+working directory became a checkout that has a compose file and no running
+containers — so every alert went to a project that was not there. It now finds
+the container by name pattern and uses `docker exec`, which does not care where
+it is run from. `AUTOMATOR_CONTAINER` overrides the pattern; the default
+`^automator[-_]` handles Coolify's per-deployment name suffix.
+
+**The second bug is the one worth remembering: `|| true` with the output
+discarded.** Not failing the cron run was right; leaving no trace was not. A
+broken alert is invisible by construction — you find out when it fails to warn
+you about something real. It now prints a line saying it could not alert, and
+still exits successfully.
+
 ### Coolify's checkout is not a place git can be run
 
 Measured on the live deployment: Coolify rewrites tracked files in the

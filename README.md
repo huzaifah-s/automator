@@ -1633,13 +1633,17 @@ reload:
 Deploy it in Coolify.
 ```
 
-It sends that through the container (`docker compose exec … --alert`) rather
+It sends that through the container (`docker exec … --alert`) rather
 than holding a Telegram token on the host — the container already has one, and
 a second copy on disk is a second thing to leak. The short sha is in the
 message so a further push while the first is still undeployed is heard, while
 the [alert cooldown](#alerts--being-told-when-something-breaks) collapses the
-per-minute repeats of one. Delivery failures are swallowed: a Telegram outage
-must not turn "a deploy is waiting" into "the pull script is broken".
+per-minute repeats of one. Delivery failures do not fail the run — a Telegram
+outage must not turn "a deploy is waiting" into "the pull script is broken" —
+but they are logged, because an alert that silently never sends is worse than
+no alert at all. The container is found by name pattern
+(`AUTOMATOR_CONTAINER`, default `^automator[-_]`), since Coolify appends a
+per-deployment suffix that changes every time.
 
 ## Deploying
 

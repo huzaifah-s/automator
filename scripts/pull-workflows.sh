@@ -58,15 +58,35 @@ sync_live() {
   rsync -a --delete workflows/ "$LIVE_DIR/workflows/"
 }
 
+# How to recognise the running container. Coolify appends a per-deployment
+# suffix, so the name changes every deploy and cannot be pinned.
+CONTAINER_MATCH=${AUTOMATOR_CONTAINER:-^automator[-_]}
+
 # Says something on the alert channel — Telegram, Slack, wherever ALERT_CHANNEL
 # points. Through the container on purpose: it already holds the token, and the
 # host has no business holding a second copy of it.
 #
-# Every failure here is swallowed. This is a notification about a cron job whose
+# `docker exec` on a container found by name, not `docker compose exec`. Compose
+# resolves a project from the working directory, and once AUTOMATOR_LIVE_DIR is
+# in play the working directory is the clean clone — which has a compose file
+# and no containers, so every alert failed silently against a project that was
+# never running.
+#
+# A failure is still not fatal: this is a notification about a cron job whose
 # real work has already been decided, and a Telegram outage must not turn "there
-# is a deploy waiting" into "the pull script is broken".
+# is a deploy waiting" into "the pull script is broken". But it is no longer
+# *silent* — swallowing the error with no trace is exactly what hid the bug
+# above, and a log line is the difference between a broken alert you find in a
+# minute and one you find when it fails to warn you about something real.
 notify() {
-  docker compose exec -T automator bun src/index.ts --alert "$1" >/dev/null 2>&1 || true
+  container=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -m1 -E "$CONTAINER_MATCH" || true)
+  if [ -z "$container" ]; then
+    echo "  (could not alert: no running container matches $CONTAINER_MATCH)"
+    return 0
+  fi
+  if ! docker exec -i "$container" bun src/index.ts --alert "$1" >/dev/null 2>&1; then
+    echo "  (could not alert through $container)"
+  fi
 }
 
 # Paths whose contents the running container does *not* re-read. A change to

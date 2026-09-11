@@ -51,6 +51,23 @@ The reason to keep reading the input inside a step is now the honest one: a
 resume should act on the decision it made the first time, not on what Monday,
 Notion or a renamed form field says now.
 
+### Publishing and ticking are two steps, not one
+
+The cross-poster published to a platform and ticked its Notion box inside a
+single step, so the third of a second between the two was uncheckpointed. Lose
+the process in that gap — which is exactly how the restart landed — and the
+tick box still says pending while the post exists. A resume read the box,
+believed it, and posted the reel again.
+
+As its own step the publish is durable the moment it returns, saved before the
+tick is attempted, so a resume inside the checkpoint TTL hands back the post id
+instead of making a second post. Verified by killing the process in the gap:
+one post, not two.
+
+Past the TTL the tick box is the only record left and the window is open again.
+That is an argument for a TTL generous enough to cover a deploy, not for
+folding the two back together.
+
 ### A run killed by a restart says so
 
 The same incident, the other half. `Interrupted by restart` was written by an

@@ -1534,10 +1534,36 @@ async function crossPost(
       }
 
       try {
-        const postId = await publishTo(ctx, platform, tokens, media, parsed.caption);
+        /*
+         * Two steps rather than one call, and the gap between them is the whole
+         * reason.
+         *
+         * The tick is what tells the *next* run this platform is done, so until
+         * it lands, a post that already exists looks pending. Publishing and
+         * ticking inside a single step left that window uncheckpointed: lose
+         * the process in the third of a second between Threads accepting a
+         * video and Notion recording it, and the resume re-read an unticked box
+         * and posted the same reel twice.
+         *
+         * As its own step the publish is durable the moment it returns — saved
+         * before the tick is even attempted — so a resume inside the checkpoint
+         * TTL hands back the post id instead of making a second post. Past the
+         * TTL the tick box in Notion is the only record left and the window is
+         * open again; that is the argument for keeping the TTL generous enough
+         * to cover a deploy, not for folding these back together.
+         */
+        const postId = await ctx.step(
+          `publish ${platform} ${page.id}`,
+          () => publishTo(ctx, platform, tokens, media, parsed.caption),
+          { input: { page: page.title, platform } },
+        );
         // Ticked immediately, before the next platform is attempted: if that
         // one dies, this one must not be repeated on the retry.
-        await tickTodo(ctx, parsed.todos[platform]!.id);
+        await ctx.step(
+          `tick ${platform} ${page.id}`,
+          () => tickTodo(ctx, parsed.todos[platform]!.id),
+          { input: { page: page.title, platform, postId } },
+        );
         results.push({
           platform, ok: true, skipped: false, postId, error: null, ambiguous: false,
         });

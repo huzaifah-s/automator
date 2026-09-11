@@ -8,6 +8,62 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-11
 
+### Resume finishes the run it was given, instead of starting an empty one
+
+A restart landed on the cross-poster mid-publish. Instagram and Facebook had
+gone out and been ticked; Threads was four polls into waiting on a video
+container. The process came back, `markOrphans` flipped the run to failed, and
+the Notion row stayed on `Posting` — which is the lock working, and also the
+state nothing ever picks up again. Resume was pressed, and answered
+`{pages: 0, posted: 0, failed: 0}` in sixty milliseconds. Green tick, nothing
+posted.
+
+Resume passed a checkpoint key and nothing else, so `ctx.input` was `{}` the
+second time through. For a cron workflow that is invisible. For every poll and
+every webhook — which is to say, everything that has rows to work on — it made
+Resume a button that reliably did nothing and reported success for doing it.
+The workaround had already been absorbed as a house rule ("read the input
+inside a step, a resumed run has no `ctx.input`"), which is how a missing
+payload came to look like a style preference.
+
+**A resumed run now gets the input the run it is resuming was given.**
+`carryInput` in `src/core/runner.ts` reads it off the parent, so the HTML
+route, the JSON API and the MCP tool all get it without any of them knowing —
+one place to be right, and no way for three call sites to drift.
+
+*What was traded.* Resume and replay now differ in exactly one thing instead of
+two: both run the workflow on the same input, and only the checkpoint key
+differs — resume reuses the parent's and skips completed steps, replay takes a
+fresh one and redoes them. That is a narrower distinction than before and a
+truer one; the alternative on the table was to make resume re-derive its own
+rows, which would have turned "finish the run that half-posted" into "post
+whatever is due now" against step names belonging to different rows.
+
+*What is deliberately not faked.* An input that was truncated by
+`CAPTURE_MAX_BYTES`, never recorded (`CAPTURE_DATA=false`), or no longer parses
+is **not** carried: the run resumes with an empty `ctx.input` and a warning on
+its page saying which of the three happened. Handing a workflow a preview of
+its own payload would be a worse version of the bug being fixed. Those runs
+still resume cleanly, because the steps that read the input are checkpointed —
+which is what the house rule was always actually buying.
+
+The reason to keep reading the input inside a step is now the honest one: a
+resume should act on the decision it made the first time, not on what Monday,
+Notion or a renamed form field says now.
+
+### A run killed by a restart says so
+
+The same incident, the other half. `Interrupted by restart` was written by an
+`UPDATE` at boot and went nowhere near `onFailure` — the process that would
+have run it is the thing that went away. So the one failure mode that can leave
+a lock on was also the only one that sent nothing. A row sat on `Posting` for a
+day, and the first thing that would have noticed was the daily stale sweep.
+
+`store.markOrphans()` now returns the runs it flipped, and boot sends one alert
+per run on that workflow's own channel, linking to the run page. Async webhook
+deliveries already had the inbox to recover them; polls had nothing, and this is
+what they get.
+
 ### A relay that is refused can now hand the conversation back to a human
 
 A teacher wrote in, the relay tried to forward it to support, and Meta refused

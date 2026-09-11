@@ -33,7 +33,7 @@ import {
   credentialRequirements,
   initCredentials,
 } from "./core/credentials.ts";
-import { alertBoot, describeAlertChannel } from "./core/alerts.ts";
+import { alertBoot, alertInterrupted, describeAlertChannel } from "./core/alerts.ts";
 import { isPaused, reportPauses } from "./core/pause.ts";
 import { runSecretCli } from "./cli/secrets.ts";
 import { runVariableCli } from "./cli/variables.ts";
@@ -194,8 +194,27 @@ if (args[0] === "--run") {
 
 /* ---------------------------------------------------------------- server */
 
+/*
+ * Runs that were still going when the process stopped. Flipping them to failed
+ * is all this used to do, and it is the one failure path `onFailure` never
+ * sees — the process that would have run it is what went away. So each one is
+ * also alerted, on its own workflow's channel: a run that died between doing
+ * something and recording it can leave a lock nobody will clear, and the only
+ * moment anything knows that happened is right here.
+ *
+ * Not awaited, like every other boot alert: a slow chat must not hold up a
+ * start, least of all the start that follows a crash.
+ */
 const orphans = store.markOrphans();
-if (orphans > 0) log.warn(`Marked ${orphans} interrupted run(s) as failed`);
+if (orphans.length > 0) {
+  log.warn(`Marked ${orphans.length} interrupted run(s) as failed`);
+  for (const orphan of orphans) {
+    // Falling back to a bare target keeps the alert honest about a run whose
+    // workflow has since been deleted or renamed — it gets the default channel
+    // rather than being dropped for having nothing to attribute it to.
+    void alertInterrupted(registry.get(orphan.workflow) ?? { name: orphan.workflow }, orphan.id);
+  }
+}
 
 // A `bun run secret set` writes to the database from another process; this is
 // how the long-lived server hears about it without being restarted.

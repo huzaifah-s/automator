@@ -1275,30 +1275,28 @@ export default defineWorkflow<DuePage[]>({
     }
 
     /*
-     * The trigger owns the query, so the rows arrive as input. Two ways to get
-     * here with none, and doing nothing is the right answer to both:
+     * The trigger owns the query, so the rows arrive as input. Only one way to
+     * get here with none, now that resume carries the failed run's rows
+     * forward: "Run now" on the dashboard, where there is no query to run
+     * because the poll is what decides what is due. Making a row due in Notion
+     * is how you force a post; that button cannot be it.
      *
-     *   "Run now" on the dashboard — there is no query to run, because the
-     *   poll is what decides what is due. Making a row due in Notion is how you
-     *   force a post; this button cannot be it.
-     *
-     *   A resume — resume carries the checkpoint key and nothing else, so
-     *   ctx.input is {} the second time through.
-     *
-     * Re-deriving the due rows here would serve the first case and break the
-     * second, badly: a resumed run would post whatever is due *now* against a
-     * checkpoint key belonging to different rows, skipping steps by name and
-     * mixing two sets of pages. And the two cannot be told apart — the resume
-     * route calls the runner with trigger: "manual", exactly as the button
-     * does. So neither posts.
+     * Re-deriving the due rows here to make the button work anyway is the
+     * tempting fix and the wrong one — under a resume's checkpoint key it would
+     * post whatever is due *now* against step names belonging to the rows that
+     * failed, mixing two sets of pages. And the two cannot be told apart: the
+     * resume route calls the runner with trigger: "manual", exactly as the
+     * button does. The rows come from the trigger or they do not come.
      */
     const pages = Array.isArray(ctx.input) ? ctx.input : [];
     if (pages.length === 0) {
       ctx.log.info(
         "Nothing to do: this run was given no rows. Only the 5-minute poll finds due " +
-          "rows — \"Run now\" and Resume both arrive with none, by design. To force a " +
+          "rows, and \"Run now\" arrives with none — it has no query to run. To force a " +
           "post, make a row due in Notion (Status Posted, Posted (Tiktok) ticked, " +
-          "Posted (others) unticked, TikTok date 3-10 days old) and the next tick takes it.",
+          "Posted (others) unticked, TikTok date 3-10 days old) and the next tick takes " +
+          "it. To finish a run that died halfway, open it and use Resume — that one " +
+          "arrives with the rows it was working on.",
       );
       return { pages: 0, posted: 0, failed: 0 };
     }
@@ -1423,10 +1421,12 @@ export default defineWorkflow<DuePage[]>({
       // does on the way to disk — and the Meta tokens travel in the URL.
       escapeHtml(redact(error.message)),
       "",
-      "\u{26A0}\u{FE0F} A row may be stuck on <b>Posting</b> in Notion. Check it — set it " +
-        "back to <b>Posted</b> and leave <b>Posted (others)</b> unticked, and the next " +
-        "tick will retry only the platforms that are still unticked in its Postings " +
-        "list. A row left on Posting is never picked up again.",
+      "\u{26A0}\u{FE0F} A row may be stuck on <b>Posting</b> in Notion, and a row left on " +
+        "Posting is never picked up again — the poll only looks at <b>Posted</b>. Two ways " +
+        "out, and the run page is the quicker one: <b>Resume</b> re-runs this with the same " +
+        "rows and skips the platforms already ticked in its Postings list. Failing that, set " +
+        "the row back to <b>Posted</b> in Notion with <b>Posted (others)</b> unticked and the " +
+        "next tick takes it — as long as its TikTok date is still inside the 3-10 day window.",
     ];
     if (base) lines.push("", `${base}/runs/${ctx.runId}`);
 

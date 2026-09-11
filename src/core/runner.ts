@@ -3,7 +3,7 @@ import { credentialReady } from "./credentials.ts";
 import { createLogger, log } from "./logger.ts";
 import { alertBlocked, alertFailure } from "./alerts.ts";
 import { buildIntegrations } from "../integrations/index.ts";
-import { capture, MAX_CHECKPOINT_BYTES } from "./capture.ts";
+import { capture, captureEnabled, isTruncated, MAX_CHECKPOINT_BYTES } from "./capture.ts";
 import { createState } from "./state.ts";
 import { isEnabled, isPaused, pausedInfo } from "./pause.ts";
 import type { Ctx, LoadedWorkflow, RunStatus, TriggerKind } from "./types.ts";
@@ -118,6 +118,11 @@ export interface RunOptions {
    * defaults to the new run's own id, which is what makes retries resumable.
    */
   checkpointKey?: string;
+  /**
+   * The run being resumed. Its recorded `input` is carried forward unless the
+   * caller passes one — see `carryInput`. Distinct from `replayedFrom`: a
+   * resume reuses the checkpoint key, a replay starts a fresh one.
+   */
   resumedFrom?: string;
   /**
    * Lineage for the Replay action: the run whose input this one is re-using.
@@ -272,9 +277,81 @@ async function execute(wf: LoadedWorkflow, opts: RunOptions): Promise<RunOutcome
   }
 }
 
+/**
+ * The input a resumed run starts with: the one the run being resumed was given.
+ *
+ * **Resume used to carry nothing**, and the cost of that was not theoretical.
+ * A workflow whose rows arrive as `ctx.input` — every poll, every webhook —
+ * saw an empty object the second time through, so Resume was a button that
+ * reliably did nothing and reported success for doing it. The cross-poster hit
+ * exactly this: a restart killed a run mid-publish, Resume answered
+ * `{pages: 0}`, and the row stayed half-posted. Reading the input inside a step
+ * is still the better habit (a resume then gets the recorded answer rather than
+ * re-deriving it), but it was being asked to paper over a missing payload, and
+ * that is not what it is for.
+ *
+ * Carrying it forward is what makes resume mean "finish this run" rather than
+ * "start an empty one with some steps skipped". It does not blur the line with
+ * replay: that line is the checkpoint key, and it has not moved. Both now run
+ * the same workflow on the same input; only one of them reuses the steps.
+ *
+ * The input is *not* invented when it cannot be had faithfully. A truncated or
+ * unreadable capture becomes no input and a line on the run page saying so —
+ * silently handing a workflow a preview of its own payload is the failure this
+ * function exists to end, not one to move somewhere new. Those runs still
+ * resume, because the step results that read the payload are checkpointed and
+ * come back whole.
+ */
+function carryInput(parentId: string): { input: unknown; note: string | null } {
+  const parent = store.getRun(parentId);
+  // The routes look the run up before calling, so this is a race, not a typo.
+  if (!parent) return { input: undefined, note: null };
+
+  if (parent.input === null) {
+    // Nothing recorded. A cron or manual run never had an input, so that is
+    // the whole story; for the triggers that carry a payload it means capture
+    // is off, and the run page should say which of the two it is looking at.
+    const carries = parent.trigger === "webhook" || parent.trigger === "poll" ||
+      parent.trigger === "workflow";
+    return {
+      input: undefined,
+      note: carries && !captureEnabled
+        ? "The resumed run's input was never recorded (CAPTURE_DATA=false), so " +
+          "ctx.input is empty. Steps that read it are still reused from the checkpoint."
+        : null,
+    };
+  }
+
+  if (isTruncated(parent.input)) {
+    return {
+      input: undefined,
+      note: "The resumed run's input was too large to record whole " +
+        "(CAPTURE_MAX_BYTES), so it is not carried over and ctx.input is empty — " +
+        "a preview of a payload is not the payload. Steps that read it are still " +
+        "reused from the checkpoint.",
+    };
+  }
+
+  try {
+    return { input: JSON.parse(parent.input), note: null };
+  } catch {
+    return {
+      input: undefined,
+      note: "The resumed run's recorded input is not readable back, so ctx.input " +
+        "is empty. Steps that read it are still reused from the checkpoint.",
+    };
+  }
+}
+
 async function executeNow(wf: LoadedWorkflow, opts: RunOptions): Promise<RunOutcome> {
   const runId = crypto.randomUUID();
   const checkpointKey = opts.checkpointKey ?? runId;
+  // Before startRun, because the carried input is recorded like any other, and
+  // before buildCtx, because that is what `ctx.input` reads.
+  const carried = opts.resumedFrom !== undefined && opts.input === undefined
+    ? carryInput(opts.resumedFrom)
+    : null;
+  if (carried) opts = { ...opts, input: carried.input };
   const logger = createLogger(wf.name, runId);
   const maxAttempts = (wf.retries ?? DEFAULT_RETRIES) + 1;
   const timeoutMs = wf.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -294,8 +371,18 @@ async function executeNow(wf: LoadedWorkflow, opts: RunOptions): Promise<RunOutc
 
   if (opts.resumedFrom) {
     const expired = store.expireCheckpoints(checkpointKey, wf.checkpointTtlHours ?? 24);
-    if (expired > 0) logger.warn(`Dropped ${expired} checkpoint(s) past their TTL`);
     logger.info(`▶ resumed from ${opts.resumedFrom.slice(0, 8)}`);
+    if (expired > 0) {
+      // Said in full because the consequence is the whole difference between a
+      // resume and a replay: with no step results left to reuse, this run does
+      // all of it again — which is only safe if the workflow's steps are.
+      logger.warn(
+        `Dropped ${expired} checkpoint(s) past this workflow's ` +
+          `checkpointTtlHours (${wf.checkpointTtlHours ?? 24}h) — every step ` +
+          `runs again rather than being reused`,
+      );
+    }
+    if (carried?.note) logger.warn(carried.note);
   } else if (opts.replayedFrom) {
     logger.info(`▶ replaying ${opts.replayedFrom.slice(0, 8)} with its original input`);
   } else if (opts.parent) {

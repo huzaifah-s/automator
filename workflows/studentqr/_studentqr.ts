@@ -428,9 +428,10 @@ export function orderStatusWorkflow(opts: {
     timeoutMs: 120_000,
 
     async run(ctx) {
-      // Everything derived from the payload is read inside a step. A resumed
-      // run has no ctx.input, so reading the pulse id at the top of run()
-      // would look it up in an empty object and fetch item "undefined".
+      // Everything derived from the payload is read inside a step, so a resume
+      // gets the recorded answer back rather than asking Monday again — the
+      // board has moved on since, and the run that failed was working on the
+      // item as it was.
       const order = await ctx.step("read the order", async () => {
         const item = await ctx.monday.item(pulseId(ctx.input));
         const f = ctx.monday.fields(item);

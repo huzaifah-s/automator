@@ -53,9 +53,10 @@ import {
  *    seen and a row trimmed after emission would never be offered again.
  * 2. **Running it by hand is safe.** n8n's poster threw "no pages were passed
  *    in" if you pressed play, because its rows came from the caller. Here the
- *    trigger owns the query, so there is nothing to press play on — and a
- *    *resume* from the dashboard, which carries no input, does nothing rather
- *    than re-posting (see the guard in `run`).
+ *    trigger owns the query, so there is nothing to press play on — Run now
+ *    arrives with no rows and does nothing rather than re-posting (see the
+ *    guard in `run`). A *resume* is the other half of that: it carries the
+ *    rows the failed run was working on, so it finishes that run instead.
  * 3. **The token is never in the run record.** n8n kept it in a data table and
  *    passed it downstream as item data, so it sat in plain text in every
  *    execution. `defineOAuth` hands it over inside the process only, and it is
@@ -765,16 +766,17 @@ export default defineWorkflow<DuePage[]>({
     // calls, where the redactor scrubs it.
     const token = await threads.accessToken();
 
-    // A *resume* from the dashboard carries no input — only a replay does — so
-    // this is what a resumed run sees, and doing nothing is the right answer.
-    // Re-deriving the due rows here instead would turn "resume the run that
-    // half-posted" into "post whatever is due now", against a checkpoint key
+    // Run now is the way to get here with nothing: the poll owns the query, so
+    // the button has none to run. Re-deriving the due rows here to give it one
+    // would turn a resume — which arrives with the rows its failed run was
+    // working on — into "post whatever is due now", against a checkpoint key
     // that would then skip steps belonging to different rows entirely.
     const pages = Array.isArray(ctx.input) ? ctx.input : [];
     if (pages.length === 0) {
       ctx.log.info(
-        "No pages in the input — a resumed run carries none. Nothing to post; the " +
-          "poll will pick up whatever is due on its next tick.",
+        "No pages in the input — only the poll finds due rows, so Run now arrives with " +
+          "none. Nothing to post; the poll will pick up whatever is due on its next tick. " +
+          "To finish a run that died halfway, use Resume on that run.",
       );
       return { pages: 0, posted: 0, failed: 0 };
     }

@@ -327,6 +327,36 @@ export function alertRejection(
 }
 
 /**
+ * A run that was still going when the process stopped, found at the next boot.
+ *
+ * **The one failure that reaches nothing else.** Every other way a run ends
+ * badly goes through the runner: retries are spent, `onFailure` gets its say,
+ * `alertFailure` sends a message. A restart skips all of it — the run row is
+ * flipped to failed by an `UPDATE` at boot, and the workflow that could have
+ * explained itself was not running to be asked. Without this, a cross-poster
+ * that died between publishing and recording leaves a row locked in Notion and
+ * says nothing at all until some daily sweep notices.
+ *
+ * Attributed to the workflow so its own opt-out and channel apply, and keyed
+ * per run so a restart that orphans three of them sends three lines rather
+ * than being throttled down to one.
+ */
+export function alertInterrupted(wf: AlertTarget, runId: string): Promise<void> {
+  return send(wf, {
+    key: `interrupted|${wf.name}|${runId}`,
+    icon: "🔁",
+    title: "was interrupted by a restart",
+    workflow: wf.name,
+    detail:
+      "The run was still going when the process stopped, so it never finished and " +
+      "never ran onFailure. Anything it had already done is done; anything it does " +
+      "in one step and records in the next may be half-way. Open the run and use " +
+      "Resume to finish it.",
+    runId,
+  });
+}
+
+/**
  * Something went wrong bringing the runner up: a workflow that would not load,
  * a credential nothing can run without, a webhook subscription that failed to
  * register. `wf` is present when the problem belongs to one workflow, so its

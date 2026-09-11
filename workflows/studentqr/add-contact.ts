@@ -72,8 +72,8 @@ export default defineWorkflow<z.infer<typeof payload>>({
   timeoutMs: 60_000,
 
   async run(ctx) {
-    // Read inside a step: a resumed run has no ctx.input, and from the
-    // checkpoint the recorded answer comes back instead of an empty object.
+    // Read inside a step, so a resume gets the recorded answer back from the
+    // checkpoint rather than re-parsing the payload.
     const contact = await ctx.step("read contact", async () => {
       const parsed = payload.safeParse(ctx.input);
       if (!parsed.success) {

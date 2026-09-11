@@ -318,21 +318,41 @@ to the caller. Don't "tidy" it into an alert: the caller's catch block is the
 decision about whether anyone should be woken, and a refusal that matters gets
 there through the run that fails because of it.
 
-**Resume and replay are different operations — keep them apart.** Resume reuses
-the parent's `checkpoint_key` so completed steps are skipped; replay reuses the
-parent's recorded `input` against a *fresh* checkpoint key so everything runs
-again. They have separate lineage columns (`resumed_from`, `replayed_from`) for
-that reason. Folding them into one column would make the run page guess which
-it is looking at.
+**Resume and replay are different operations — keep them apart.** Both re-run
+the workflow on the parent's recorded `input`; the difference is the checkpoint
+key. Resume reuses the parent's, so completed steps are skipped; replay takes a
+*fresh* one, so everything runs again. They have separate lineage columns
+(`resumed_from`, `replayed_from`) for that reason. Folding them into one column
+would make the run page guess which it is looking at.
 
-**A resumed run has no `ctx.input`.** Resume passes the checkpoint key and
-nothing else, so `ctx.input` is `{}` the second time through — only replay
-carries the payload. Anything derived from the input must therefore be derived
-*inside* a step, where a resume gets the recorded answer back instead of
-re-deriving it from an empty object. The approval-resolve workflow that found
-this read its approval id at the top of `run()`, so a resumed approval looked
-up `approval:undefined` and reported itself missing. Read it in the first step
-instead. This has already caused one bug.
+**Resume carries the parent's input, and the runner is the only place that
+decides so.** `carryInput` in `src/core/runner.ts` reads it off the run being
+resumed, so the HTML route, the JSON API and the MCP tool cannot drift on it —
+do not re-add an `input` to those call sites. It used to carry nothing, which
+made Resume a button that did nothing on every poll and webhook workflow and
+reported success for it; the cross-poster is the run that proved it, answering
+`{pages: 0}` while a Notion row sat half-posted.
+
+**An input that cannot be had faithfully is not invented.** A capture that was
+truncated, unreadable, or never taken becomes *no* input plus a warning on the
+run page — never a preview of a payload handed over as the payload. Those runs
+still resume, because the steps that read the input are checkpointed.
+
+**Read anything derived from the input *inside* a step anyway.** Not because
+the input is missing any more, but because a resume should act on the decision
+it made the first time, not on what the world says now — a Monday board that
+has moved on, a form whose labels were renamed, a handshake already answered.
+The approval-resolve workflow that found this read its approval id at the top of
+`run()`, so a resumed approval looked up `approval:undefined` and reported
+itself missing. This has already caused one bug.
+
+**`markOrphans` returns the runs it flipped, and each one is alerted.** A run
+interrupted by a restart is the only failure that never reaches `onFailure` —
+the process that would have run it is what went away — so `src/index.ts` sends
+one alert per orphan on that workflow's own channel. Do not reduce it back to a
+count: a workflow that takes a lock before doing work (the cross-poster flips a
+Notion row to `Posting`) leaves that lock on, and boot is the only moment
+anything knows. This was silent until a row sat half-posted for a day.
 
 **Step names must be stable and unique within a run.** They are the checkpoint
 key. `ctx.step("send email")` inside a loop collides across iterations — use
@@ -361,9 +381,9 @@ await between them and duplicates get through. A `skipped` outcome is settled
 or left pending depending on `isShuttingDown()`, because the two kinds of skip
 mean opposite things: one the shutdown caused has to survive the restart, one
 `onOverlap` decided must not be resurrected. And recovery is a **replay, not a
-resume** — a resume carries no `ctx.input`, so a workflow that reads its
-payload would get `{}`. The cost is that recovery is at-least-once; that is the
-trade, not an oversight.
+resume** — the inbox row is what records the delivery, and a pending one often
+has no run behind it to resume. The cost is that recovery is at-least-once;
+that is the trade, not an oversight.
 
 **The inbox stores regardless of `CAPTURE_DATA`.** It uses `capture()`'s
 `force` and the checkpoint ceiling, like step outputs, because it is functional

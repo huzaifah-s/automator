@@ -746,10 +746,14 @@ const stmts = {
      WHERE provider = ? AND id = ?`,
   ),
 
+  // RETURNING the rows, not just a count: a run that died mid-flight may have
+  // left work half-done, and the only thing that can say so is an alert naming
+  // the workflow it belonged to.
   markOrphans: db.prepare(
     `UPDATE runs SET status = 'failed', error = 'Interrupted by restart',
        finished_at = ?, duration_ms = ? - started_at
-     WHERE status = 'running'`,
+     WHERE status = 'running'
+     RETURNING id, workflow`,
   ),
 
   recentDelivery: db.prepare(
@@ -1185,10 +1189,15 @@ export const store = {
     return stmts.resumeWorkflow.run(workflow).changes > 0;
   },
 
-  /** Runs that were mid-flight when the process died can never complete. */
-  markOrphans(): number {
+  /**
+   * Runs that were mid-flight when the process died can never complete.
+   * Returns them rather than a count so the caller can alert about each one:
+   * this is the one failure path that never reaches `onFailure`, because the
+   * process that would have run it is the thing that went away.
+   */
+  markOrphans(): Array<{ id: string; workflow: string }> {
     const now = Date.now();
-    return stmts.markOrphans.run(now, now).changes;
+    return stmts.markOrphans.all(now, now) as Array<{ id: string; workflow: string }>;
   },
 
   pruneOlderThan(days: number): number {

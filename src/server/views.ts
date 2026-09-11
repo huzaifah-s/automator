@@ -1778,7 +1778,8 @@ export function runPage(
               : ""}
             <span class="muted" style="font-size:12.5px">
               ${run.status === "failed"
-                ? "Resume skips every step that already succeeded; replay redoes all of them."
+                ? "Both re-run the workflow on this run's input. Resume reuses every step " +
+                  "that already succeeded; replay redoes all of them."
                 : "Replay starts a fresh run with the same input — no steps reused."}
             </span>
           </div>`

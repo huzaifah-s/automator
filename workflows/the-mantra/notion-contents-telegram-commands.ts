@@ -502,8 +502,9 @@ export default defineWorkflow<Update>({
   checkpointTtlHours: 1,
 
   async run(ctx) {
-    // Read inside a step, never at the top of run(): a resumed run has no
-    // ctx.input, so this would look at `{}` and report an unusable update.
+    // Read inside a step rather than at the top of run(): a resume carries the
+    // update forward, but reading it back from the checkpoint is what makes the
+    // decision the resumed run acts on the same one it made the first time.
     const decision = await ctx.step<Command>("read command", async () =>
       readCommand(ctx.input as Partial<Update>),
     );

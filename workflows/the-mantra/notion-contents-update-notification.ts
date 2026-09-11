@@ -323,8 +323,10 @@ export default defineWorkflow<Payload>({
   timeoutMs: 120_000,
 
   async run(ctx) {
-    // Read inside a step, never at the top of run(): a resumed run has no
-    // ctx.input, so this would look at `{}` and report an unusable event.
+    // Read inside a step rather than at the top of run(): a resume carries the
+    // event forward, but this step also consumes `pendingToken`, and a resume
+    // must get the recorded decision back rather than re-reading a handshake
+    // that has since been answered.
     const decision = await ctx.step<Decision>("read event", async () => {
       const input = ctx.input as Partial<Payload>;
 

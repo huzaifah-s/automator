@@ -1133,8 +1133,9 @@ function buildTools(registry: Registry): Tool[] {
       name: "resume",
       scope: "write",
       description:
-        "SIDE EFFECTS, fewer than replay: same checkpoint key, so steps that already succeeded " +
-        "are reused not repeated. The tool for a run that died halfway.",
+        "SIDE EFFECTS, fewer than replay: the run's own input again, but the same checkpoint " +
+        "key, so steps that already succeeded are reused not repeated. The tool for a run " +
+        "that died halfway.",
       inputSchema: {
         type: "object",
         properties: { run_id: RUN_ID },

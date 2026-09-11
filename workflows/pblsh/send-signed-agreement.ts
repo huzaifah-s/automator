@@ -128,7 +128,7 @@ function required(fields: Field[], label: string): string {
   return value;
 }
 
-/** What the first step pins down, so a resume doesn't need `ctx.input`. */
+/** What the first step pins down, so a resume reads it back rather than again. */
 interface Submission {
   submissionId: string;
   pdfUrl: string;
@@ -180,10 +180,11 @@ export default defineWorkflow<z.infer<typeof payload>>({
   timeoutMs: 120_000,
 
   async run(ctx) {
-    // Everything derived from the payload is read *inside* a step: a resumed
-    // run has no `ctx.input`, so read at the top of run() this would look up
-    // an empty object and fail with the labels missing. From the checkpoint
-    // the recorded answer comes back instead.
+    // Everything derived from the payload is read *inside* a step, so a resume
+    // gets the recorded answer back instead of parsing the payload again. A
+    // resume does now carry `ctx.input`, so this is no longer the difference
+    // between working and not — it is still the difference between a form whose
+    // labels have since been renamed re-parsing into something else and not.
     const submission = await ctx.step<Submission | { ignored: string }>(
       "read submission",
       async () => {

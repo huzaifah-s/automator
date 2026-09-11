@@ -124,11 +124,13 @@ export async function deliver(wf: LoadedWorkflow, id: string, input: unknown): P
  * means the last deploy landed between the 202 and the run.
  *
  * Runs each as a fresh webhook run with the recorded input, rather than
- * resuming the interrupted one: resume carries a checkpoint key and no
- * `ctx.input`, so a workflow that reads its payload would get an empty object.
- * That makes recovery at-least-once — a run interrupted half way through
- * repeats the steps it had already done — which is the same guarantee polling
- * gives, and for the same reason.
+ * resuming the interrupted one. The inbox row, not a run, is what records that
+ * the delivery was accepted — a pending entry is one whose run never reached a
+ * decision, and often one whose run never started, so there is frequently
+ * nothing to resume. Recovering from the entry is therefore the only path that
+ * covers every pending row, and the price is that it is at-least-once: a run
+ * interrupted half way through repeats the steps it had already done. That is
+ * the same guarantee polling gives, and for the same reason.
  */
 export async function recoverInbox(registry: Registry): Promise<void> {
   const pending = store.pendingDeliveries();

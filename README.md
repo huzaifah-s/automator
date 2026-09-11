@@ -198,9 +198,10 @@ Two things fall out of that:
 and fails in step 3, attempt 2 skips the email. This is on by default.
 
 **Failed runs get a Resume button.** Fix the code, redeploy, open the failed
-run, click *Resume from last good step*. Every step that already succeeded is
-reused — tagged `reused` in the UI, with its original timing — and execution
-picks up at the one that broke.
+run, click *Resume from last good step*. The resumed run gets the same input
+the failed one was given, and every step that already succeeded is reused —
+tagged `reused` in the UI, with its original timing — so execution picks up at
+the one that broke.
 
 ```
 ▶ resumed from e286a6b6
@@ -210,6 +211,12 @@ picks up at the one that broke.
 ✓ succeeded
 ```
 
+The input comes from the same recording Replay uses, and it is never faked: if
+it was truncated by `CAPTURE_MAX_BYTES`, never recorded (`CAPTURE_DATA=false`),
+or no longer parses, the run resumes with an empty `ctx.input` and says so in
+its log rather than handing the workflow a preview of its own payload. Steps
+that read the input are checkpointed, so those runs still resume cleanly.
+
 Also available on the API: `POST /api/runs/:id/resume`.
 
 ### Replay — the other button
@@ -218,10 +225,10 @@ A run records the input its trigger handed it, so any run with one gets a
 *Replay with this input* button (and `POST /api/runs/:id/replay`). That is the
 end of re-sending a webhook payload by hand every time you change the workflow.
 
-**Replay is not resume.** Resume reuses the failed run's checkpoint key and
-skips every step that already succeeded. Replay starts a *fresh* checkpoint
-key and does all of it again with the same input. Reach for resume to finish a
-run, replay to develop one.
+**Replay is not resume.** Both run the workflow on the same input. Resume
+reuses the failed run's checkpoint key and skips every step that already
+succeeded; replay starts a *fresh* checkpoint key and does all of it again.
+Reach for resume to finish a run, replay to develop one.
 
 Three things it will tell you rather than fake:
 
@@ -1382,13 +1389,14 @@ docker compose logs -f automator
 ### Alerts — being told when something breaks
 
 A workflow that sends you a Telegram message is doing its job. This is the
-other thing: the runner telling you when a workflow *couldn't* do its job. Four
-problems fire an alert, and all four are ones that are otherwise invisible
-until you go looking at the dashboard.
+other thing: the runner telling you when a workflow *couldn't* do its job. All
+of them are problems that are otherwise invisible until you go looking at the
+dashboard.
 
 | What | When |
 |---|---|
 | A run failed | Every attempt was used up. A poll whose `fetch` threw counts. |
+| A run was interrupted | It was still going when the process stopped. Found at the next boot — see below. |
 | A run never started | It declares a credential that is not connected. |
 | Boot | A workflow file would not load, a credential is unconnected, a webhook subscription failed to register. |
 | A delivery was rejected | A webhook arrived with a bad secret or a failed signature — see [Rejected deliveries](#rejected-deliveries). |
@@ -1420,6 +1428,24 @@ credential with no chat id is an error rather than a quiet fall back to
 in somebody else's chat.
 
 Set `PUBLIC_URL` too and every alert links straight to the run page.
+
+**An interrupted run is the one failure `onFailure` never sees.** A deploy or a
+crash takes the process down mid-run; the run row is flipped to failed by the
+next boot, but the workflow that would have explained itself was not running to
+be asked. So the boot sends the message instead, one per orphaned run, on that
+workflow's own channel:
+
+```
+🔁 the-mantra-cross-poster: was interrupted by a restart
+The run was still going when the process stopped, so it never finished and
+never ran onFailure. …
+https://automator.example.com/runs/f335b905…
+```
+
+This matters most for a workflow that takes a lock — a row it flips to
+`Posting` before publishing and back afterwards. A run that dies between those
+two leaves the lock on, and *this* is the moment anything knows it happened.
+Resume finishes the run; see [Checkpoints and resume](#checkpoints-and-resume).
 
 **Every workflow is connected by default.** Opt one out, or send its alerts
 somewhere else — which is what one server serving several brands needs:

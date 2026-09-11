@@ -47,8 +47,12 @@ export const SUPPORT_PHONE = (process.env.STUDENTQR_SUPPORT_PHONE ?? "6011143561
   "",
 );
 
-/** Malay, for every StudentQR template. */
-const LANGUAGE = "ms";
+/**
+ * Malay, for every StudentQR template. Exported because the relay sends one
+ * too — the out-of-window handoff — and a second copy of this string is how a
+ * template ends up approved in one language and requested in another.
+ */
+export const LANGUAGE = "ms";
 
 /** One send, resolved: which template, and what goes in its placeholders. */
 export interface OutgoingTemplate {

@@ -6,6 +6,57 @@ Entries record the *reasoning*, not just the diff — `git log` already has the
 diff. If a change settled a question, say what was settled and what the losing
 option was, so nobody relitigates it from scratch.
 
+## 2026-09-11
+
+### A relay that is refused can now hand the conversation back to a human
+
+A teacher wrote in, the relay tried to forward it to support, and Meta refused
+with 131047 — more than 24 hours since the recipient last replied. The run
+retried twice against a decision Meta had already made, failed, and alerted. The
+teacher was never answered.
+
+The direction is the part worth writing down, because it read backwards to
+everyone who looked at it. 131047 names the *recipient's* window, and the
+recipient here was `601114356132` — the support number itself. WhatsApp treats
+the StudentQR support team as just another customer of the bot number, so a
+support team that has not messaged the bot in a day cannot be forwarded anything.
+The failing send was inbound-shaped and the lapsed window belonged to the people
+running the service, not to a school.
+
+An approved template is the only message Meta will still carry to a number in
+that state, so `notification_message_undelivered` now goes to whoever could not
+be reached, carrying who was writing, what they said, and a `wa.me` link to
+answer on. Three parameters and nothing StudentQR-specific in the fixed text:
+the same template serves both directions, and a second one would be a second
+approval queue for the same sentence.
+
+The template's last line asks them to reply to it, and that is the actual repair
+rather than the notification — a reply reopens the 24-hour window and the relay
+resumes on its own.
+
+**A failed send now has to be traceable to what it said.** The status callback
+carries the id of the message that failed and nothing else, and the workflow was
+discarding it, which is why the failure could only ever report a code. Every
+relayed message is now written to `ctx.state` under its own id for seven days —
+recipient, sender, display name, body. The Monday board already maps a forwarded
+message to a teacher's number, but not to the text, and a "someone messaged you"
+with no message is a notification nobody can act on. The board also only covers
+one of the two directions.
+
+**Handed off is handled.** When the template lands, the run succeeds with a
+warning instead of failing: a human has the message and the link to answer it,
+there is nothing an alert would ask anyone to do, and nothing a retry could
+improve. The failure is still on the run page with its code and recipient. A
+failure that could *not* be handed off — any other error code, an id we have no
+record of, or the template send itself failing — throws exactly as before and
+reaches the alert channel. That last case is the rollout: while the template sits
+in review at Meta every attempt fails, is caught, and falls straight back to the
+old behaviour, so this is inert until approval and needs no deploy to switch on.
+
+Scoped to 131047 deliberately. A number that is not on WhatsApp (131026) or a
+paused template would refuse the handoff too, and dressing those up as handled
+would hide a real account-level problem behind a message nobody receives.
+
 ## 2026-09-08
 
 ### The refusal path can now explain itself

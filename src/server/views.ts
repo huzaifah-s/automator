@@ -400,6 +400,19 @@ border:1px solid var(--border);background:var(--sunk);cursor:pointer}
    to showing it — the same behaviour this form had before the pick existed. */
 .form:has(#aud-ops:checked) .tablescope{display:none}
 
+/* ---- tiles ---- */
+/* A tile's job is to be scannable, so the counts come first and the
+   description is a muted tail that may be two lines and no more. These
+   descriptions are written for an agent — the expenses one carries the rules
+   about what is and is not a row — and pasted whole onto a card they bury the
+   thing you opened the page to see. */
+.tiles .counts{display:flex;flex-wrap:wrap;gap:4px 12px;margin:2px 0 6px;
+font-size:12px;color:var(--muted)}
+.tiles .counts b{display:inline;font-weight:600;color:var(--fg)}
+.tiles .counts .skipped b{color:var(--yellow)}
+.tiles .clamp{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+overflow:hidden;font-size:12px;line-height:1.45}
+
 /* ---- data tables ---- */
 /* A data table's column count comes from a file rather than from this
    stylesheet, so this is the one place that cannot use the .row grids above.
@@ -2976,9 +2989,25 @@ const ICON_TABLE = raw(
   `<svg class="ricon" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="2" y="2.75" width="12" height="10.5" rx="1.5"/><path d="M2 6.25h12M6.5 6.25v7"/></svg>`,
 );
 
-/** The human label for a column — the definition's, or the name itself. */
+/**
+ * The human label for a column.
+ *
+ * A definition's own `label` wins; otherwise the column name is turned into
+ * sentence case. That fallback is the point of this function — half the
+ * columns on a table carry a label and half do not, and rendering the rest as
+ * raw `needs_review` put two casings in one form, which is the kind of thing
+ * that reads as unfinished rather than as deliberate.
+ *
+ * It follows the rule at the top of this file: text the dashboard *writes* is
+ * sentence case, text the system *stores* is verbatim. A column name is
+ * stored, so it still appears verbatim — in the field's help line and the
+ * header's tooltip, where the name an agent or a query needs is exactly what
+ * you want.
+ */
 function columnLabel(name: string, col: ColumnDef): string {
-  return col.label ?? name;
+  if (col.label) return col.label;
+  const words = name.replace(/_/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 /**
@@ -3046,7 +3075,7 @@ export function tablesPage(args: {
             <code class="mono">defineTable()</code>, discovered at boot the same way workflows
             are. Adding a table, a column, or a category is a commit — which is what makes it
             reviewable and revertable, and what keeps this tab from becoming the schema editor
-            we left n8n to avoid.
+            we left n8n to avoid. A change there needs a restart, not just a deploy.
           </p>
           <p>
             Everything stored here is <b>rendered as given and never scrubbed</b> — on this tab
@@ -3067,13 +3096,16 @@ export function tablesPage(args: {
                 (t) => html`
                   <a href="/tables/${t.table.name}">
                     <b>${ICON_TABLE} ${t.table.name}</b>
-                    <span>${t.table.description ?? "—"}</span>
-                    <div class="detail">
-                      ${t.rows} row${t.rows === 1 ? "" : "s"}
-                      ${t.review ? html` · <span class="skipped">${t.review} to review</span>` : ""}
-                      ${t.newest ? html` · ${relative(t.newest)}` : ""}
+                    <div class="counts">
+                      <span><b>${t.rows}</b> row${t.rows === 1 ? "" : "s"}</span>
+                      ${t.review
+                        ? html`<span class="skipped"><b>${t.review}</b> to review</span>`
+                        : ""}
+                      ${t.newest ? html`<span>${relative(t.newest)}</span>` : ""}
                     </div>
-                    <div class="detail mono">${t.table.file}</div>
+                    ${t.table.description
+                      ? html`<span class="clamp">${t.table.description}</span>`
+                      : ""}
                   </a>
                 `,
               )}
@@ -3140,7 +3172,9 @@ function fieldFor(name: string, col: ColumnDef, current: unknown) {
       ${required ? "" : html`<span class="req">— optional</span>`}
     </label>
     ${control}
-    ${col.help && col.kind !== "bool" ? html`<div class="help">${col.help}</div>` : ""}
+    <div class="help">
+      <code class="mono">${name}</code>${col.help ? html` — ${col.help}` : ""}
+    </div>
   </div>`;
 }
 
@@ -3148,6 +3182,8 @@ export function tablePage(args: {
   table: LoadedTable;
   rows: Row[];
   total: number;
+  review: number | null;
+  newest: number | null;
   query: string;
   showDeleted: boolean;
   editing?: Row | null;
@@ -3161,10 +3197,13 @@ export function tablePage(args: {
   const columns = Object.entries(def.columns);
   const formOpen = Boolean(editing) || Boolean(args.error);
 
-  const link = (params: Record<string, string | undefined>) => {
+  const link = (params: { q?: string; deleted?: string; edit?: string } = {}) => {
     const q = new URLSearchParams();
-    if (params.q ?? args.query) q.set("q", params.q ?? args.query);
-    if ((params.deleted ?? (args.showDeleted ? "1" : "")) === "1") q.set("deleted", "1");
+    const search = params.q ?? args.query;
+    const deleted = params.deleted ?? (args.showDeleted ? "1" : "");
+    if (search) q.set("q", search);
+    if (deleted === "1") q.set("deleted", "1");
+    if (params.edit) q.set("edit", params.edit);
     const s = q.toString();
     return `/tables/${def.name}${s ? `?${s}` : ""}`;
   };
@@ -3186,14 +3225,36 @@ export function tablePage(args: {
       ${args.error ? html`<div class="flash">${args.error}</div>` : ""}
 
       <div class="stats">
-        <div class="stat"><b>${args.total}</b><span>rows${args.showDeleted ? " (with deleted)" : ""}</span></div>
+        <div class="stat"><b>${args.total}</b><span>${args.showDeleted ? "rows with deleted" : "rows"}</span></div>
         <div class="stat"><b>${columns.length}</b><span>columns</span></div>
-        <div class="stat" title="${def.file}">
-          <b class="mono" style="font-size:13px">${def.folder ?? "—"}</b><span>folder</span>
+        ${args.review === null
+          ? ""
+          : html`<div class="stat">
+              <b class="${args.review ? "skipped" : ""}">${args.review}</b><span>need review</span>
+            </div>`}
+        <div class="stat" title="${args.newest ? fmt(args.newest) : "nothing stored yet"}">
+          <b>${args.newest ? relative(args.newest) : "—"}</b><span>last change</span>
         </div>
       </div>
 
-      ${def.description ? html`<div class="note">${def.description}</div>` : ""}
+      <details class="note">
+        <summary>
+          <span>
+            <b>What this table is for.</b>
+            ${def.description
+              ? html`${def.description.split(".")[0]}.`
+              : html`Defined in <code class="mono">${def.file}</code>.`}
+          </span>
+        </summary>
+        <div class="body">
+          ${def.description ? html`<p>${def.description}</p>` : ""}
+          <p>
+            Defined in <code class="mono">tables/${def.file}</code>. Columns, defaults and the
+            allowed values of every list come from that file — changing one is a commit and a
+            restart. The rows below are yours to add, correct and delete.
+          </p>
+        </div>
+      </details>
 
       <div class="adderbox">
         <input class="reveal" type="checkbox" id="addrow" ${formOpen ? raw("checked") : ""}>
@@ -3206,8 +3267,9 @@ export function tablePage(args: {
             <button class="btn" type="submit">Search</button>
           </form>
           <span class="grow"></span>
-          <a class="chip" href="${link({ deleted: args.showDeleted ? "" : "1" })}"
-             ${args.showDeleted ? raw('aria-current="true"') : ""}>Deleted</a>
+          <a class="btn quiet" href="${link({ deleted: args.showDeleted ? "" : "1" })}">
+            ${args.showDeleted ? "Hide deleted" : "Show deleted"}
+          </a>
           <label class="btn primary" for="addrow">Add row</label>
         </div>
 
@@ -3216,9 +3278,9 @@ export function tablePage(args: {
           <div class="form cols">
             ${columns.map(([name, col]) => fieldFor(name, col, editing ? editing[name] : undefined))}
             <div class="bar">
-              <button class="btn primary" type="submit">${editing ? "Save" : "Add"}</button>
+              <button class="btn primary" type="submit">${editing ? "Save changes" : "Add row"}</button>
               ${editing
-                ? html`<a class="btn" href="${link({})}">Cancel</a>`
+                ? html`<a class="btn" href="${link()}">Cancel</a>`
                 : html`<label class="btn" for="addrow">Cancel</label>`}
               ${editing
                 ? html`<span class="muted mono" style="font-size:11.5px">${editing.id}</span>`
@@ -3240,9 +3302,11 @@ export function tablePage(args: {
               <table>
                 <thead><tr>
                   ${columns.map(
-                    ([name, col]) => html`<th ${col.help ? html`title="${col.help}"` : ""}>${columnLabel(name, col)}</th>`,
+                    ([name, col]) => html`<th title="${col.help ? `${name} — ${col.help}` : name}">
+                      ${columnLabel(name, col)}
+                    </th>`,
                   )}
-                  <th>Written by</th>
+                  <th title="Which agent, workflow or person wrote this row">Written by</th>
                   <th>Updated</th>
                   <th></th>
                 </tr></thead>
@@ -3264,7 +3328,7 @@ export function tablePage(args: {
                                 <button class="btn" type="submit">Restore</button>
                               </form>`
                             : html`
-                                <a class="btn" href="${link({})}${link({}).includes("?") ? "&" : "?"}edit=${row.id}">Edit</a>
+                                <a class="btn" href="${link({ edit: String(row.id) })}">Edit</a>
                                 <form method="post" action="/tables/${def.name}/${row.id}/delete"
                                       data-confirm="Delete this row? It stops being listed and can be restored.">
                                   <button class="btn danger" type="submit">Delete</button>

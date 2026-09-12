@@ -68,6 +68,39 @@ Also closed while nearby: `/variables` was missing from the dashboard's
 basic-auth path list, so the Variables tab and its write routes were reachable
 without the dashboard password. It is in the list now, along with `/tables`.
 
+### Tables tab: a design pass
+
+Reported from a phone, and each one was a real defect rather than a taste
+difference.
+
+**The tile descriptions were unreadable.** A table's `description` is written
+for an agent — the expenses one carries the rules about what is and is not a
+row — and pasting it whole onto a card buried the thing you opened the page to
+see. The tile now leads with counts (rows, how many need review, when it last
+changed) and the description is a two-line clamped tail.
+
+**The long explanation on a table's page is a `details.note`** like the ones on
+Variables and MCP, rather than a wall of text above the rows. The summary line
+is its first sentence; the body has the rest plus where the file lives.
+
+**"personal-finance FOLDER" was a stat tile,** which is the component for a
+number you compare and not for a directory name. It is gone; the file path
+moved into the note, and the fourth stat is now "last change", which is
+something you actually read.
+
+**The Deleted filter read as a state chip** sitting next to a button, which is
+two controls that look like different kinds of thing doing the same kind of
+thing. It is a quiet button that says what it does — Show deleted / Hide
+deleted.
+
+**Half the form labels were sentence case and half were raw column names.**
+`columnLabel` now falls back to sentence-casing the column name, so
+`needs_review` renders "Needs review" beside "Merchant" instead of beside it in
+a different casing. The raw name has not been thrown away — it is on the
+field's help line and in the header's tooltip, because that is the name a query
+or an agent needs, and the rule at the top of `views.ts` already says stored
+text renders verbatim.
+
 ### An MCP token is for one endpoint, not for the server
 
 A token minted to write expense rows could also call `/mcp` and trigger,

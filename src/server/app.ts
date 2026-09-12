@@ -1114,11 +1114,17 @@ export function createApp(registry: Registry): Hono {
       limit: 500,
     };
 
+    // The summary already knows how to count these, and computing them twice
+    // in two shapes is how the tile and the page come to disagree.
+    const summary = summarise(def);
+
     return c.html(
       tablePage({
         table: def,
         rows: client.query(opts),
         total: client.count({ search: opts.search, includeDeleted: showDeleted }),
+        review: summary.review,
+        newest: summary.newest,
         query,
         showDeleted,
         editing: editId ? client.get(editId) : null,

@@ -51,8 +51,10 @@ import { createTableMcpRouter } from "./mcp-tables.ts";
 import {
   createMcpToken,
   deleteMcpToken,
+  isAudience,
   isScope,
   listMcpTokens,
+  type McpAudience,
 } from "../core/mcp-tokens.ts";
 import type { LoadedWorkflow, RunRecord, WebhookDecision } from "../core/types.ts";
 import {
@@ -893,11 +895,16 @@ export function createApp(registry: Registry): Hono {
       lastClient: t.last_client,
       calls: t.calls,
       tables: parseTokenTables(t.tables),
+      audience: isAudience(t.audience) ? t.audience : "ops",
     }));
 
   const renderMcp = (
     c: any,
-    opts: { created?: { name: string; token: string } | null; error?: string; status?: 200 | 400 } = {},
+    opts: {
+      created?: { name: string; token: string; audience: McpAudience } | null;
+      error?: string;
+      status?: 200 | 400;
+    } = {},
   ) =>
     c.html(
       mcpTokensPage({
@@ -963,19 +970,26 @@ export function createApp(registry: Registry): Hono {
     if (!name) return renderMcp(c, { error: "A token needs a name.", status: 400 });
     if (!isScope(scope)) return renderMcp(c, { error: "Scope must be read or full.", status: 400 });
 
+    const audience = String(form.audience ?? "ops");
+    if (!isAudience(audience)) {
+      return renderMcp(c, { error: "Pick what the token is for.", status: 400 });
+    }
+
     let tables: string[] | undefined;
     try {
-      tables = tableScopeFrom(form.tables);
+      // Only meaningful for a table token; an operations token that carried a
+      // table list would be stating a scope it never gets to use.
+      tables = audience === "tables" ? tableScopeFrom(form.tables) : undefined;
     } catch (err) {
       return renderMcp(c, { error: err instanceof Error ? err.message : String(err), status: 400 });
     }
 
-    const { token } = createMcpToken(name, scope, tables);
+    const { token } = createMcpToken(name, scope, { audience, tables });
     // Answered with the page rather than a redirect, which every other form
     // here does. The plaintext exists for exactly this response — it is not in
     // the database and cannot go in a query string — so a redirect would throw
     // away the only copy.
-    return renderMcp(c, { created: { name, token } });
+    return renderMcp(c, { created: { name, token, audience } });
   });
 
   app.post("/mcp-tokens/:id/delete", (c) => {
@@ -1843,15 +1857,20 @@ export function createApp(registry: Registry): Hono {
     if (!name) return c.json({ error: "A token needs a name" }, 400);
     if (!isScope(scope)) return c.json({ error: "scope must be 'read' or 'full'" }, 400);
 
+    const audience = String((body as any).audience ?? "ops") as McpAudience;
+    if (!isAudience(audience)) {
+      return c.json({ error: "audience must be 'ops' or 'tables'" }, 400);
+    }
+
     let tables: string[] | undefined;
     try {
-      tables = tableScopeFrom((body as any).tables);
+      tables = audience === "tables" ? tableScopeFrom((body as any).tables) : undefined;
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
 
-    const { token, id } = createMcpToken(name, scope, tables);
-    return c.json({ id, name, scope, tables: tables ?? null, token }, 201);
+    const { token, id } = createMcpToken(name, scope, { audience, tables });
+    return c.json({ id, name, scope, audience, tables: tables ?? null, token }, 201);
   });
 
   app.delete("/api/mcp-tokens/:id", (c) =>

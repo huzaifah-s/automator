@@ -53,6 +53,7 @@ import {
 } from "../core/tables.ts";
 import {
   identify,
+  mayUseEndpoint,
   mayUseTable,
   mcpEnabled,
   noteUse,
@@ -529,6 +530,19 @@ export function createTableMcpRouter(): Hono<{ Variables: { mcp: McpIdentity } }
     const identity = identify(presented);
     if (!identity) {
       return c.json(rpcError(null, -32001, "Unauthorized"), 401, { "WWW-Authenticate": "Bearer" });
+    }
+    // The mirror of the check on /mcp. An operations token reaches runs and
+    // workflows and stops there; the ledger is not an extra thing it gets.
+    if (!mayUseEndpoint(identity, "tables")) {
+      return c.json(
+        rpcError(
+          null,
+          -32001,
+          `"${identity.label}" is an operations token. This endpoint serves data tables — ` +
+            "create a token for them on the dashboard's MCP tab, or connect this one to /mcp.",
+        ),
+        403,
+      );
     }
     c.set("mcp", identity);
     noteUse(identity, null);

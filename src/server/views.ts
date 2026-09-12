@@ -382,6 +382,24 @@ white-space:pre-wrap;word-break:break-word}
 .stats{grid-template-columns:repeat(2,1fr)}
 .brand span:last-child{display:none}}
 
+/* ---- radio picks ---- */
+/* Two or three mutually exclusive choices, each needing a sentence to explain
+   it. A <select> hides the explanations behind a tap, which is wrong when the
+   explanation is the whole decision — "which endpoint is this for" is not a
+   thing anyone guesses right from a four-word option label. */
+.opts{display:grid;gap:8px}
+.opt{display:flex;gap:9px;align-items:flex-start;padding:10px 12px;border-radius:9px;
+border:1px solid var(--border);background:var(--sunk);cursor:pointer}
+.opt:hover{border-color:var(--accent)}
+.opt input{margin:2px 0 0;flex:none}
+.opt span{font-size:12px;color:var(--muted);min-width:0}
+.opt b{display:block;color:var(--fg);font-weight:600;font-size:13px;margin-bottom:1px}
+.opt:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}
+/* Hidden when the token is not for the tables, rather than shown-and-ignored.
+   Written as "hide when ops is picked" so a browser without :has() falls back
+   to showing it — the same behaviour this form had before the pick existed. */
+.form:has(#aud-ops:checked) .tablescope{display:none}
+
 /* ---- data tables ---- */
 /* A data table's column count comes from a file rather than from this
    stylesheet, so this is the one place that cannot use the .row grids above.
@@ -2453,6 +2471,8 @@ export interface McpTokenView {
   calls: number;
   /** Data tables this token may reach on /mcp/tables, or null for all of them. */
   tables: string[] | null;
+  /** Which endpoint it is for: "ops" (/mcp) or "tables" (/mcp/tables). */
+  audience: "ops" | "tables";
 }
 
 /**
@@ -2476,7 +2496,7 @@ export function mcpTokensPage(args: {
   tokens: McpTokenView[];
   writable: boolean;
   /** Set only on the response that just minted one. Shown once, then gone. */
-  created?: { name: string; token: string } | null;
+  created?: { name: string; token: string; audience: "ops" | "tables" } | null;
   /** True when DASHBOARD_USER/PASS are set — minting is refused without them. */
   authenticated: boolean;
   /** Loaded data tables, offered as the optional scope on a new token. */
@@ -2523,7 +2543,9 @@ export function mcpTokensPage(args: {
             </div>
             Connect a client with:
             <div class="mono" style="margin-top:7px;word-break:break-all;font-size:11.5px">
-              claude mcp add --transport http automator ${base}/mcp --header
+              claude mcp add --transport http
+              ${created.audience === "tables" ? "automator-tables" : "automator"}
+              ${base}${created.audience === "tables" ? "/mcp/tables" : "/mcp"} --header
               "Authorization: Bearer ${created.token}"
             </div>
           </div>`
@@ -2548,10 +2570,17 @@ export function mcpTokensPage(args: {
         </summary>
         <div class="body">
           <p>
-            Tokens an AI agent authenticates with at
-            <code class="mono">POST ${base}/mcp</code>. One per place you connect from, so
-            losing a laptop is one deletion rather than a rotation. A token that has never
-            been used has never worked; check the header your client is sending.
+            Tokens an AI agent authenticates with, at one of two endpoints:
+            <code class="mono">${base}/mcp</code> for operations — workflows, runs, triggers —
+            and <code class="mono">${base}/mcp/tables</code> for the data tables. They have
+            separate tool lists on purpose: a tool costs context on every turn of every
+            conversation whether or not anything calls it, so an incident chat should not be
+            carrying ledger tools. A token reaches one endpoint and is refused by the other.
+          </p>
+          <p>
+            One token per place you connect from, so losing a laptop is one deletion rather
+            than a rotation. A token that has never been used has never worked; check the
+            header your client is sending.
           </p>
           <p>
             Only the digest of a token is stored, so a copy of the database is not a set of
@@ -2584,18 +2613,43 @@ export function mcpTokensPage(args: {
                            placeholder="laptop" value="">
                   </div>
                   <div class="field">
+                    <label>What is this token for?</label>
+                    <div class="opts">
+                      <label class="opt">
+                        <input type="radio" id="aud-ops" name="audience" value="ops" checked>
+                        <span><b>Operations</b>
+                          Workflows, runs, failures, triggers — <code class="mono">/mcp</code>.
+                        </span>
+                      </label>
+                      <label class="opt">
+                        <input type="radio" id="aud-tables" name="audience" value="tables">
+                        <span><b>Data tables</b>
+                          Reading and writing rows — <code class="mono">/mcp/tables</code>.
+                        </span>
+                      </label>
+                    </div>
+                    <div class="help">
+                      A token reaches one of them, never both. One minted for the tables is
+                      refused by the operations endpoint outright, so a credential that logs
+                      expenses cannot also trigger a workflow.
+                    </div>
+                  </div>
+
+                  <div class="field">
                     <label for="tscope">Access</label>
                     <select id="tscope" name="scope">
                       <option value="read">Read only — look at everything, change nothing</option>
-                      <option value="full">Full — can also trigger, replay, resume and pause</option>
+                      <option value="full">Full — can also change things</option>
                     </select>
                     <div class="help">
-                      A read token is not even shown the write tools. Full scope can replay a
+                      Full is what lets a data-table token <b>add and edit rows</b>, and what lets
+                      an operations token trigger and replay. A read token is not even shown the
+                      write tools. Full scope on operations can replay a
                       run, which re-sends whatever that run sent.
                     </div>
                   </div>
-                  <div class="field">
-                    <label for="ttables">Data tables <span class="req">— optional</span></label>
+                  <div class="field tablescope">
+                    <label for="ttables">Which data tables <span class="req">— optional</span></label>
                     <input class="mono" type="text" id="ttables" name="tables"
                            placeholder="expenses income"
                            list="known-tables" autocomplete="off" spellcheck="false">
@@ -2654,11 +2708,16 @@ export function mcpTokensPage(args: {
               ${tokens.map(
                 (t) => html`
                   <div class="row mr"
-                       data-search="${`${t.name} ${t.scope} ${t.prefix} ${t.lastClient ?? ""}`.toLowerCase()}">
+                       data-search="${`${t.name} ${t.audience} ${t.scope} ${t.prefix} ${t.lastClient ?? ""}`.toLowerCase()}">
                     <div class="name">
                       <span class="dot ${t.lastUsedAt === null ? "" : "success"}"
                             title="${t.lastUsedAt === null ? "never used" : "has been used"}"></span>
-                      <b>${t.name}</b>
+                      <b class="trunc">${t.name}</b>
+                      <span class="tag" title="${
+                        t.audience === "tables"
+                          ? "Reaches /mcp/tables only"
+                          : "Reaches /mcp only"
+                      }">${t.audience === "tables" ? "tables" : "ops"}</span>
                     </div>
                     <div class="scope">
                       <span class="pill ${t.scope === "full" ? "skipped" : "muted"}">

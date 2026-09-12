@@ -57,7 +57,7 @@ import { log } from "../core/logger.ts";
 import { queuedCount, runningCount, runWorkflow } from "../core/runner.ts";
 import { allPauses, isEnabled, isPaused, pause, resume } from "../core/pause.ts";
 import { nextRunFor, scheduleWorkflow, unscheduleWorkflow } from "../core/scheduler.ts";
-import { identify, mcpEnabled, noteUse, type McpIdentity } from "../core/mcp-tokens.ts";
+import { identify, mayUseEndpoint, mcpEnabled, noteUse, type McpIdentity } from "../core/mcp-tokens.ts";
 import { listCredentials, testCredential, credentialRef } from "../core/credentials.ts";
 import { secretStoreReady, storedSecretKeys } from "../core/secret-store.ts";
 import { listVariables, setVariable } from "../core/variables.ts";
@@ -1343,6 +1343,22 @@ export function createMcpRouter(registry: Registry): Hono<{ Variables: { mcp: Mc
       return c.json(rpcError(null, -32001, "Unauthorized"), 401, {
         "WWW-Authenticate": "Bearer",
       });
+    }
+    // A token minted for the data tables is refused here outright, rather than
+    // being let in with a narrowed tool list. This endpoint can trigger and
+    // replay production workflows; a credential created to write expense rows
+    // has no business reaching it, and until the two audiences existed it
+    // silently could.
+    if (!mayUseEndpoint(identity, "ops")) {
+      return c.json(
+        rpcError(
+          null,
+          -32001,
+          `"${identity.label}" is a data-table token. This endpoint is the runner's ` +
+            "operations MCP — connect this token to /mcp/tables instead.",
+        ),
+        403,
+      );
     }
     c.set("mcp", identity);
     // Every authenticated request, not just the handshake: "last used" is the

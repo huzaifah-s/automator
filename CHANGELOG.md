@@ -68,6 +68,31 @@ Also closed while nearby: `/variables` was missing from the dashboard's
 basic-auth path list, so the Variables tab and its write routes were reachable
 without the dashboard password. It is in the list now, along with `/tables`.
 
+### An MCP token is for one endpoint, not for the server
+
+A token minted to write expense rows could also call `/mcp` and trigger,
+replay or pause a production workflow. The table list narrowed what it saw on
+`/mcp/tables` and said nothing at all about the other endpoint, so "scope this
+token to the finance tables" bought less than it looked like it bought.
+
+Tokens now carry an **audience** — `ops` or `tables` — chosen when the token is
+minted, and each endpoint refuses the other's tokens outright rather than
+letting them in with a narrower tool list. The environment's `MCP_TOKEN` gets
+both, being the documented way back in when every stored token is gone.
+
+Audience and scope are orthogonal, and the form now says so, because "full"
+reads like it covers both and does not:
+
+    audience — which server this token may talk to at all
+    scope    — whether it may change anything once it is there
+
+So a finance token is `tables` + `full`: it adds and corrects rows in its own
+tables and cannot reach a workflow.
+
+Tokens minted before the split read as `ops`. They were created when `/mcp` was
+the only endpoint, so reading a NULL as "both" would hand out an access nobody
+chose — the migration widens nothing.
+
 ### The deployment never got tables/
 
 The Tables tab shipped, rendered correctly, and said "No tables yet" on a

@@ -441,6 +441,11 @@ export interface McpTokenRecord {
    * and never queried across rows.
    */
   tables: string | null;
+  /**
+   * Which MCP endpoint this token is for — "ops" or "tables". NULL on tokens
+   * minted before the two were separate, and read as "ops".
+   */
+  audience: string | null;
   calls: number;
 }
 

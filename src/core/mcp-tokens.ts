@@ -30,6 +30,27 @@ import type { McpTokenRecord } from "./types.ts";
 
 export type McpScope = "read" | "full";
 
+/**
+ * Which endpoint a token is for.
+ *
+ * `scope` and this are orthogonal and it is worth being clear about the
+ * difference, because "full" sounds like it covers both and does not:
+ *
+ *   audience — *which* server this token may talk to at all
+ *   scope    — whether it may change anything once it is there
+ *
+ * A finance token is `tables` + `full`: it can add and correct rows in its own
+ * tables, and it is refused by `/mcp` entirely, so it cannot trigger a
+ * workflow or pause one. Before this existed, a token minted to write expenses
+ * could do both — the table scope narrowed what it saw on `/mcp/tables` and
+ * said nothing about `/mcp`, which is not what anybody minting it intended.
+ */
+export type McpAudience = "ops" | "tables";
+
+export function isAudience(value: unknown): value is McpAudience {
+  return value === "ops" || value === "tables";
+}
+
 /** Recognisable in a log line or a config file as this and nothing else. */
 const PREFIX = "amcp_";
 
@@ -51,19 +72,24 @@ function digest(token: string): string {
 export function createMcpToken(
   name: string,
   scope: McpScope,
-  /**
-   * Data tables this token may reach on /mcp/tables. An empty list or
-   * undefined means every table, which is what every token minted before this
-   * existed already was.
-   *
-   * Narrower than `scope` and orthogonal to it: scope answers "may this token
-   * change things", this answers "which things does it know about at all". A
-   * token for a personal ledger has no business seeing — or being told about —
-   * the tables belonging to something else, and a tool list is a cost paid on
-   * every turn of every conversation whether or not anything calls it.
-   */
-  tables?: string[],
+  opts: {
+    /** Which endpoint it is for. Defaults to "ops", the original behaviour. */
+    audience?: McpAudience;
+    /**
+     * Data tables this token may reach on /mcp/tables. Empty or undefined
+     * means every table.
+     *
+     * Narrower than `scope` and orthogonal to it: scope answers "may this
+     * token change things", this answers "which things does it know about at
+     * all". A token for a personal ledger has no business seeing — or being
+     * told about — tables belonging to something else, and a tool list is a
+     * cost paid on every turn of every conversation whether or not anything
+     * calls it.
+     */
+    tables?: string[];
+  } = {},
 ): { token: string; id: string } {
+  const { audience = "ops", tables } = opts;
   const token = PREFIX + randomBytes(24).toString("hex");
   const id = randomBytes(4).toString("hex");
   store.insertMcpToken({
@@ -73,9 +99,10 @@ export function createMcpToken(
     hash: digest(token),
     prefix: token.slice(0, HINT_LENGTH),
     tables: tables && tables.length ? tables : null,
+    audience,
   });
   log.info(
-    `MCP token "${name}" created (${scope} scope, ${id}` +
+    `MCP token "${name}" created (${audience}, ${scope} scope, ${id}` +
       `${tables && tables.length ? `, tables: ${tables.join(", ")}` : ""})`,
   );
   return { token, id };
@@ -103,6 +130,24 @@ export interface McpIdentity {
    * /mcp/tables and meaningless to /mcp, which serves no table data.
    */
   tables: string[] | null;
+  /**
+   * Endpoints this token may talk to. The environment token gets both, being
+   * the documented way back in; a stored token gets exactly the one it was
+   * minted for.
+   */
+  audiences: McpAudience[];
+}
+
+/**
+ * Whether this token may talk to an endpoint at all.
+ *
+ * Checked before anything else, and separately from `scope`: being refused
+ * here means "wrong server", which is a different sentence from "read-only"
+ * and needs to read like one, or the first thing somebody does is mint a
+ * full-scope token and get refused identically.
+ */
+export function mayUseEndpoint(identity: McpIdentity, audience: McpAudience): boolean {
+  return identity.audiences.includes(audience);
 }
 
 /**
@@ -130,7 +175,14 @@ export function identify(presented: string): McpIdentity | null {
 
   const fromEnv = process.env.MCP_TOKEN;
   if (fromEnv && constantTimeEqual(presented, fromEnv)) {
-    return { scope: "full", label: "MCP_TOKEN (environment)", tables: null };
+    // Both endpoints: this is the bootstrap credential, and a way back in that
+    // only reaches half the server is not one.
+    return {
+      scope: "full",
+      label: "MCP_TOKEN (environment)",
+      tables: null,
+      audiences: ["ops", "tables"],
+    };
   }
 
   const row = store.mcpTokenByHash(digest(presented));
@@ -140,6 +192,10 @@ export function identify(presented: string): McpIdentity | null {
     label: row.name,
     id: row.id,
     tables: parseTables(row.tables),
+    // NULL reads as "ops" rather than as both: a token minted before the
+    // endpoints were separate was minted for the only one that existed, and
+    // widening it here would hand out an access its creator never chose.
+    audiences: [isAudience(row.audience) ? row.audience : "ops"],
   };
 }
 

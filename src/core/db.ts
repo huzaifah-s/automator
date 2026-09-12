@@ -436,6 +436,13 @@ const mcpTokenColumns = new Set(
 if (!mcpTokenColumns.has("tables")) {
   db.exec("ALTER TABLE mcp_tokens ADD COLUMN tables TEXT");
 }
+// Which endpoint a token is for — "ops" (/mcp) or "tables" (/mcp/tables).
+// NULL on every token minted before the split existed, and read as "ops":
+// those were created when /mcp was the only endpoint, so reading them as
+// anything wider would silently grant an access nobody asked for.
+if (!mcpTokenColumns.has("audience")) {
+  db.exec("ALTER TABLE mcp_tokens ADD COLUMN audience TEXT");
+}
 
 /**
  * The executions tab's filter, and the shape both the run list and the counts
@@ -616,8 +623,8 @@ const stmts = {
   allMcpTokens: db.prepare(`SELECT * FROM mcp_tokens ORDER BY created_at DESC`),
   mcpTokenByHash: db.prepare(`SELECT * FROM mcp_tokens WHERE hash = ?`),
   insertMcpToken: db.prepare(
-    `INSERT INTO mcp_tokens (id, name, scope, hash, prefix, created_at, tables)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO mcp_tokens (id, name, scope, hash, prefix, created_at, tables, audience)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ),
   deleteMcpToken: db.prepare(`DELETE FROM mcp_tokens WHERE id = ?`),
   touchMcpToken: db.prepare(
@@ -1109,6 +1116,8 @@ export const store = {
     prefix: string;
     /** Data tables this token may reach, or null for every one of them. */
     tables?: string[] | null;
+    /** Which MCP endpoint it is for: "ops" or "tables". */
+    audience?: string | null;
   }): void => {
     stmts.insertMcpToken.run(
       row.id,
@@ -1118,6 +1127,7 @@ export const store = {
       row.prefix,
       Date.now(),
       row.tables && row.tables.length ? JSON.stringify(row.tables) : null,
+      row.audience ?? null,
     );
   },
   deleteMcpToken: (id: string): boolean => stmts.deleteMcpToken.run(id).changes > 0,

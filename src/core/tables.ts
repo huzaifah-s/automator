@@ -248,6 +248,16 @@ function physical(name: string): string {
   return `t_${name}`;
 }
 
+/**
+ * The physical name of a declared table, for the one caller that writes SQL by
+ * hand: a view's `ctx.sql`. Going through here rather than typing `t_expenses`
+ * means a renamed table breaks loudly at the lookup instead of quietly
+ * returning nothing.
+ */
+export function physicalTableName(name: string): string {
+  return physical(name);
+}
+
 const SQL_TYPE: Record<ColumnKind, string> = {
   text: "TEXT",
   int: "INTEGER",

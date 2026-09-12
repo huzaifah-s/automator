@@ -33,6 +33,9 @@ src/cli/           secrets — the write side of the store, run before the loade
 src/integrations/  index (barrel + lazy ctx clients) · http · messaging
                    ai · email · sql · sheets · scrape · oauth
 src/server/        app (webhooks + REST + dashboard routes) · views (HTML)
+                   view-render (panels and charts — note the name collision:
+                   `src/server/views.ts` is the dashboard's HTML, while
+                   `src/core/views.ts` is the Views *feature*)
                    mcp (the endpoint an AI agent connects to)
                    mcp-tables (the same, for data tables, on its own tokens)
                    inspect (what app.ts and mcp.ts must not decide twice)
@@ -40,6 +43,10 @@ tables/            data tables — one file per table, `defineTable()` as the
                    default export, grouped by subdirectory the way workflows
                    are (`tables/personal-finance/expenses.ts`). Structure only;
                    the rows live in SQLite. See "Data tables" below.
+views/             read-only pages — one file per view, `defineView()` as the
+                   default export, grouped by subdirectory like the other two.
+                   A view only reads, so it hot-reloads like a workflow. See
+                   "Views" below.
 workflows/         user workflows — the only directory most changes touch
                    subdirectories just group them: workflows/pblsh/thing.ts
                    loads the same way, and names stay global and flat
@@ -239,6 +246,65 @@ above. Secrets and the credential store are what credentials are for. There is
 no regex guarding this the way `variables.ts` guards its own store, because a
 table's columns are declared in a reviewed file rather than typed into a form —
 the review is the guard.
+
+**A view's `shareable` flag is the only thing that can make a page public, and
+it lives in the file.** The dashboard mints and revokes the link; it can never
+mint one for a view whose file did not opt in, and `/v/:token` re-reads the
+flag on *every* request rather than trusting the row. So deleting
+`shareable: true` kills every link ever minted for that view on the next
+request, without anybody having to remember which ones were handed out. This is
+the pause asymmetry again — the database may only ever subtract from what the
+repository allows — and it is the whole reason a public route is allowed to
+exist next to "the dashboard is read-only about what a thing is". Do not add a
+route that turns sharing *on* for a view whose file says nothing.
+
+**A dead share link answers a bare 404, and which kind of dead it is must stay
+unsaid.** Unknown token, expired, revoked, deleted view, view that stopped
+being shareable — one response for all five. "This link has expired" tells
+somebody who should not have the link that it was once real. For the same
+reason the route is registered above the auth block: `/v/*` is deliberately
+absent from the authenticated path list, and having it read that way in the
+file is the point.
+
+**`ctx.sql` is enforced by a second, read-only database handle — the string
+check is only the error message.** `src/core/views.ts` opens
+`new Database(databasePath, { readonly: true })`, and that is what actually
+refuses a write: a `WITH x AS (…) DELETE FROM …` passes the "starts with
+SELECT or WITH" test and is still refused by SQLite as *attempt to write a
+readonly database*. Do not "simplify" this by running view queries on the main
+handle and trusting the regex, and do not relax the regex on the grounds that
+the handle covers it — the readable error is what stops somebody debugging a
+typo for ten minutes.
+
+**Nothing from a querystring may be interpolated into a view's SQL.** Values go
+through placeholders; a table's physical name goes through `ctx.from()`, which
+resolves it against the loaded registry. `resolveControls` caps and validates
+every control value, but that is a second line and not the first: a view file
+is reviewed code and the review is what keeps this true, exactly as it is for a
+table's columns.
+
+**Views load after workflows, and a broken view warns instead of aborting the
+boot.** This is the opposite of a bad workflow or a bad table, and deliberately
+so: those decide what runs and what the schema is, while a view is a page
+somebody reads. A runner that refuses to start — and so stops firing every
+workflow it has — because a chart referenced a renamed column has traded
+something that matters for something that does not. A panel that throws at
+render is caught per panel for the same reason: one broken chart is worth less
+than the five working ones beside it.
+
+**A shared page never renders an error detail.** `runView` in `app.ts` branches
+on `isPublic`: the dashboard shows the exception, because somebody who can fix
+it is standing in front of it, and the public page says only that something
+went wrong. A stack trace on a public URL is a description of the inside of
+this server.
+
+**Views hot-reload and data tables do not, and the difference is DDL.** A view
+is a pure read — `load()` runs inside a request and its result is thrown away —
+so there is nothing to be caught half-applied, which is exactly what makes
+`loadTables` boot-only. The two watchers in `reload.ts` are separate on purpose:
+sharing the shared-file staleness flag would let an edit to a workflow's
+`_helper.ts` switch off view reloading too, which is two unrelated directories
+refusing on each other's behalf.
 
 **A table's structure is code and its rows are data, and the dashboard may
 only ever touch the second.** The Tables tab adds, edits and soft-deletes
@@ -629,6 +695,58 @@ drops empty *secret* fields before calling `saveCredential`, rather than
 `saveCredential` treating empty as unchanged. Fold the two meanings together
 and clearing an optional value becomes impossible.
 
+## Adding a view
+
+One file under `views/`, default-exporting `defineView()`. The loader finds it,
+subdirectories included, and the watcher swaps it in without a restart — a view
+only reads, so there is nothing to be caught half-applied.
+
+```ts
+import { bars, defineView, formatMoney, stats } from "../src/core/define.ts";
+
+export default defineView({
+  name: "spend",                 // lowercase, digits, dashes — it is a URL
+  title: "Spending",
+  description: "One line, shown on the Views tab",
+  shareable: false,              // the default; see the invariant above
+  refresh: 120,                  // seconds between background refreshes
+  controls: { period: { kind: "period", default: "12m" } },
+
+  async load(ctx) {
+    const period = ctx.period("period");
+    const rows = ctx.sql<{ category: string; spent: number }>(
+      `SELECT category, SUM(amount_cents - reimbursed_cents) AS spent
+         FROM ${ctx.from("expenses")}
+        WHERE deleted_at IS NULL AND occurred_on >= ?
+        GROUP BY category ORDER BY spent DESC`,
+      period.from ?? "0000-01-01",
+    );
+    return [
+      stats([{ label: "Categories", value: String(rows.length) }]),
+      bars({
+        title: "By category",
+        rows: rows.map((r) => ({
+          label: r.category,
+          value: r.spent / 100,                       // charts plot display units
+          display: formatMoney(r.spent, "RM"),
+        })),
+      }),
+    ];
+  },
+});
+```
+
+Panels: `stats` `bars` `series` `rows` `note`. On `ctx`: `table` `tables` `sql`
+`from` `runs` `control` `period` `controls` `now` `isPublic`. Controls are
+`period`, `select` and `search`, resolved from the querystring — which is what
+makes a view bookmarkable and lets a share link carry the slice its sender was
+looking at.
+
+A `money()` column holds whole cents and a chart plots display units, so
+convert before you build a point: pass ringgit to `value` and the formatted
+string to `display`. An axis reading "120k" for a twelve-hundred-ringgit month
+is the failure this avoids.
+
 ## Adding an integration
 
 1. New file in `src/integrations/`, exporting a `createX(...)` factory and its
@@ -753,6 +871,23 @@ These were decided deliberately. Raise a trade-off before changing any of them:
   a database and the columns are edited in a browser. The cost is that adding a
   column is a commit and a restart; the benefit is that it is reviewable,
   revertable, and visible to whoever reads the repo.
+- **Views: pages in code, sharing in the database.** A view is a file under
+  `views/`; what it draws, what it reads and whether it may ever be public are
+  all decided there. The database holds exactly one thing about it — the
+  digests of the links that are live right now — and that is a decision that
+  has to be revocable in seconds and therefore cannot be a commit. This is the
+  same split as data tables (structure in code, rows in the database) and the
+  same asymmetry as pausing (the database may only subtract). A browser-built
+  dashboard, with panels and queries stored as rows, is the n8n shape this
+  project exists to avoid, and it is what the Views tab must not become.
+
+  The panel set is closed — stats, bars, series, rows, note — for the same
+  reason the MCP tool list is: every addition is weight carried by everything.
+  A new panel kind has to be a shape the existing five genuinely cannot make,
+  not a variant of one of them. And no panel field may be a function, because
+  `GET /api/views/:name` serves the same panels as JSON; a formatter on a
+  panel would fork the page and the API into two code paths that drift.
+
 - **The MCP endpoint answers about runs, never about workflows.** `src/server/mcp.ts`
   serves operational data — what failed, what a run did, what a hook rejected —
   and deliberately has no tool that returns a workflow's definition. That is the
@@ -794,7 +929,9 @@ These were decided deliberately. Raise a trade-off before changing any of them:
 
 1. `bun run check` passes.
 2. `bun run list` shows the workflow you expect (this also proves it boots and
-   that every declared secret is present).
+   that every declared secret is present). For a view, boot the server and open
+   `/views` — a view that failed to load warns rather than aborting, so the log
+   and that tab are the only places it shows.
 3. Start the server and exercise the actual path — trigger the workflow, POST
    the webhook, open `/runs/<id>` and confirm steps and HTTP calls rendered.
 4. If you touched anything storage-related, grep the API output and stdout for a
@@ -804,6 +941,10 @@ These were decided deliberately. Raise a trade-off before changing any of them:
    file too. For credentials, sweep every page and every `/api` route, and
    confirm a `secret: false` field is *not* redacted while its neighbours are.
 5. If you touched the Dockerfile, `docker build` and run the container.
+6. If you touched views, check both themes and a phone width — the charts are
+   hand-rolled SVG, so a collided axis label or a table overflowing the page is
+   only visible by looking. Mint a share link, open it with no credentials,
+   then delete `shareable: true` and confirm the same URL answers 404.
 
 Report what you actually ran. Do not claim a behaviour works because the types
 compile.

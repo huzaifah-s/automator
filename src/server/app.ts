@@ -44,6 +44,20 @@ import {
   setVariable,
   variableValue,
 } from "../core/variables.ts";
+import {
+  buildViewCtx,
+  resolveControls,
+  viewRegistry,
+  type LoadedView,
+  type Panel,
+} from "../core/views.ts";
+import {
+  createViewLink,
+  deleteViewLink,
+  noteViewLinkUse,
+  resolveViewLink,
+  viewLinks,
+} from "../core/view-links.ts";
 import type { Registry } from "../core/loader.ts";
 import { planReplay, workflowsBlockedBy } from "./inspect.ts";
 import { createMcpRouter } from "./mcp.ts";
@@ -73,6 +87,9 @@ import {
   runPage,
   secretFormPage,
   unauthorizedPage,
+  publicViewPage,
+  viewPage,
+  viewsPage,
   workflowPage,
   workflowsPage,
   type CredentialView,
@@ -418,6 +435,87 @@ export function createApp(registry: Registry): Hono {
   app.route("/mcp/tables", createTableMcpRouter());
   app.route("/mcp", createMcpRouter(registry));
 
+  /**
+   * Running a view and rendering it.
+   *
+   * `load()` is workflow-shaped code written by hand, so it can throw, and the
+   * decision about what that means is made here rather than in the view: a
+   * dashboard page shows the error, because somebody is standing in front of it
+   * who can fix it, and a shared page shows nothing of the sort — a stack trace
+   * on a public URL is a description of the inside of this server.
+   */
+  const runView = async (
+    def: LoadedView,
+    query: Record<string, string | undefined>,
+    opts: { isPublic: boolean },
+  ): Promise<{ panels: Panel[]; controls: Record<string, string> }> => {
+    const controls = resolveControls(def, query);
+    try {
+      const panels = await def.load(buildViewCtx(def, controls, opts));
+      return { panels, controls };
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      log.error(`View "${def.name}" failed to load — ${detail}`);
+      return {
+        controls,
+        panels: [
+          {
+            kind: "note",
+            title: "This view could not be built",
+            body: opts.isPublic
+              ? "Something went wrong building this page. Whoever shared it with you can see why."
+              : detail,
+          },
+        ],
+      };
+    }
+  };
+
+  /* ------------------------------------------------------- shared views */
+
+  /*
+   * A view over a share link.
+   *
+   * Registered *above* the auth block deliberately, so it reads in this file
+   * the way it behaves: this is the one dashboard-adjacent route the password
+   * does not cover, and the token in the path is the whole of its access.
+   *
+   * Four things are load-bearing and each one looks removable:
+   *
+   *   - The view name comes out of the row, never out of the URL. A link
+   *     minted for the finance view cannot be aimed at another one.
+   *   - `shareable` is re-read from the file on every request, so setting it
+   *     back to false revokes every link at once without anybody having to
+   *     remember which were handed out.
+   *   - An unknown token, an expired one, a deleted view and a view that
+   *     stopped being shareable all answer the same bare 404. Telling the
+   *     holder of a dead link which of those it was tells somebody who should
+   *     not have it that it was once real.
+   *   - `noindex` on the response as well as in the document, because a link
+   *     pasted into a chat gets fetched by things that never parse the HTML.
+   */
+  app.get("/v/:token", async (c) => {
+    const link = resolveViewLink(c.req.param("token"));
+    const def = link ? viewRegistry.get(link.view) : undefined;
+    if (!link || !def || !def.shareable) return c.notFound();
+
+    noteViewLinkUse(link.id);
+    const { panels, controls } = await runView(def, c.req.query(), { isPublic: true });
+
+    c.header("X-Robots-Tag", "noindex, nofollow");
+    // A shared page is a live read of the database, and a proxy holding a copy
+    // of somebody's ledger is not a caching win worth having.
+    c.header("Cache-Control", "no-store");
+    return c.html(
+      publicViewPage({
+        view: def,
+        panels,
+        controls,
+        path: `/v/${c.req.param("token")}`,
+      }) as any,
+    );
+  });
+
   /* --------------------------------------------------------------- auth */
 
   const user = process.env.DASHBOARD_USER;
@@ -466,6 +564,12 @@ export function createApp(registry: Registry): Hono {
       "/variables/*",
       "/tables",
       "/tables/*",
+      // The Views tab is a dashboard tab like any other. The one route that is
+      // deliberately absent from this list is "/v/*" — a share link is its own
+      // credential, and putting it behind the dashboard password as well would
+      // make the whole feature pointless.
+      "/views",
+      "/views/*",
       "/api/*",
     ])
       app.use(p, auth);
@@ -1208,6 +1312,125 @@ export function createApp(registry: Registry): Hono {
     return c.redirect(`/tables/${def.name}?deleted=1`, 303);
   });
 
+  /* -------------------------------------------------------------- views */
+
+  /** Everything a view page needs for the tab badges. */
+  const viewBadges = () => ({
+    failedInWindow: store.statusCountsSince(Date.now() - DEFAULT_RANGE_MS).failed ?? 0,
+    workflowCount: registry.all().length,
+    unconnected: wantedCredentials().length,
+    tableCount: allTables().length,
+  });
+
+  app.get("/views", (c) =>
+    c.html(
+      viewsPage({
+        views: viewRegistry.all().map((view) => ({
+          view,
+          // Only links that would actually open. A revoked-by-expiry link is
+          // not sharing, and counting it would report a view as shared when
+          // nothing can read it.
+          links: view.shareable
+            ? viewLinks(view.name).filter((l) => !l.expires_at || l.expires_at > Date.now()).length
+            : 0,
+        })),
+        ...viewBadges(),
+      }) as any,
+    ),
+  );
+
+  const renderView = async (
+    c: any,
+    def: LoadedView,
+    extra: {
+      created?: { label: string; url: string } | null;
+      error?: string | null;
+      status?: number;
+    } = {},
+  ) => {
+    const { panels, controls } = await runView(def, c.req.query(), { isPublic: false });
+    return c.html(
+      viewPage({
+        view: def,
+        panels,
+        controls,
+        links: def.shareable ? viewLinks(def.name) : [],
+        // Same bar as minting an MCP token, and for the same reason: this form
+        // emits a credential rather than consuming one.
+        canShare: writable && Boolean(process.env.DASHBOARD_USER && process.env.DASHBOARD_PASS),
+        created: extra.created ?? null,
+        error: extra.error ?? null,
+        ...viewBadges(),
+      }) as any,
+      extra.status ?? 200,
+    );
+  };
+
+  app.get("/views/:name", async (c) => {
+    const def = viewRegistry.get(c.req.param("name"));
+    if (!def) return c.notFound();
+    return renderView(c, def);
+  });
+
+  app.post("/views/:name/links", async (c) => {
+    const def = viewRegistry.get(c.req.param("name"));
+    if (!def) return c.notFound();
+
+    /*
+     * Three refusals, in the order they matter.
+     *
+     * The file's `shareable` is checked first and is not overridable from
+     * here: the repository decides whether this view may ever be public, and
+     * the dashboard only decides whether it is *right now*. Then the same two
+     * gates the MCP token form has — a write flag and a dashboard password —
+     * because both forms hand back a credential.
+     */
+    if (!def.shareable) {
+      return renderView(c, def, {
+        error:
+          `"${def.name}" cannot be shared. Add shareable: true to ${def.file} if this view ` +
+          `is meant to be readable without signing in.`,
+        status: 403,
+      });
+    }
+    if (!writable) {
+      return renderView(c, def, {
+        error: "Set DASHBOARD_WRITE=1 to create share links from the browser.",
+        status: 403,
+      });
+    }
+    if (!process.env.DASHBOARD_USER || !process.env.DASHBOARD_PASS) {
+      return renderView(c, def, {
+        error:
+          "Set DASHBOARD_USER and DASHBOARD_PASS before creating a share link. Minting a " +
+          "public URL from a dashboard anybody can open is not a thing this will do.",
+        status: 403,
+      });
+    }
+
+    const body = await c.req.parseBody();
+    const label = String(body.label ?? "").trim().slice(0, 60);
+    if (!label) {
+      return renderView(c, def, { error: "Give the link a label.", status: 400 });
+    }
+    const days = Number(body.expires ?? "");
+    const { token } = createViewLink(def.name, label, {
+      expiresInDays: Number.isFinite(days) && days > 0 ? days : null,
+    });
+
+    const base = process.env.PUBLIC_URL?.replace(/\/+$/, "") || new URL(c.req.url).origin;
+    return renderView(c, def, { created: { label, url: `${base}/v/${token}` } });
+  });
+
+  app.post("/views/:name/links/:id/delete", async (c) => {
+    const def = viewRegistry.get(c.req.param("name"));
+    if (!def) return c.notFound();
+    if (!deleteViewLink(c.req.param("id"))) {
+      return renderView(c, def, { error: "That link is already gone.", status: 400 });
+    }
+    return c.redirect(`/views/${def.name}`, 303);
+  });
+
   app.get("/variables", (c) => renderVariables(c));
 
   app.post("/variables", async (c) => {
@@ -1687,6 +1910,35 @@ export function createApp(registry: Registry): Hono {
    * refuses a name or a value that looks like a credential, so nothing that
    * needs hiding is supposed to be in here in the first place.
    */
+  /*
+   * Views over JSON.
+   *
+   * The panels a view builds are plain data — that is why no panel field is
+   * ever a function — so the same `load()` that draws the page serves an agent
+   * or a script without a second code path. Behind the dashboard's auth like
+   * every other /api route; a share link reaches the HTML page and not this.
+   */
+  app.get("/api/views", (c) =>
+    c.json(
+      viewRegistry.all().map((v) => ({
+        name: v.name,
+        title: v.title,
+        description: v.description ?? null,
+        file: v.file,
+        folder: v.folder,
+        shareable: Boolean(v.shareable),
+        controls: v.controls ?? {},
+      })),
+    ),
+  );
+
+  app.get("/api/views/:name", async (c) => {
+    const def = viewRegistry.get(c.req.param("name"));
+    if (!def) return c.json({ error: "no such view" }, 404);
+    const { panels, controls } = await runView(def, c.req.query(), { isPublic: false });
+    return c.json({ name: def.name, title: def.title, controls, panels });
+  });
+
   app.get("/api/variables", (c) =>
     c.json({
       variables: listVariables().map((v) => ({

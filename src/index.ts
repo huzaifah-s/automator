@@ -1,5 +1,6 @@
 import { loadWorkflows, Registry } from "./core/loader.ts";
 import { loadTables } from "./core/tables.ts";
+import { closeViewReader, loadViews, viewRegistry } from "./core/views.ts";
 import {
   startScheduler,
   stopScheduler,
@@ -15,7 +16,12 @@ import {
   setRegistry,
 } from "./core/runner.ts";
 import { createApp } from "./server/app.ts";
-import { startWorkflowWatch, stopWorkflowWatch } from "./core/reload.ts";
+import {
+  startViewWatch,
+  startWorkflowWatch,
+  stopViewWatch,
+  stopWorkflowWatch,
+} from "./core/reload.ts";
 import { reconcileWebhooks } from "./core/webhooks.ts";
 import { recoverInbox } from "./core/inbox.ts";
 import { store, db } from "./core/db.ts";
@@ -150,6 +156,26 @@ const registry = new Registry(
       await alertBoot("workflows failed to load", problems?.join("\n") ?? err.message);
     }
     process.exit(1);
+  }),
+);
+
+/*
+ * Views come up after workflows, and a broken one is a warning rather than a
+ * dead boot. That is the opposite of how a bad workflow or a bad table is
+ * treated, and deliberately so: those decide what *runs* and what the schema
+ * *is*, while a view is a page somebody reads. A runner that refuses to start —
+ * and therefore stops firing every workflow it has — because a chart references
+ * a column that was renamed has traded something that matters for something
+ * that does not. The Views tab shows what loaded; the log says what did not.
+ */
+viewRegistry.replace(
+  await loadViews(process.env.VIEWS_DIR ?? "./views").catch((err) => {
+    const problems = (err as { problems?: string[] }).problems;
+    log.warn(
+      `Views did not load, so the Views tab will be empty — ` +
+        (problems?.join("; ") ?? (err instanceof Error ? err.message : String(err))),
+    );
+    return [];
   }),
 );
 
@@ -303,6 +329,7 @@ void recoverInbox(registry).catch((err) =>
 // already read. Starting it earlier would let a change land mid-boot, against
 // a scheduler or a webhook reconciliation that had not finished setting up.
 startWorkflowWatch(process.env.WORKFLOWS_DIR ?? "./workflows", registry);
+startViewWatch(process.env.VIEWS_DIR ?? "./views");
 
 if (registry.enabled().some((w) => w.trigger.kind === "cron")) {
   const soonest = registry
@@ -322,6 +349,7 @@ async function shutdown(signal: string, code = 0): Promise<never> {
   log.info(`${signal} received — shutting down`);
   beginShutdown();
   stopWorkflowWatch();
+  stopViewWatch();
   stopScheduler();
   stopSecretRefresh();
   stopVariableRefresh();
@@ -346,6 +374,7 @@ async function shutdown(signal: string, code = 0): Promise<never> {
 
   await server?.stop(true);
   await closeSql().catch(() => {});
+  closeViewReader();
   db.close(false);
   process.exit(code);
 }

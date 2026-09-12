@@ -1,6 +1,9 @@
 import { html, raw } from "hono/html";
 import type { HtmlEscapedString } from "hono/utils/html";
 import type { ColumnDef, LoadedTable, Row } from "../core/tables.ts";
+import type { LoadedView, Panel } from "../core/views.ts";
+import type { ViewLinkRecord } from "../core/types.ts";
+import { VIEW_CSS, renderControls, renderPanels } from "./view-render.ts";
 import type {
   CallRecord,
   IgnoredRecord,
@@ -765,7 +768,15 @@ const ICON_PLAY = raw(
   `<svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-hidden="true"><path d="M4.6 3.1v9.8c0 .4.45.65.79.43l7.7-4.9a.5.5 0 0 0 0-.86l-7.7-4.9a.5.5 0 0 0-.79.43Z"/></svg>`,
 );
 
-type Tab = "workflows" | "executions" | "tables" | "credentials" | "variables" | "mcp" | null;
+type Tab =
+  | "workflows"
+  | "executions"
+  | "views"
+  | "tables"
+  | "credentials"
+  | "variables"
+  | "mcp"
+  | null;
 
 interface Shell {
   /** Browser title and, on detail pages, the breadcrumb next to the tabs. */
@@ -794,7 +805,7 @@ function layout(shell: Shell, body: HtmlEscapedString | Promise<HtmlEscapedStrin
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="dark light">
 <title>${title} · automator</title>
-<style>${raw(CSS)}</style>
+<style>${raw(CSS)}${raw(VIEW_CSS)}</style>
 </head><body><div class="wrap"${refresh ? raw(` data-poll="${refresh}"`) : ""}>
   <div class="top"><div class="topbar">
     <a class="brand" href="/"><span class="mark">A</span><span>automator</span></a>
@@ -805,6 +816,7 @@ function layout(shell: Shell, body: HtmlEscapedString | Promise<HtmlEscapedStrin
       <a class="tab" href="/runs" ${tab === "executions" ? raw('aria-current="page"') : ""}>Executions${
         badges.failed ? html`<span class="n bad">${badges.failed}</span>` : ""
       }</a>
+      <a class="tab" href="/views" ${tab === "views" ? raw('aria-current="page"') : ""}>Views</a>
       <a class="tab" href="/tables" ${tab === "tables" ? raw('aria-current="page"') : ""}>Tables${
         badges.tables ? html`<span class="n">${badges.tables}</span>` : ""
       }</a>
@@ -3344,4 +3356,269 @@ export function tablePage(args: {
           `}
     `,
   );
+}
+
+/* ----------------------------------------------------------------- views */
+
+export interface ViewSummary {
+  view: LoadedView;
+  /** Live share links for it. Empty when it has none, or cannot have any. */
+  links: number;
+}
+
+/** The Views tab: every view that loaded, grouped the way tables are. */
+export function viewsPage(args: {
+  views: ViewSummary[];
+  failedInWindow: number;
+  workflowCount: number;
+  unconnected: number;
+  tableCount: number;
+}) {
+  const { views } = args;
+  const shared = views.filter((v) => v.links > 0).length;
+
+  return layout(
+    {
+      title: "Views",
+      tab: "views",
+      refresh: null,
+      badges: {
+        workflows: args.workflowCount,
+        failed: args.failedInWindow,
+        unconnected: args.unconnected || null,
+        tables: args.tableCount || null,
+      },
+    },
+    html`
+      <div class="stats">
+        <div class="stat"><b>${views.length}</b><span>views</span></div>
+        <div class="stat"><b>${shared}</b><span>shared publicly</span></div>
+      </div>
+
+      <details class="note" ${views.length === 0 ? raw("open") : ""}>
+        <summary>
+          <span><b>A view is a file, and it is read-only.</b> Pages are code; sharing one is a link you mint here.</span>
+        </summary>
+        <div class="body">
+          <p>
+            A view is a file under <code class="mono">views/</code> that default-exports
+            <code class="mono">defineView()</code>, discovered the same way workflows and
+            tables are — and, like a workflow, it reloads on a file change without a
+            restart, because a view only ever reads.
+          </p>
+          <p>
+            A view is private by default: these pages sit behind the dashboard's
+            credentials like every other tab. A view whose file says
+            <code class="mono">shareable: true</code> can also be given an unguessable
+            link that opens it without them. The link is shown once, only its digest is
+            stored, and it can be revoked from the view's own page. Setting the flag back
+            to <code class="mono">false</code> in the repository kills every link that was
+            ever minted for it, immediately.
+          </p>
+        </div>
+      </details>
+
+      ${views.length === 0
+        ? html`<div class="card">
+            <div class="empty">
+              <b>No views yet</b>
+              Add a file under <code class="mono">views/</code> that default-exports
+              <code class="mono">defineView()</code>.
+            </div>
+          </div>`
+        : html`<div class="vlist">
+            ${views.map(
+              ({ view, links }) => html`<a class="vcard" href="/views/${view.name}">
+                <b>${view.title}</b>
+                ${view.description ? html`<span>${view.description}</span>` : ""}
+                <div class="meta">
+                  <span class="mono muted">${view.file}</span>
+                  ${links
+                    ? html`<span class="tag">${links} link${links === 1 ? "" : "s"}</span>`
+                    : view.shareable
+                      ? html`<span class="tag">shareable</span>`
+                      : ""}
+                </div>
+              </a>`,
+            )}
+          </div>`}
+    `,
+  );
+}
+
+/**
+ * One view, on the dashboard.
+ *
+ * The panels are rendered by the caller and handed in already built, because
+ * the route is the only thing that can run `load()` — and the only thing that
+ * should decide what happens when it throws.
+ */
+export function viewPage(args: {
+  view: LoadedView;
+  panels: Panel[];
+  controls: Record<string, string>;
+  links: ViewLinkRecord[];
+  /** Minting needs DASHBOARD_WRITE=1 and a dashboard password, like MCP tokens. */
+  canShare: boolean;
+  /** Set only on the response that just minted one. Shown once, then gone. */
+  created?: { label: string; url: string } | null;
+  error?: string | null;
+  failedInWindow: number;
+  workflowCount: number;
+  unconnected: number;
+  tableCount: number;
+}) {
+  const { view, links } = args;
+  const crumb = html`<span class="crumb"><a href="/views">Views</a> / <b>${view.title}</b></span>`;
+
+  return layout(
+    {
+      title: view.title,
+      tab: "views",
+      // No background refresh while there is a form on the page: a swap would
+      // discard a link still being copied. A view says how fresh it wants to
+      // be and the share box is the one thing that overrules it.
+      refresh: args.created ? null : (view.refresh ?? null),
+      crumb,
+      badges: {
+        workflows: args.workflowCount,
+        failed: args.failedInWindow,
+        unconnected: args.unconnected || null,
+        tables: args.tableCount || null,
+      },
+    },
+    html`
+      ${args.error ? html`<div class="flash">${args.error}</div>` : ""}
+      ${args.created
+        ? html`<div class="flash quiet">
+            <b>Copy this now — it is not stored and cannot be shown again.</b>
+            <div class="vtoken" style="margin-top:9px">${args.created.url}</div>
+            Anyone with this URL can read this view without signing in. Revoke it below.
+          </div>`
+        : ""}
+
+      <div class="vhead">
+        <h1>${view.title}</h1>
+        ${view.description ? html`<p>${view.description}</p>` : ""}
+        ${renderControls(view, args.controls, `/views/${view.name}`)}
+      </div>
+
+      ${renderPanels(args.panels)}
+
+      <h2>Sharing</h2>
+      <div class="card">
+        <div class="vshare">
+          ${view.shareable
+            ? args.canShare
+              ? html`<form method="post" action="/views/${view.name}/links" class="bar" style="margin:0">
+                  <input
+                    class="why"
+                    type="text"
+                    name="label"
+                    placeholder="What is this link for?"
+                    maxlength="60"
+                    required
+                  />
+                  <select name="expires">
+                    <option value="">Never expires</option>
+                    <option value="7">Expires in 7 days</option>
+                    <option value="30">Expires in 30 days</option>
+                    <option value="90">Expires in 90 days</option>
+                  </select>
+                  <button class="btn primary" type="submit">Create link</button>
+                </form>`
+              : html`<p class="vnote">
+                  This view can be shared, but minting a link needs
+                  <code class="mono">DASHBOARD_WRITE=1</code> together with
+                  <code class="mono">DASHBOARD_USER</code> and
+                  <code class="mono">DASHBOARD_PASS</code> — this form emits a credential,
+                  so it is held to the same bar as an MCP token.
+                </p>`
+            : html`<p class="vnote">
+                This view cannot be shared. Its file does not say
+                <code class="mono">shareable: true</code>, and no link can be minted for it
+                until it does — that decision lives in the repository, not here.
+              </p>`}
+        </div>
+
+        ${links.length > 0
+          ? html`<div class="vscroll">
+              <table class="vtable">
+                <thead>
+                  <tr>
+                    <th>Label</th>
+                    <th>Link</th>
+                    <th>Created</th>
+                    <th>Expires</th>
+                    <th class="r">Opens</th>
+                    <th>Last opened</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${links.map(
+                    (l) => html`<tr>
+                      <td>${l.label}</td>
+                      <td class="m">${l.prefix}…</td>
+                      <td class="m">${fmt(l.created_at)}</td>
+                      <td class="m">
+                        ${l.expires_at
+                          ? l.expires_at < Date.now()
+                            ? html`<span class="pill failed">expired</span>`
+                            : fmt(l.expires_at)
+                          : "—"}
+                      </td>
+                      <td class="r m">${l.opens}</td>
+                      <td class="m">${fmt(l.last_used_at)}</td>
+                      <td>
+                        <form
+                          method="post"
+                          action="/views/${view.name}/links/${l.id}/delete"
+                          data-confirm="Revoke this link? Anyone holding it stops being able to open the view."
+                        >
+                          <button class="btn danger" type="submit">Revoke</button>
+                        </form>
+                      </td>
+                    </tr>`,
+                  )}
+                </tbody>
+              </table>
+            </div>`
+          : ""}
+      </div>
+    `,
+  );
+}
+
+/**
+ * A view served over a share link.
+ *
+ * Its own document, not the dashboard's with the chrome hidden. Nothing here
+ * links anywhere — no tabs, no breadcrumb, no workflow names, no hint that
+ * there is a dashboard behind it — because the person holding this link was
+ * given one page and not an account.
+ */
+export function publicViewPage(args: {
+  view: LoadedView;
+  panels: Panel[];
+  controls: Record<string, string>;
+  path: string;
+}) {
+  const { view } = args;
+  return html`<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<meta name="robots" content="noindex,nofollow">
+<title>${view.title}</title>
+<style>${raw(CSS)}${raw(VIEW_CSS)}</style>
+</head><body><div class="pubwrap">
+  <div class="vhead">
+    <h1>${view.title}</h1>
+    ${view.description ? html`<p>${view.description}</p>` : ""}
+    ${renderControls(view, args.controls, args.path)}
+  </div>
+  ${renderPanels(args.panels)}
+  <div class="pubfoot">Generated ${fmt(Date.now())} · read-only</div>
+</div></body></html>`;
 }

@@ -449,6 +449,29 @@ export interface McpTokenRecord {
   calls: number;
 }
 
+/**
+ * One share link for a view — see src/core/view-links.ts.
+ *
+ * `hash` is the only record of the token: the plaintext is shown once and
+ * never stored, so this row can revoke a link and can never reproduce one.
+ */
+export interface ViewLinkRecord {
+  id: string;
+  /** The view this link opens. Never taken from the URL — always from here. */
+  view: string;
+  /** What it was minted for, so a list of links is readable a month later. */
+  label: string;
+  hash: string;
+  /** First few characters of the plaintext, so a row can be told from its siblings. */
+  prefix: string;
+  created_at: number;
+  /** Null never expires. An expired link is refused exactly like an unknown one. */
+  expires_at: number | null;
+  last_used_at: number | null;
+  /** How many times it has been opened. */
+  opens: number;
+}
+
 /** One accepted webhook delivery — see the `inbox` table in db.ts. */
 export interface InboxRecord {
   id: string;

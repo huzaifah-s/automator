@@ -827,6 +827,135 @@ family    MYR       1     200.00            150.00
 company   USD       1     60.00             0.00
 ```
 
+## Views — pages built from the data
+
+A **view** is a read-only page: the ledger as a chart, the runner as a health
+board, whatever is worth looking at rather than querying. It is a file under
+`views/` that default-exports `defineView()`, found at boot the way workflows
+and tables are, and — like a workflow and unlike a table — **it reloads on a
+file change without a restart**, because a view only ever reads. There is no
+schema to bring into line and nothing that can be caught half-applied.
+
+```ts
+import { bars, defineView, formatMoney, stats } from "../src/core/define.ts";
+
+export default defineView({
+  name: "spend",                     // lowercase, digits, dashes — it is a URL
+  title: "Spending",
+  description: "One line, shown on the Views tab",
+  refresh: 120,                      // seconds between background refreshes
+
+  controls: {
+    period: { kind: "period", default: "12m" },
+  },
+
+  async load(ctx) {
+    const period = ctx.period("period");
+    const rows = ctx.table("expenses").aggregate({
+      select: [{ fn: "sum", column: "amount_cents", as: "spent" }],
+      groupBy: ["category"],
+      where: [{ column: "occurred_on", op: ">=", value: period.from }],
+      order: { column: "spent", direction: "desc" },
+    });
+
+    return [
+      stats([{ label: "Rows", value: String(rows.length) }]),
+      bars({
+        title: "By category",
+        rows: rows.map((r) => ({
+          label: String(r.category),
+          value: Number(r.spent) / 100,             // charts plot display units
+          display: formatMoney(Number(r.spent), "RM"),
+        })),
+      }),
+    ];
+  },
+});
+```
+
+### What a view can read
+
+On `ctx`: `table(name)` (the *read* side of a data table — query, count,
+aggregate, get), `tables()`, `runs` (the numbers behind the Executions tab —
+`counts`, `list`, `daily`, `stepHotspots`, `callHotspots`), `control(name)`,
+`period(name)`, `controls`, `now`, and `isPublic`.
+
+And `ctx.sql` for the queries the other two cannot express — a sum of an
+*expression*, a `substr` of a date to group by month, a union across two
+tables. Three things about it:
+
+- It runs on a **separate read-only handle** to the same database. The
+  `SELECT`-only check is the error message; the handle is the enforcement, and
+  a `WITH … DELETE` that slips past the string check is still refused by
+  SQLite with *attempt to write a readonly database*.
+- Values go through placeholders, identifiers go through `ctx.from("expenses")`.
+  **Never interpolate a control value into the query string.** A control is
+  data from the querystring; treat it as such.
+- It throws rather than truncating past 5,000 rows. Aggregate it in SQL — a
+  chart drawn from the first five thousand of something is wrong in a way
+  nobody looking at it can see.
+
+### What a view can draw
+
+Five panel builders, and no others: `stats` (a row of KPI tiles), `bars` (a
+ranked breakdown), `series` (a grouped column chart over time), `rows` (a
+table), `note` (a paragraph). Panels are plain data — no field is ever a
+function — which is what lets `GET /api/views/<name>` serve the same page as
+JSON without a second code path.
+
+`series` carries at most three series and refuses a fourth rather than
+inventing a colour nobody can tell from the third; fold the tail into one
+"other" series or split the chart. Every chart also ships a **table twin** —
+the `Show the numbers` disclosure under it — generated from the same numbers,
+so no value is reachable only by hovering.
+
+### Public and private
+
+Views are private. `/views` and `/views/<name>` sit behind
+`DASHBOARD_USER`/`DASHBOARD_PASS` like every other tab.
+
+A view whose file says `shareable: true` can *also* be given an **unguessable
+link** that opens it with no credentials at all: `/v/<token>`, minted from the
+view's own page. The token is 48 hex characters, shown once, stored only as a
+SHA-256 digest, optionally expiring, and revocable. Minting one needs
+`DASHBOARD_WRITE=1` **and** a dashboard password — the same bar as an MCP
+token, because this form emits a credential rather than consuming one.
+
+Three properties are worth stating plainly, because the page renders real
+money:
+
+- **The file decides whether a link may exist at all.** Delete `shareable:
+  true` and every link ever minted for that view stops resolving on the next
+  request — without anybody having to remember which ones were handed out. The
+  database may only ever subtract from what the repository allows, the same
+  asymmetry as pausing a workflow.
+- **A link is scoped to one view**, and the view name comes out of the stored
+  row rather than the URL. A finance link cannot be aimed at an ops view by
+  editing the path.
+- **An unknown token, an expired one, a revoked one, a deleted view and a view
+  that stopped being shareable all answer the same bare 404.** Saying which
+  would tell whoever holds a dead link that it was once real.
+
+The shared page is its own document — no tabs, no breadcrumb, no links
+anywhere, `X-Robots-Tag: noindex` and `Cache-Control: no-store`. Not the
+dashboard with the chrome hidden.
+
+So: keep the ops view private, share the finance one with the person who asks
+you how the month went.
+
+### The personal-finance view
+
+`views/personal-finance/overview.ts` is the worked example — money in and out
+by month, spending by category and by account, what is still owed, what needs a
+second look, and the latest rows, all scoped by one period control.
+
+Two things in it are the interesting ones. Spending is **net of
+reimbursements** (`amount_cents - reimbursed_cents`) everywhere on the page,
+which is the number the tables say is what you actually spent. And "still owed
+to you" is deliberately **not** bounded by the period — a company claim sits
+for months, and filtering it to *this month* would quietly report the debt as
+settled the moment the calendar turned over.
+
 ## Approval gates
 
 There is no Wait node here, and there is not going to be one. A run is a single

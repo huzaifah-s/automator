@@ -8,6 +8,7 @@ import type {
   IgnoredRecord,
   InboxRecord,
   McpTokenRecord,
+  ViewLinkRecord,
   LogRecord,
   PollRecord,
   RejectionRecord,
@@ -20,6 +21,14 @@ import type {
 } from "./types.ts";
 
 const path = process.env.DATABASE_PATH ?? "./data/automator.db";
+
+/**
+ * Where the database file is, for the one other thing that opens it: views get
+ * a *separate read-only handle* so a `ctx.sql` cannot write whatever it is
+ * asked to. Exported rather than re-derived there, so the two can never point
+ * at different files.
+ */
+export const databasePath = path;
 
 /** Ceiling on a rejection's `detail`. Long enough for a sentence or a field list. */
 const REJECTION_DETAIL_MAX = 500;
@@ -361,6 +370,27 @@ db.exec(`
     last_client  TEXT,
     calls        INTEGER NOT NULL DEFAULT 0
   );
+
+  -- A share link for a view. Only the digest is kept -- the plaintext is
+  -- shown once, when it is minted, and nothing returns it afterwards.
+  --
+  -- The view column is the whole of what a link grants, and it is read from
+  -- this row rather than from the URL: a link minted for one view cannot be
+  -- aimed at another by editing the path. Whether it resolves at all is still
+  -- the repository's decision, checked against the view file's shareable flag
+  -- on every request.
+  CREATE TABLE IF NOT EXISTS view_links (
+    id           TEXT PRIMARY KEY,
+    view         TEXT    NOT NULL,
+    label        TEXT    NOT NULL,
+    hash         TEXT    NOT NULL UNIQUE,
+    prefix       TEXT    NOT NULL,
+    created_at   INTEGER NOT NULL,
+    expires_at   INTEGER,
+    last_used_at INTEGER,
+    opens        INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS idx_view_links_view ON view_links(view, created_at DESC);
 `);
 
 
@@ -634,6 +664,23 @@ const stmts = {
   ),
   mcpTokenCount: db.prepare(`SELECT COUNT(*) AS count FROM mcp_tokens`),
   mcpLastSeen: db.prepare(`SELECT MAX(last_used_at) AS at FROM mcp_tokens`),
+
+  viewLinkByHash: db.prepare(`SELECT * FROM view_links WHERE hash = ?`),
+  insertViewLink: db.prepare(
+    `INSERT INTO view_links (id, view, label, hash, prefix, created_at, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ),
+  deleteViewLink: db.prepare(`DELETE FROM view_links WHERE id = ?`),
+  // Every link, or the ones for one view. `''` is "no filter", the same
+  // positional-binding trick filteredRuns uses.
+  viewLinks: db.prepare(
+    `SELECT * FROM view_links
+     WHERE (? = '' OR view = ?)
+     ORDER BY created_at DESC`,
+  ),
+  touchViewLink: db.prepare(
+    `UPDATE view_links SET last_used_at = ?, opens = opens + 1 WHERE id = ?`,
+  ),
 
   pruneRuns: db.prepare(`DELETE FROM runs WHERE started_at < ?`),
   pruneSteps: db.prepare(
@@ -1143,6 +1190,36 @@ export const store = {
 
   mcpTokenCount: () => (stmts.mcpTokenCount.get() as { count: number }).count,
   mcpLastSeen: () => (stmts.mcpLastSeen.get() as { at: number | null }).at,
+
+  /* ------------------------------------------------------- view links */
+
+  viewLinkByHash: (hash: string) =>
+    (stmts.viewLinkByHash.get(hash) as ViewLinkRecord | null) ?? null,
+  insertViewLink: (row: {
+    id: string;
+    view: string;
+    label: string;
+    hash: string;
+    prefix: string;
+    expires_at: number | null;
+  }): void => {
+    stmts.insertViewLink.run(
+      row.id,
+      row.view,
+      row.label,
+      row.hash,
+      row.prefix,
+      Date.now(),
+      row.expires_at,
+    );
+  },
+  deleteViewLink: (id: string): boolean => stmts.deleteViewLink.run(id).changes > 0,
+  viewLinks: (view?: string): ViewLinkRecord[] =>
+    stmts.viewLinks.all(view ?? "", view ?? "") as ViewLinkRecord[],
+  /** Records that a link was just opened. There is no client name to keep. */
+  touchViewLink: (id: string): void => {
+    stmts.touchViewLink.run(Date.now(), id);
+  },
 
   /* -------------------------------------------------- workflow versions */
 

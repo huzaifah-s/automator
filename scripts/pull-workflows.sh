@@ -58,9 +58,19 @@ fi
 # and it repairs the case where a Coolify deploy reset the directory underneath
 # us. --delete because a workflow deleted upstream has to disappear here too,
 # and workflows/ holds nothing Coolify put there.
+# views/ rides along with workflows/, and for the same reason: a view is a file
+# the container re-reads on its own. It is *not* in RUNTIME_PATHS below, so a
+# push that only changes a view goes live within the minute rather than waiting
+# for a deploy — which is the whole point of a view being a file.
+#
+# The asymmetry with tables/ is the one to keep straight: a table's schema is
+# applied at boot and nowhere else, so a definition that merely appears on disk
+# is one nothing has acted on. A view applies itself on the next request.
 sync_live() {
   [ -n "$LIVE_DIR" ] || return 0
   rsync -a --delete workflows/ "$LIVE_DIR/workflows/"
+  [ -d views ] && rsync -a --delete views/ "$LIVE_DIR/views/"
+  return 0
 }
 
 # How to recognise the running container. Coolify appends a per-deployment
@@ -99,7 +109,8 @@ notify() {
 # claiming to be something the container is not — and the next person to read
 # `git log` on the server would be reading a version that is not deployed.
 #
-# Everything else is either workflows/ (hot-reloaded) or documentation (inert).
+# Everything else is either workflows/ or views/ (both hot-reloaded), or
+# documentation (inert).
 # The list is what runs, rather than "anything outside workflows/", because
 # nearly every commit here also touches CHANGELOG.md — blocking on that would
 # block almost every push.
@@ -114,12 +125,12 @@ notify() {
 RUNTIME_PATHS='^(src/|tables/|package\.json|bun\.lock|Dockerfile|docker-compose\.yml|compose\.local\.yml|tsconfig\.json)'
 
 # Files in the deployed directory whose contents say nothing about which commit
-# was deployed. workflows/ is copied in by sync_live above, from *this*
-# checkout, so it always reads as whatever HEAD is here. Coolify rewrites the
+# was deployed. workflows/ and views/ are copied in by sync_live above, from
+# *this* checkout, so they always read as whatever HEAD is here. Coolify rewrites the
 # other three in the directory it deploys from: ARG lines injected into the
 # Dockerfile, docker-compose.yml rebuilt, README.md overwritten with a
 # deployment note.
-UNSPOKEN_FOR='^(workflows/|Dockerfile$|docker-compose\.yml$|README\.md$)'
+UNSPOKEN_FOR='^(workflows/|views/|Dockerfile$|docker-compose\.yml$|README\.md$)'
 
 # Whether the deploy this run is about to ask for has already happened.
 #

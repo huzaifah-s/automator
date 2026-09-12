@@ -40,6 +40,10 @@ services:
       # anything reads it — see scripts/pull-workflows.sh, which treats
       # tables/ as a change that must wait for a real deploy.
       - ./tables:/app/tables:ro
+      # Views reload without a restart, like workflows and unlike tables — a
+      # view is a pure read, so there is no schema to bring into line and
+      # nothing that can be caught half-applied.
+      - ./views:/app/views:ro
 
     # A reverse proxy does not route to a container until this passes, so these
     # numbers are the length of the deploy's unreachable window, not a

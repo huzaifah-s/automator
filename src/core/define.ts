@@ -158,6 +158,39 @@ export type {
   WhereClause,
   WhereOp,
 } from "./tables.ts";
+/**
+ * Views — see src/core/views.ts. A view file under `views/` imports these the
+ * same way a workflow file imports defineWorkflow, and the panel builders are
+ * the whole of what it may put on a page.
+ */
+export {
+  defineView,
+  stats,
+  bars,
+  series,
+  rows,
+  note,
+  formatMoney,
+  periodRange,
+  isoDate,
+  PERIOD_KEYS,
+} from "./views.ts";
+export type {
+  BarRow,
+  ControlDef,
+  Panel,
+  Period,
+  PeriodKey,
+  ReadOnlyTable,
+  RowColumn,
+  RowDatum,
+  RunReader,
+  SeriesPoint,
+  StatItem,
+  Tone,
+  ViewCtx,
+  ViewDef,
+} from "./views.ts";
 export { defineCredential } from "./credentials.ts";
 export type { CredentialValues } from "./credentials.ts";
 export type { ProviderId } from "./providers.ts";

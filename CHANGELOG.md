@@ -8,6 +8,69 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-12
 
+### Views — read-only pages, private by default, shareable by an unguessable link
+
+Data tables made the runner hold things worth asking "how much" about. Reading
+the answer back still meant the Tables tab (a row list) or an MCP client (a
+chat). Neither is what you want when the question is "how did this month go" —
+that one wants a page.
+
+**A view is now a file under `views/` that default-exports `defineView()`**,
+found at boot like workflows and tables, rendering a closed set of panels —
+`stats`, `bars`, `series`, `rows`, `note` — from `ctx.table()`, `ctx.runs` and
+`ctx.sql`. `views/personal-finance/overview.ts` is the worked example: money in
+and out by month, spending by category and by account, what is still owed and
+what needs checking, all scoped by one period control.
+`views/ops/runner-health.ts` is the second, deliberately unshareable, one.
+
+*What was settled: views hot-reload, unlike tables.* The obvious reading of
+"structure is code" is that a view, like a table, waits for a restart. It does
+not, and the difference is DDL: a table's schema is applied at boot and a
+definition that merely appears on disk is one nothing acted on, while a view is
+a pure read whose `load()` runs inside a request and whose result is thrown
+away. There is nothing that can be caught half-applied, so a view change goes
+live within the minute — which is what makes "add me a page for X" a thing that
+happens without a deploy. `scripts/pull-workflows.sh` therefore syncs `views/`
+alongside `workflows/` and does not block on it.
+
+*What was settled: the file decides whether a page may ever be public; the
+database only decides whether it is right now.* A view is private like every
+other tab. One that says `shareable: true` can also be given an unguessable
+`/v/<token>` link — 48 hex characters, shown once, stored only as a digest,
+revocable, optionally expiring, and minted only with `DASHBOARD_WRITE=1` *and*
+a dashboard password, the same bar as an MCP token because the form emits a
+credential rather than consuming one. The route re-reads the flag on every
+request, so deleting `shareable: true` kills every link ever minted for that
+view immediately, with no need to remember which were handed out. This is the
+pause asymmetry applied to reading: the database may only subtract from what
+the repository allows.
+
+The losing option was a named public path (`/public/finance`). Simpler to share
+and guessable, which for a page rendering somebody's ledger is the wrong trade;
+and it would have had no revocation story at all short of editing code.
+
+*What was settled: SQL is allowed, and a second handle is what makes it safe.*
+`aggregate()` sums a column, and almost every figure worth charting is a sum of
+an *expression* or a group by a `substr` of a date. So `ctx.sql` exists — over
+a **separate read-only SQLite handle**, one statement, `SELECT`/`WITH` only,
+capped at 5,000 rows. The string check is the error message; the handle is the
+enforcement, which is not a theoretical distinction: `WITH x AS (…) DELETE FROM
+…` passes the former and is refused by the latter as *attempt to write a
+readonly database*. The rule that does not have a mechanism behind it is the
+one that matters most — never interpolate a control value into a query — and
+it is held up by the same thing a table's columns are: the file is reviewed.
+
+*What was traded.* A public URL is new attack surface this project did not have
+— mitigated by being opt-in per view in code, off by default, revocable from
+two directions, `noindex`/`no-store`, and answering one indistinguishable 404
+for every kind of dead link. Charts are hand-rolled inline SVG rather than a
+library, so they cost nothing at runtime and have to be looked at to be
+verified; `series` carries at most three colour-separated series and refuses a
+fourth rather than inventing a hue nobody can distinguish. And a broken view
+warns instead of aborting the boot, which is the opposite of how a broken
+workflow or table is treated: a page nobody can read is not a reason to stop
+firing every workflow in the deployment.
+
 ### Data tables — rows with columns, and a second MCP endpoint to ask about them
 
 `ctx.state` could already remember things between runs, but only as key/value.

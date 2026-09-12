@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, watch, type FSWatcher } from "node:fs";
 import { basename, resolve } from "node:path";
 import { loadWorkflows, type Registry } from "./loader.ts";
+import { loadViews, viewRegistry } from "./views.ts";
 import { startScheduler, stopScheduler } from "./scheduler.ts";
 import { reconcileWebhooks } from "./webhooks.ts";
 import { store } from "./db.ts";
@@ -197,6 +198,131 @@ async function reload(root: string, registry: Registry): Promise<void> {
     if (again) {
       again = false;
       timer = setTimeout(() => void reload(root, registry), QUIET_MS);
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ views */
+
+/*
+ * Views reload on the same terms as workflows, and for a stronger reason: a
+ * view is a pure read with no trigger, no schedule and no state, so there is
+ * nothing that can be caught half-applied. `load()` runs inside a request and
+ * its result is thrown away, which makes swapping the set the cheapest reload
+ * in this process.
+ *
+ * It gets its own watcher, hashes and stale flag rather than sharing the
+ * workflow ones. Sharing them would mean an edit to a workflow's shared helper
+ * switching off view reloading too — two unrelated directories, one refusal.
+ */
+let viewWatcher: FSWatcher | undefined;
+let viewTimer: ReturnType<typeof setTimeout> | undefined;
+let viewReloading = false;
+let viewAgain = false;
+let viewSharedHashes = new Map<string, string>();
+let viewSharedStale = false;
+let viewGeneration = 0;
+
+export function startViewWatch(dir: string): void {
+  if (!ENABLED) return;
+
+  const root = resolve(dir);
+  if (!existsSync(root)) return;
+
+  viewSharedHashes = hashShared(root);
+
+  try {
+    viewWatcher = watch(root, { recursive: true }, (_event, filename) => {
+      if (filename && !/\.(ts|js)$/.test(filename)) return;
+      clearTimeout(viewTimer);
+      viewTimer = setTimeout(() => void reloadViews(root), QUIET_MS);
+    });
+  } catch (err) {
+    log.warn(
+      `Cannot watch ${root} for changes, so view edits will need a restart — ` +
+        `${err instanceof Error ? err.message : err}`,
+    );
+    return;
+  }
+
+  log.info(`Watching ${root} — a view change reloads without a restart`);
+}
+
+export function stopViewWatch(): void {
+  clearTimeout(viewTimer);
+  viewWatcher?.close();
+  viewWatcher = undefined;
+}
+
+/**
+ * Loads the views again and swaps them in, or changes nothing at all.
+ *
+ * Same contract as the workflow reload above: every refusal leaves the
+ * previous set serving. A view that no longer compiles has to read as "your
+ * change is not live yet" on a page that still works, never as a Views tab
+ * that went blank.
+ */
+async function reloadViews(root: string): Promise<void> {
+  if (viewReloading) {
+    viewAgain = true;
+    return;
+  }
+  viewReloading = true;
+
+  try {
+    if (viewSharedStale) return;
+
+    // Same hole as the workflow reloader has, for the same reason: the
+    // cache-busting query does not reach a relative import, so a changed
+    // `_shared.ts` would leave new view code running against the old copy.
+    const now = hashShared(root);
+    const changed = sharedChanged(viewSharedHashes, now);
+    if (changed) {
+      viewSharedStale = true;
+      viewSharedHashes = now;
+      log.warn(
+        `${changed} is shared code, not a view — it cannot be swapped in on its own, ` +
+          `so view reloading is off until the next restart`,
+      );
+      // Not alerted, unlike its workflow twin. That one goes to a chat because
+      // a workflow that silently stops picking up changes keeps *running* on
+      // old code at 3am; a stale view is a page somebody is looking at, and
+      // they will see it has not changed.
+      return;
+    }
+
+    const next = await loadViews(root, String(++viewGeneration)).catch((err) => {
+      const problems = (err as { problems?: string[] }).problems;
+      log.error(
+        `Views did not reload — still serving the previous set. ` +
+          (problems?.join("; ") ?? (err instanceof Error ? err.message : String(err))),
+      );
+      return undefined;
+    });
+    if (!next) return;
+
+    const before = new Map(viewRegistry.all().map((v) => [v.name, v.hash]));
+    viewRegistry.replace(next);
+
+    const added = next.filter((v) => !before.has(v.name)).map((v) => v.name);
+    const removed = [...before.keys()].filter((n) => !next.some((v) => v.name === n));
+    const changedNames = next
+      .filter((v) => before.has(v.name) && before.get(v.name) !== v.hash)
+      .map((v) => v.name);
+
+    if (added.length || removed.length || changedNames.length) {
+      log.info(
+        `Reloaded ${next.length} view(s) without a restart` +
+          (changedNames.length ? ` — changed: ${changedNames.join(", ")}` : "") +
+          (added.length ? ` — new: ${added.join(", ")}` : "") +
+          (removed.length ? ` — gone: ${removed.join(", ")}` : ""),
+      );
+    }
+  } finally {
+    viewReloading = false;
+    if (viewAgain) {
+      viewAgain = false;
+      viewTimer = setTimeout(() => void reloadViews(root), QUIET_MS);
     }
   }
 }

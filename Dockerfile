@@ -18,6 +18,7 @@ COPY --from=deps --chown=bun:bun /app/node_modules ./node_modules
 COPY --chown=bun:bun package.json tsconfig.json ./
 COPY --chown=bun:bun src ./src
 COPY --chown=bun:bun workflows ./workflows
+COPY --chown=bun:bun tables ./tables
 
 RUN mkdir -p /data && chown bun:bun /data
 USER bun

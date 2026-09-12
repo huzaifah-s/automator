@@ -34,6 +34,12 @@ services:
       # rather than baked in, so changing one is a restart and not an image
       # build. Read-only — nothing in the container should write to it.
       - ./workflows:/app/workflows:ro
+      # Same deal for table definitions, with one difference worth knowing:
+      # workflows hot-reload and tables do not. A table's schema is brought in
+      # line with its file at boot, so changing one here needs a restart before
+      # anything reads it — see scripts/pull-workflows.sh, which treats
+      # tables/ as a change that must wait for a real deploy.
+      - ./tables:/app/tables:ro
 
     # A reverse proxy does not route to a container until this passes, so these
     # numbers are the length of the deploy's unreachable window, not a

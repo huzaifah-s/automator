@@ -103,7 +103,15 @@ notify() {
 # The list is what runs, rather than "anything outside workflows/", because
 # nearly every commit here also touches CHANGELOG.md — blocking on that would
 # block almost every push.
-RUNTIME_PATHS='^(src/|package\.json|bun\.lock|Dockerfile|docker-compose\.yml|compose\.local\.yml|tsconfig\.json)'
+#
+# tables/ is in the list even though it is bind-mounted like workflows/, and
+# that is the point: a table's schema is brought in line with its file at boot
+# and nowhere else, so a new column that merely appears on disk is a file the
+# running process will never read. Syncing it the way workflows/ is synced
+# would put a definition in place that nothing has acted on, and leave the
+# checkout claiming a column the database does not have. It waits for a
+# restart, which is what a deploy is.
+RUNTIME_PATHS='^(src/|tables/|package\.json|bun\.lock|Dockerfile|docker-compose\.yml|compose\.local\.yml|tsconfig\.json)'
 
 # Files in the deployed directory whose contents say nothing about which commit
 # was deployed. workflows/ is copied in by sync_live above, from *this*

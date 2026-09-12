@@ -863,7 +863,16 @@ export async function loadTables(dir = "./tables"): Promise<LoadedTable[]> {
 
   const root = resolve(dir);
   resetTables();
-  if (!existsSync(root)) return [];
+  if (!existsSync(root)) {
+    // Warned about rather than returned quietly, for the same reason
+    // loadWorkflows says so: the symptom of a missing directory here is a
+    // Tables tab that renders perfectly and says "No tables yet", which reads
+    // as "you haven't written one" and not as "the deployment never got the
+    // files". That has already cost one debugging session — the directory was
+    // missing from the Dockerfile's COPY list.
+    log.warn(`No tables directory at ${root} — no data tables will be available`);
+    return [];
+  }
 
   const glob = new Bun.Glob("**/*.{ts,js}");
   const files = (await Array.fromAsync(glob.scan({ cwd: root, absolute: true })))

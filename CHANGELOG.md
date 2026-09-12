@@ -68,6 +68,35 @@ Also closed while nearby: `/variables` was missing from the dashboard's
 basic-auth path list, so the Variables tab and its write routes were reachable
 without the dashboard password. It is in the list now, along with `/tables`.
 
+### The deployment never got tables/
+
+The Tables tab shipped, rendered correctly, and said "No tables yet" on a
+server whose repository had three table files in it. Nothing was broken; the
+directory simply was not there. `tables/` was a new top level in the repo and
+three places that enumerate top levels were never told about it:
+
+- **`Dockerfile`** copied `src` and `workflows` and nothing else, so the image
+  had no `tables/` at all.
+- **`docker-compose.yml`** bind-mounted `./workflows` from the checkout, so on
+  the Coolify path a table change would not have reached a running container
+  even with the image fixed.
+- **`scripts/pull-workflows.sh`** classified `tables/` as neither a runtime
+  path nor a workflow, which put it in the "documentation only" branch: a
+  commit touching only tables would fast-forward the checkout silently and
+  never ask for the deploy it needs. It is in `RUNTIME_PATHS` now, which is the
+  correct half of that decision — a table's schema is reconciled at boot and
+  nowhere else, so a definition that merely appears on disk is one the running
+  process will never read.
+
+The diagnostic was the real failure. `loadTables` returned `[]` for a missing
+directory without a word, where `loadWorkflows` has always warned, so the only
+symptom was an empty tab that reads as "you haven't written one yet" rather
+than "the files never arrived". It warns now.
+
+Worth stating for the next new top-level directory: `tables/` is bind-mounted
+like `workflows/` but is **not** hot-reloaded, and those two facts together are
+why it blocks on a deploy instead of being rsynced into place.
+
 ### Reimbursements, payment methods, and what a ledger row is not
 
 Three things the expenses table could not say, each of which produced a wrong

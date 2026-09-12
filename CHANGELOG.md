@@ -68,6 +68,55 @@ Also closed while nearby: `/variables` was missing from the dashboard's
 basic-auth path list, so the Variables tab and its write routes were reachable
 without the dashboard password. It is in the list now, along with `/tables`.
 
+### Reimbursements, payment methods, and what a ledger row is not
+
+Three things the expenses table could not say, each of which produced a wrong
+number rather than a missing one.
+
+**A row is a purchase, never the settling of one.** RM300 of shoes on Atome
+over three instalments, or a RM50 lunch on a credit card, was ambiguous: log
+the purchase, the payments, or both? Both double-counts everything, and it is
+the mistake that makes a ledger stop being worth reading. The rule is now
+stated in the table's `description` — one row on the day you bought it, and
+card bills, BNPL instalments and transfers between your own accounts are not
+rows at all. `account` records which card or wallet carried the purchase and
+nothing about how that balance was later cleared.
+
+*Rejected:* tracking outstanding BNPL and card balances here. That is a debt
+ledger, it needs every settlement logged to stay correct, and Atome's own app
+already answers it. Marking the purchase is enough to know what is still being
+paid off.
+
+**Money fronted for someone else is not spending, and their payback is not
+income.** A RM200 family dinner with RM150 coming back, recorded as an expense
+plus an income row, inflates both sides from one event. `paid_for` and
+`reimbursed_cents` (plus `reimbursed_on`) keep it as one row: net spend is the
+subtraction, and what is still owed is every row where `paid_for` is not `me`
+and the two differ. `company` is in that set for expense claims, which are the
+same shape with a several-month wait — `reimbursed_on` is what makes "how long
+has this been outstanding" a query.
+
+*Rejected:* a separate `reimbursements` table with one row per payback. More
+correct, and it buys an audit trail nobody was asking for; a running total and
+a date answer every question actually being asked.
+
+**`account` is an enum now, not free text** — `cash bank debit_cimb credit_rhb
+credit_pbb atome shopeepay tng grabpay wise other`. Same reasoning as the
+categories: free text collects "Shopee Pay", "shopeepay" and "SPay" inside a
+month. The cards are named individually because "which card is this on" is a
+question a generic `credit_card` cannot answer.
+
+**`totals` takes several columns to sum.** Gross and reimbursed side by side in
+one result, rather than two calls and a subtraction done from memory. One sum
+keeps the alias `total`; several are named after their columns, because the
+single-column case is the common one and renaming it for consistency with the
+rare case would make every ordinary answer worse.
+
+Worth noting where these rules live: in the tables' `description` strings, not
+in the file comments above them. The `tables` MCP tool serves the description
+and the per-column help, and nothing else — a rule written only as a comment
+reaches no agent at all.
+
 ## 2026-09-11
 
 ### Resume finishes the run it was given, instead of starting an empty one

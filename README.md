@@ -782,6 +782,51 @@ shopping   USD       1     20.00
 Money is stored as cents and *displayed* as decimals; written back it is cents
 again, and the validator refuses anything else rather than guessing.
 
+### The personal-finance tables
+
+`tables/personal-finance/` is the worked example, and two rules in it are worth
+knowing because they are the ones that quietly ruin a ledger. Both live in the
+tables' `description` fields, which is what an agent reads before it writes a
+row — a rule in a code comment reaches nobody.
+
+**One row per purchase, never per payment.** RM300 of shoes on Atome paid over
+three months is one RM300 row on the day you bought them; the three instalments
+are not rows. A RM50 lunch on a credit card is a RM50 row; the RM3000 card bill
+is not. Moving money from the bank into ShopeePay is not a row at all. Logging
+both sides double-counts everything. `account` says which card or wallet
+carried the purchase, and that is all the ledger knows about payment —
+how that balance is later cleared is the card's business.
+
+**Money you front for someone else is not spending, and their payback is not
+income.** RM200 dinner with RM150 of it for the family, recorded as a RM200
+expense plus RM150 of income, gets you two wrong numbers from one event. It
+stays one row:
+
+```
+paid_for = family        amount_cents = 20000     reimbursed_cents = 0
+                                   ↓ she pays you back
+paid_for = family        amount_cents = 20000     reimbursed_cents = 15000
+```
+
+Net spend is `amount_cents - reimbursed_cents`; what you are still owed is
+every row where `paid_for` is not `me` and the two differ. `paid_for` includes
+`company`, which is the same shape with a longer wait — an expense claim can
+sit unsettled for months, and `reimbursed_on` is what makes "how long has this
+been outstanding" answerable. If nobody ever pays you back, the row is simply
+your spending, which needs no correction.
+
+Both questions are one `totals` call, because `sum` takes several columns:
+
+```
+$ totals table=expenses sum=["amount_cents","reimbursed_cents"] group_by=["paid_for"]
+
+paid_for  currency  rows  sum_amount_cents  sum_reimbursed_cents
+--------  --------  ----  ----------------  --------------------
+company   MYR       1     450.00            0.00
+family    MYR       1     200.00            150.00
+company   USD       1     60.00             0.00
+```
+
 ## Approval gates
 
 There is no Wait node here, and there is not going to be one. A run is a single

@@ -305,7 +305,13 @@ const TOOLS: Tool[] = [
       properties: {
         ...TABLE_ARG,
         ...WHERE_ARG,
-        sum: { type: "string", description: "Numeric column to total, e.g. amount_cents." },
+        sum: {
+          description:
+            "Numeric column to total, or several. Pass an array to get them side by side " +
+            'in one result — ["amount_cents", "reimbursed_cents"] is how you read gross ' +
+            "spending and what came back without asking twice.",
+          anyOf: [{ type: "string" }, { type: "array", items: { type: "string" } }],
+        },
         average: { type: "string", description: "Numeric column to average." },
         group_by: {
           type: "array",
@@ -318,7 +324,10 @@ const TOOLS: Tool[] = [
     },
     run(args, identity) {
       const def = resolve(identity, args);
-      const sum = str(args, "sum");
+      const raw = args["sum"];
+      const sums = (Array.isArray(raw) ? raw : raw === undefined ? [] : [raw])
+        .filter((v): v is string => typeof v === "string" && v.trim() !== "")
+        .map((v) => v.trim());
       const average = str(args, "average");
 
       const groupBy = Array.isArray(args["group_by"])
@@ -333,22 +342,39 @@ const TOOLS: Tool[] = [
        * wrong line, and stays one line in the overwhelmingly common case where
        * everything is in the same currency.
        */
-      const summed = sum ? def.columns[sum] : undefined;
-      if (sum && summed?.kind === "money" && def.columns.currency && !groupBy.includes("currency")) {
+      const anyMoney = sums.some((c) => def.columns[c]?.kind === "money");
+      if (anyMoney && def.columns.currency && !groupBy.includes("currency")) {
         groupBy.push("currency");
       }
 
+      /*
+       * One sum keeps the alias `total`, several are named after their columns.
+       * The single-column case is overwhelmingly the common one and "total" is
+       * what it should be called; naming it `sum_amount_cents` to be
+       * consistent with the rare case would make every ordinary answer worse.
+       */
+      const alias = (column: string) => (sums.length === 1 ? "total" : `sum_${column}`);
+
+      /** Which source column each output alias came from, for rendering units. */
+      const units = new Map<string, ColumnDef | undefined>();
       const select: { fn: "count" | "sum" | "avg"; column?: string; as?: string }[] = [
         { fn: "count", as: "rows" },
       ];
-      if (sum) select.push({ fn: "sum", column: sum, as: "total" });
-      if (average) select.push({ fn: "avg", column: average, as: "average" });
+      for (const column of sums) {
+        select.push({ fn: "sum", column, as: alias(column) });
+        units.set(alias(column), def.columns[column]);
+      }
+      if (average) {
+        select.push({ fn: "avg", column: average, as: "average" });
+        units.set("average", def.columns[average]);
+      }
 
       const results = dataTable(def.name).aggregate({
         select,
         groupBy,
         where: whereFrom(args),
-        order: sum ? { column: "total", direction: "desc" } : undefined,
+        // Ordered by the first sum, which is the one the caller led with.
+        order: sums.length ? { column: alias(sums[0]!), direction: "desc" } : undefined,
         limit: num(args, "limit") ?? 50,
       });
 
@@ -357,14 +383,11 @@ const TOOLS: Tool[] = [
       const headers = Object.keys(results[0]!);
       const body = results.map((r) =>
         headers.map((h) => {
-          // `total` and `average` inherit the units of the column they came
-          // from, so a money column's total is rendered the same way its cells
-          // are. Anything else is printed as it came back.
-          if ((h === "total" || h === "average") && summed?.kind === "money") {
-            return cell(summed, r[h]);
-          }
-          const col = def.columns[h];
-          return cell(col ?? null, r[h]);
+          // An aggregate inherits the units of the column it came from, so a
+          // money column's total renders the way its cells do. Anything else
+          // is printed as it came back.
+          const unit = units.get(h) ?? def.columns[h];
+          return cell(unit ?? null, r[h]);
         }),
       );
       return asTable(headers, body, DEFAULT_MAX_BYTES);

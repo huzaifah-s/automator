@@ -45,7 +45,7 @@
 import { html, raw } from "hono/html";
 import type { HtmlEscapedString } from "hono/utils/html";
 import type { ControlDef, Panel, StatItem, Tone, ViewDef } from "../core/views.ts";
-import { PERIOD_KEYS } from "../core/views.ts";
+import { PERIOD_KEYS, PERIOD_LABELS } from "../core/views.ts";
 
 /** The most series one chart may carry. See the header for why it is three. */
 export const MAX_SERIES = 3;
@@ -143,6 +143,30 @@ color:var(--faint);font-weight:600;background:var(--sunk);padding:7px 14px;white
 .vscroll{overflow-x:auto}
 
 /* ---- views: share links ---- */
+/* Collapsed by default, because minting a link is something you do once and
+   then not again for months, while the panel it sat in was on every visit to
+   every view — a form, a table of links and a Revoke button under the thing
+   you actually came to read. Shut, it is one line that says whether any link
+   exists; the count is the half of it worth seeing at a glance, since "this
+   page is reachable without signing in" is not something to have to open a
+   drawer to find out.
+   Native <details>, so it costs no script and survives with JavaScript off —
+   the same bargain the .menu and .folder disclosures on the dashboard make.
+   Never rendered on the public page, which has no sharing box at all. */
+details.vshared{margin-top:26px}
+details.vshared>summary{display:flex;align-items:center;gap:9px;cursor:pointer;
+list-style:none;padding:11px 14px;font-size:12.5px;color:var(--muted)}
+details.vshared>summary::-webkit-details-marker{display:none}
+details.vshared>summary:hover{color:var(--fg)}
+details.vshared>summary b{color:var(--fg);font-weight:600;font-size:12.5px}
+details.vshared>summary .n{margin-left:auto;font-size:11px;font-variant-numeric:tabular-nums;
+padding:0 7px;border-radius:20px;background:var(--panel-2);color:var(--muted);line-height:17px}
+/* The chevron is last so it stays pinned to the edge past the count. */
+details.vshared>summary::after{content:"";width:5px;height:5px;flex:none;
+border-right:1.6px solid var(--faint);border-bottom:1.6px solid var(--faint);
+transform:rotate(-45deg);transition:transform .15s}
+details.vshared[open]>summary::after{transform:rotate(45deg)}
+details.vshared[open]>summary{border-bottom:1px solid var(--border-soft)}
 .vshare{display:flex;flex-direction:column;gap:10px;padding:14px}
 .vtoken{font-family:var(--mono);font-size:12px;word-break:break-all;background:var(--sunk);
 border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--fg)}
@@ -440,19 +464,6 @@ export function renderPanels(panels: Panel[]) {
 }
 
 /* -------------------------------------------------------------- controls */
-
-const PERIOD_LABELS: Record<string, string> = {
-  "7d": "Last 7 days",
-  "30d": "Last 30 days",
-  "90d": "Last 90 days",
-  "this-month": "This month",
-  "last-month": "Last month",
-  "3m": "Last 3 months",
-  "6m": "Last 6 months",
-  "12m": "Last 12 months",
-  ytd: "This year",
-  all: "All time",
-};
 
 /**
  * The filter row — one row, above everything it scopes.

@@ -173,6 +173,7 @@ export function note(args: { title?: string; body: string }): Panel {
  * panels on the same page disagree.
  */
 export const PERIOD_KEYS = [
+  "today",
   "7d",
   "30d",
   "90d",
@@ -187,7 +188,15 @@ export const PERIOD_KEYS = [
 
 export type PeriodKey = (typeof PERIOD_KEYS)[number];
 
-const PERIOD_LABELS: Record<PeriodKey, string> = {
+/**
+ * Exported because the dashboard's control row labels the same keys, and a
+ * second copy of this map there is a copy that can be — and was — forgotten:
+ * a period added here rendered as its own key ("today") in the select until
+ * the two were joined. One map, and `Record<PeriodKey, …>` makes forgetting an
+ * entry a type error rather than a lowercase word in a dropdown.
+ */
+export const PERIOD_LABELS: Record<PeriodKey, string> = {
+  today: "Today",
   "7d": "Last 7 days",
   "30d": "Last 30 days",
   "90d": "Last 90 days",
@@ -248,6 +257,11 @@ export function periodRange(key: PeriodKey, now = new Date()): Period {
   let fromDate: Date | null;
   let end = to;
   switch (key) {
+    // The one period whose two ends are the same day. `daysAgo(0)` rather than
+    // a bare `now` so it reads as the zero of the same run as "7d" is six of.
+    case "today":
+      fromDate = daysAgo(0);
+      break;
     case "7d":
       fromDate = daysAgo(6);
       break;

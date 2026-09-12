@@ -808,12 +808,19 @@ paid_for = family        amount_cents = 20000     reimbursed_cents = 0
 paid_for = family        amount_cents = 20000     reimbursed_cents = 15000
 ```
 
-Net spend is `amount_cents - reimbursed_cents`; what you are still owed is
-every row where `paid_for` is not `me` and the two differ. `paid_for` includes
-`company`, which is the same shape with a longer wait — an expense claim can
-sit unsettled for months, and `reimbursed_on` is what makes "how long has this
-been outstanding" answerable. If nobody ever pays you back, the row is simply
-your spending, which needs no correction.
+Net spend is `amount_cents - reimbursed_cents`. `paid_for` includes `company`,
+which is the same shape with a longer wait — an expense claim can sit unsettled
+for months, and `reimbursed_on` is what makes "how long has this been
+outstanding" answerable.
+
+**Who it was for is not the same question as who owes you.** Buying the family
+dinner and fronting the family dinner are the same `paid_for` and different
+events, so a third column settles it: `my_treat`. Set it and the row is simply
+your spending, still attributed to the person it was for; leave it off and the
+row stays outstanding until `reimbursed_cents` catches up. So what you are
+still owed is every row where `paid_for` is not `me`, `my_treat` is false, and
+the two amounts differ — reading `paid_for` alone reports every meal you ever
+bought somebody as a debt they do not know about.
 
 Both questions are one `totals` call, because `sum` takes several columns:
 
@@ -916,8 +923,11 @@ Views are private. `/views` and `/views/<name>` sit behind
 
 A view whose file says `shareable: true` can *also* be given an **unguessable
 link** that opens it with no credentials at all: `/v/<token>`, minted from the
-view's own page. The token is 48 hex characters, shown once, stored only as a
-SHA-256 digest, optionally expiring, and revocable. Minting one needs
+**Sharing** drawer at the foot of the view's own page — shut by default, with
+one line saying how many live links exist, because minting a link is something
+you do once and then not again for months. The token is 48 hex characters,
+shown once, stored only as a SHA-256 digest, optionally expiring, and
+revocable. Minting one needs
 `DASHBOARD_WRITE=1` **and** a dashboard password — the same bar as an MCP
 token, because this form emits a credential rather than consuming one.
 
@@ -949,12 +959,18 @@ you how the month went.
 by month, spending by category and by account, what is still owed, what needs a
 second look, and the latest rows, all scoped by one period control.
 
-Two things in it are the interesting ones. Spending is **net of
+Three things in it are the interesting ones. Spending is **net of
 reimbursements** (`amount_cents - reimbursed_cents`) everywhere on the page,
-which is the number the tables say is what you actually spent. And "still owed
-to you" is deliberately **not** bounded by the period — a company claim sits
-for months, and filtering it to *this month* would quietly report the debt as
-settled the moment the calendar turned over.
+which is the number the tables say is what you actually spent. "Still owed to
+you" is deliberately **not** bounded by the period — a company claim sits for
+months, and filtering it to *this month* would quietly report the debt as
+settled the moment the calendar turned over — and it reads `my_treat` as well
+as `paid_for`, because only the first says whether the money is coming back.
+
+The period defaults to **this month**, which is the question the page is opened
+with, and offers *Today* and *Last 7 days* for the other half of the usage —
+checking what was logged after a day of spending. Whichever one is selected is
+in the URL, so a share link carries the slice its sender was looking at.
 
 ## Approval gates
 

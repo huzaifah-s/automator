@@ -6,7 +6,7 @@ import {
   series,
   stats,
 } from "../../src/core/define.ts";
-import { bounds, monthLabel, pretty, ringgit, rm } from "./_money.ts";
+import { account, bounds, monthLabel, pretty, ringgit, rm } from "./_money.ts";
 
 /**
  * The personal-finance dashboard — what came in, what went out, and where it
@@ -20,6 +20,10 @@ import { bounds, monthLabel, pretty, ringgit, rm } from "./_money.ts";
  * would count money somebody handed back to you as your own spending, and
  * would disagree with the "still owed" panel at the bottom, which is built
  * from the difference between the two.
+ *
+ * "Still owed" reads `my_treat` as well as `paid_for`, because the first is
+ * the only thing that says whether the money is coming back. Dropping it turns
+ * every meal you ever bought somebody into a debt they do not know about.
  *
  * ## Why the totals are one SQL query and the breakdowns are not
  *
@@ -54,11 +58,15 @@ export default defineView({
     period: {
       kind: "period",
       label: "Period",
-      // Twelve months by default because the month-by-month chart is the point
-      // of the page; "This month" is one click away when the question is
-      // narrower.
-      default: "12m",
-      options: ["this-month", "last-month", "3m", "6m", "12m", "ytd", "all"],
+      // The month you are in, because that is the question the page is opened
+      // with — how am I doing *now*. The month-by-month chart is then a single
+      // column, which is the honest picture of one month; the longer views are
+      // one click away, and a share link carries whichever one you sent.
+      default: "this-month",
+      // "Today" and "Last 7 days" are here for the other half of the usage:
+      // checking what was logged after a day of spending, while you still
+      // remember what the receipts were.
+      options: ["today", "7d", "this-month", "last-month", "3m", "6m", "12m", "ytd", "all"],
     },
   },
 
@@ -156,6 +164,12 @@ export default defineView({
      * outstanding until it is paid, and a company claim routinely sits for
      * months — filtering it to "this month" would quietly report the debt as
      * settled the moment the calendar turned over.
+     *
+     * `my_treat` is what separates "I paid for my family" from "my family owes
+     * me"; `paid_for` alone never said the second thing. COALESCE because the
+     * column was added after these rows were written, and a row predating it
+     * holds NULL rather than 0 — compared bare, every one of them would drop
+     * off this panel, which is the opposite of the bug being fixed.
      */
     const owed = ctx.sql<{
       id: string;
@@ -171,6 +185,7 @@ export default defineView({
          FROM ${expenses}
         WHERE deleted_at IS NULL
           AND paid_for != 'me'
+          AND COALESCE(my_treat, 0) = 0
           AND amount_cents > reimbursed_cents
         ORDER BY occurred_on DESC
         LIMIT 100`,
@@ -197,6 +212,19 @@ export default defineView({
 
     /* ------------------------------------------------------------ recent */
 
+    /*
+     * Newest first means *newest*, and `occurred_on` is a date with no clock on
+     * it — so on the day you log four receipts every one of them ties, and the
+     * old tiebreak (the merchant's name) put them in alphabetical order. The
+     * row you just wrote landed wherever the alphabet left it, which is the one
+     * place you look for it.
+     *
+     * `created_at` is when the row was written, in epoch milliseconds, and it
+     * breaks the tie the way you would expect. It stays the *second* key:
+     * sorted by it alone, back-dating last week's receipt today would push it
+     * above this morning's coffee, and a panel with a Date column sorted by
+     * something other than that date is unreadable.
+     */
     const recent = ctx.sql<{
       occurred_on: string;
       what: string;
@@ -205,15 +233,15 @@ export default defineView({
       amount_cents: number;
       kind: string;
     }>(
-      `SELECT occurred_on, merchant AS what, category, account,
+      `SELECT occurred_on, created_at, merchant AS what, category, account,
               amount_cents - reimbursed_cents AS amount_cents, 'out' AS kind
          FROM ${expenses}
         WHERE deleted_at IS NULL AND occurred_on >= ? AND occurred_on <= ?
        UNION ALL
-       SELECT occurred_on, payer AS what, category, account, amount_cents, 'in'
+       SELECT occurred_on, created_at, payer AS what, category, account, amount_cents, 'in'
          FROM ${income}
         WHERE deleted_at IS NULL AND occurred_on >= ? AND occurred_on <= ?
-       ORDER BY occurred_on DESC, what
+       ORDER BY occurred_on DESC, created_at DESC
        LIMIT 25`,
       from,
       to,
@@ -293,7 +321,7 @@ export default defineView({
           "Which card or wallet carried the purchase — not how that card was later paid off. " +
           "A credit-card bill or an Atome instalment is never a row in the ledger.",
         rows: byAccount.map((r) => ({
-          label: pretty(r.label),
+          label: account(r.label),
           value: ringgit(r.spent),
           display: rm(r.spent),
           sub: `${r.n} row${r.n === 1 ? "" : "s"}`,
@@ -305,7 +333,8 @@ export default defineView({
         title: "Still owed to you",
         note:
           "Money you fronted for somebody else and have not been fully paid back for. " +
-          "Not limited to the selected period — a debt does not settle because the month ended.",
+          "Not limited to the selected period — a debt does not settle because the month ended. " +
+          "A row marked as your treat is not a debt and is not here, whoever it was for.",
         columns: [
           { key: "date", label: "Date", mono: true },
           { key: "merchant", label: "Merchant" },
@@ -347,6 +376,7 @@ export default defineView({
 
       rows({
         title: "Latest rows",
+        note: "Newest first. Rows sharing a date are in the order they were entered.",
         columns: [
           { key: "date", label: "Date", mono: true },
           { key: "what", label: "What" },
@@ -358,7 +388,7 @@ export default defineView({
           date: r.occurred_on,
           what: r.what,
           category: pretty(r.category),
-          account: pretty(r.account),
+          account: account(r.account),
           amount: `${r.kind === "in" ? "+" : "−"}${rm(r.amount_cents)}`,
         })),
         empty: "No rows in this period.",

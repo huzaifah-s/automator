@@ -3471,6 +3471,23 @@ export function viewPage(args: {
   const { view, links } = args;
   const crumb = html`<span class="crumb"><a href="/views">Views</a> / <b>${view.title}</b></span>`;
 
+  // What the collapsed summary has to answer is "can somebody read this page
+  // without signing in", and an expired link cannot — so it is not counted,
+  // even though it is still listed inside with its expired pill until it is
+  // revoked. Counting rows instead would print "1 live link" over a page that
+  // nobody can reach, which is the wrong half of the truth to leave on a
+  // drawer somebody has stopped opening.
+  const live = links.filter((l) => !l.expires_at || l.expires_at > Date.now()).length;
+  const summary = !view.shareable
+    ? "not shareable"
+    : live === 0
+      ? links.length > 0
+        ? "no live links — every one has expired"
+        : "no links — this view is private"
+      : live === 1
+        ? "1 live link"
+        : `${live} live links`;
+
   return layout(
     {
       title: view.title,
@@ -3505,8 +3522,12 @@ export function viewPage(args: {
 
       ${renderPanels(args.panels)}
 
-      <h2>Sharing</h2>
-      <div class="card">
+      <details class="card vshared" ${args.created || args.error ? raw("open") : ""}>
+        <summary>
+          <b>Sharing</b>
+          <span>${summary}</span>
+          ${live > 0 ? html`<span class="n">${live}</span>` : ""}
+        </summary>
         <div class="vshare">
           ${view.shareable
             ? args.canShare
@@ -3585,7 +3606,7 @@ export function viewPage(args: {
               </table>
             </div>`
           : ""}
-      </div>
+      </details>
     `,
   );
 }

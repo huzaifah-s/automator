@@ -38,6 +38,14 @@ import { ACCOUNTS, EXPENSE_CATEGORIES, HELP, PAID_FOR, SOURCES } from "./_shared
  * Stays one row, with `paid_for` set and the payback recorded here as
  * `reimbursed_cents` — never as a row in `income`. See `PAID_FOR` in
  * `_shared.ts` for why both halves of that matter.
+ *
+ * ## Your treat
+ *
+ * `paid_for` says who it was for; it does not say they owe you. A dinner you
+ * bought the family is `paid_for: family` with `my_treat: true`, and it is
+ * simply your spending. The same dinner with the money coming back is the same
+ * row without the flag, and stays outstanding until `reimbursed_cents` catches
+ * up. Without the flag every treat you ever paid for reads as a debt.
  */
 export default defineTable({
   name: "expenses",
@@ -49,7 +57,9 @@ export default defineTable({
     "bill payment, a BNPL/Atome instalment, or a transfer between your own accounts: those " +
     "settle a purchase already recorded here, and logging both double-counts. Money you " +
     "fronted for someone else is still one row — set paid_for and put the payback in " +
-    "reimbursed_cents on that same row, never as income.",
+    "reimbursed_cents on that same row, never as income. paid_for says who it was FOR, " +
+    "not that they owe you: if it was your treat and no money is coming back, set " +
+    "my_treat so the row is not reported as an outstanding debt.",
 
   columns: {
     occurred_on: date({ label: "Date", help: HELP.occurredOn }),
@@ -59,6 +69,7 @@ export default defineTable({
     category: enumOf(EXPENSE_CATEGORIES, { label: "Category" }),
     account: enumOf(ACCOUNTS, { label: "Paid with", help: HELP.account }),
     paid_for: enumOf(PAID_FOR, { default: "me", label: "For", help: HELP.paidFor }),
+    my_treat: bool({ default: false, label: "My treat", help: HELP.myTreat }),
     reimbursed_cents: money({ default: 0, label: "Paid back", help: HELP.reimbursed }),
     reimbursed_on: date({ nullable: true, label: "Paid back on", help: HELP.reimbursedOn }),
     note: text({ nullable: true, label: "Note", help: "Anything worth remembering about it." }),

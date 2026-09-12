@@ -39,3 +39,14 @@ export function pretty(value: string): string {
   const spaced = String(value ?? "").replace(/_/g, " ");
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
+
+/**
+ * `credit_rhb` → `credit rhb`. Accounts only.
+ *
+ * They are the one column `pretty()` gets wrong: sentence case turns
+ * `credit_rhb` into "Credit rhb" and `tng` into "Tng", which read as
+ * misspellings of names rather than as the identifiers they are. Lowercase
+ * everywhere is what the Tables tab already shows and what you type into the
+ * form, so the view matches it instead of inventing a second spelling.
+ */
+export const account = (value: string): string => String(value ?? "").replace(/_/g, " ");

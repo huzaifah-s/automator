@@ -283,6 +283,23 @@ every control value, but that is a second line and not the first: a view file
 is reviewed code and the review is what keeps this true, exactly as it is for a
 table's columns.
 
+**A period is defined in exactly one place, and its label is part of it.**
+`PERIOD_KEYS`, `PERIOD_LABELS` and `periodRange` all live in
+`src/core/views.ts`, and the dashboard's control row imports the map rather
+than keeping one of its own. It kept one until "today" was added and rendered
+in the select as the bare key, because the second copy was typed
+`Record<string, string>` and a missing entry there is not a type error. The map
+is `Record<PeriodKey, string>` so that forgetting one cannot compile.
+
+**A column added to an existing data table is NULL on every row that predates
+it.** `syncSchema` issues a bare `ALTER TABLE … ADD COLUMN` — no `DEFAULT`, no
+backfill — because requiredness is enforced by the validator on the way in, not
+by the constraint. A `default:` in the definition applies to *writes*, not to
+rows already on disk. So SQL in a view that filters on a new boolean has to say
+`COALESCE(col, 0) = 0`, and `col = 0` silently drops every older row. This bit
+`my_treat` on the expenses table, where the bare comparison would have emptied
+the "still owed" panel of exactly the debts it exists to show.
+
 **Views load after workflows, and a broken view warns instead of aborting the
 boot.** This is the opposite of a bad workflow or a bad table, and deliberately
 so: those decide what runs and what the schema is, while a view is a page
@@ -710,7 +727,7 @@ export default defineView({
   description: "One line, shown on the Views tab",
   shareable: false,              // the default; see the invariant above
   refresh: 120,                  // seconds between background refreshes
-  controls: { period: { kind: "period", default: "12m" } },
+  controls: { period: { kind: "period", default: "this-month" } },
 
   async load(ctx) {
     const period = ctx.period("period");

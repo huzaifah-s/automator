@@ -1,4 +1,5 @@
 import { loadWorkflows, Registry } from "./core/loader.ts";
+import { loadTables } from "./core/tables.ts";
 import {
   startScheduler,
   stopScheduler,
@@ -117,6 +118,26 @@ if (args[0] === "--alert") {
  * on the screen of the person who ran it, and does not belong in a chat.
  */
 const isServerBoot = args[0] !== "--list" && args[0] !== "--run";
+
+/*
+ * Data tables come up before workflows, because a workflow may write to one on
+ * its very first tick and `ctx.table()` refuses a name it does not know. This
+ * also brings the schema in line with the definitions — see core/tables.ts —
+ * which is DDL, so it happens once, here, and never from a request.
+ *
+ * It fails the same way loading workflows does: a table whose column type no
+ * longer matches the database is a migration somebody has to make a decision
+ * about, and booting anyway would read those rows as something they are not.
+ */
+await loadTables(process.env.TABLES_DIR ?? "./tables").catch(async (err) => {
+  log.error(err.message);
+  log.error("Fix the problems above and start again.");
+  if (isServerBoot) {
+    const problems = (err as { problems?: string[] }).problems;
+    await alertBoot("data tables failed to load", problems?.join("\n") ?? err.message);
+  }
+  process.exit(1);
+});
 
 const registry = new Registry(
   await loadWorkflows(process.env.WORKFLOWS_DIR ?? "./workflows").catch(async (err) => {

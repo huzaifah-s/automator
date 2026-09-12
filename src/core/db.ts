@@ -427,6 +427,16 @@ if (!secretColumns.has("owner")) {
   db.exec("CREATE INDEX IF NOT EXISTS idx_secrets_owner ON secrets(owner)");
 }
 
+// Migration for databases created before an MCP token could be scoped to a set
+// of data tables. NULL means "every table", which is what every existing token
+// was, so nothing has to be rewritten — the column simply starts empty.
+const mcpTokenColumns = new Set(
+  (db.query("PRAGMA table_info(mcp_tokens)").all() as { name: string }[]).map((c) => c.name),
+);
+if (!mcpTokenColumns.has("tables")) {
+  db.exec("ALTER TABLE mcp_tokens ADD COLUMN tables TEXT");
+}
+
 /**
  * The executions tab's filter, and the shape both the run list and the counts
  * above it are built from. `since`/`until` are epoch milliseconds, inclusive
@@ -606,8 +616,8 @@ const stmts = {
   allMcpTokens: db.prepare(`SELECT * FROM mcp_tokens ORDER BY created_at DESC`),
   mcpTokenByHash: db.prepare(`SELECT * FROM mcp_tokens WHERE hash = ?`),
   insertMcpToken: db.prepare(
-    `INSERT INTO mcp_tokens (id, name, scope, hash, prefix, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO mcp_tokens (id, name, scope, hash, prefix, created_at, tables)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
   ),
   deleteMcpToken: db.prepare(`DELETE FROM mcp_tokens WHERE id = ?`),
   touchMcpToken: db.prepare(
@@ -1097,8 +1107,18 @@ export const store = {
     scope: string;
     hash: string;
     prefix: string;
+    /** Data tables this token may reach, or null for every one of them. */
+    tables?: string[] | null;
   }): void => {
-    stmts.insertMcpToken.run(row.id, row.name, row.scope, row.hash, row.prefix, Date.now());
+    stmts.insertMcpToken.run(
+      row.id,
+      row.name,
+      row.scope,
+      row.hash,
+      row.prefix,
+      Date.now(),
+      row.tables && row.tables.length ? JSON.stringify(row.tables) : null,
+    );
   },
   deleteMcpToken: (id: string): boolean => stmts.deleteMcpToken.run(id).changes > 0,
 

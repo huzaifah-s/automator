@@ -48,7 +48,22 @@ function digest(token: string): string {
  * Mints a token, stores its digest, and returns the plaintext **once**. The
  * caller is the only thing that will ever see it.
  */
-export function createMcpToken(name: string, scope: McpScope): { token: string; id: string } {
+export function createMcpToken(
+  name: string,
+  scope: McpScope,
+  /**
+   * Data tables this token may reach on /mcp/tables. An empty list or
+   * undefined means every table, which is what every token minted before this
+   * existed already was.
+   *
+   * Narrower than `scope` and orthogonal to it: scope answers "may this token
+   * change things", this answers "which things does it know about at all". A
+   * token for a personal ledger has no business seeing — or being told about —
+   * the tables belonging to something else, and a tool list is a cost paid on
+   * every turn of every conversation whether or not anything calls it.
+   */
+  tables?: string[],
+): { token: string; id: string } {
   const token = PREFIX + randomBytes(24).toString("hex");
   const id = randomBytes(4).toString("hex");
   store.insertMcpToken({
@@ -57,8 +72,12 @@ export function createMcpToken(name: string, scope: McpScope): { token: string; 
     scope,
     hash: digest(token),
     prefix: token.slice(0, HINT_LENGTH),
+    tables: tables && tables.length ? tables : null,
   });
-  log.info(`MCP token "${name}" created (${scope} scope, ${id})`);
+  log.info(
+    `MCP token "${name}" created (${scope} scope, ${id}` +
+      `${tables && tables.length ? `, tables: ${tables.join(", ")}` : ""})`,
+  );
   return { token, id };
 }
 
@@ -79,6 +98,23 @@ export interface McpIdentity {
   label: string;
   /** Absent for the environment token, which has no row to update. */
   id?: string;
+  /**
+   * Data tables this token may reach, or null for all of them. Read by
+   * /mcp/tables and meaningless to /mcp, which serves no table data.
+   */
+  tables: string[] | null;
+}
+
+/**
+ * Whether an identity may see a given data table.
+ *
+ * Null is "everything", so the environment token and every pre-existing stored
+ * token keep working unchanged. A list is a closed set — a table added to
+ * `tables/` later does *not* appear to a token that named its tables, which is
+ * the correct direction for a permission to drift in.
+ */
+export function mayUseTable(identity: McpIdentity, name: string): boolean {
+  return identity.tables === null || identity.tables.includes(name);
 }
 
 /**
@@ -94,12 +130,17 @@ export function identify(presented: string): McpIdentity | null {
 
   const fromEnv = process.env.MCP_TOKEN;
   if (fromEnv && constantTimeEqual(presented, fromEnv)) {
-    return { scope: "full", label: "MCP_TOKEN (environment)" };
+    return { scope: "full", label: "MCP_TOKEN (environment)", tables: null };
   }
 
   const row = store.mcpTokenByHash(digest(presented));
   if (!row) return null;
-  return { scope: isScope(row.scope) ? row.scope : "full", label: row.name, id: row.id };
+  return {
+    scope: isScope(row.scope) ? row.scope : "full",
+    label: row.name,
+    id: row.id,
+    tables: parseTables(row.tables),
+  };
 }
 
 /** Notes that a token was used, and by what. No-op for the environment token. */
@@ -110,6 +151,31 @@ export function noteUse(identity: McpIdentity, client: string | null): void {
 /** Whether anything at all can authenticate — the endpoint is closed if not. */
 export function mcpEnabled(): boolean {
   return Boolean(process.env.MCP_TOKEN) || store.mcpTokenCount() > 0;
+}
+
+/**
+ * The stored table list, defensively.
+ *
+ * A row whose JSON cannot be read falls back to `null` — every table — rather
+ * than to the empty list. That is the deliberate direction: the alternative is
+ * a token that silently stops working and reports "no tables exist", which
+ * reads as a broken server rather than as a corrupt column. This value is not
+ * a security boundary on its own (the token still had to be valid to get
+ * here); it decides which of this server's own tables a legitimate client is
+ * shown.
+ */
+function parseTables(raw: string | null): string[] | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.every((v) => typeof v === "string")) {
+      return parsed.length ? parsed : null;
+    }
+  } catch {
+    /* falls through */
+  }
+  log.warn(`An MCP token has an unreadable table list — treating it as every table`);
+  return null;
 }
 
 function constantTimeEqual(a: string, b: string): boolean {

@@ -28,13 +28,18 @@ There is no test suite. Verify by running the thing (see **Verifying** below).
 ```
 src/core/          define · loader · runner · scheduler · poll · db · secrets
                    secret-store · credentials · providers · crypto · redact
-                   capture · state · pause · logger · alerts · types
+                   capture · state · tables · pause · logger · alerts · types
 src/cli/           secrets — the write side of the store, run before the loader
 src/integrations/  index (barrel + lazy ctx clients) · http · messaging
                    ai · email · sql · sheets · scrape · oauth
 src/server/        app (webhooks + REST + dashboard routes) · views (HTML)
                    mcp (the endpoint an AI agent connects to)
+                   mcp-tables (the same, for data tables, on its own tokens)
                    inspect (what app.ts and mcp.ts must not decide twice)
+tables/            data tables — one file per table, `defineTable()` as the
+                   default export, grouped by subdirectory the way workflows
+                   are (`tables/personal-finance/expenses.ts`). Structure only;
+                   the rows live in SQLite. See "Data tables" below.
 workflows/         user workflows — the only directory most changes touch
                    subdirectories just group them: workflows/pblsh/thing.ts
                    loads the same way, and names stay global and flat
@@ -221,6 +226,75 @@ wrongly-dropped delivery costs the work *and* leaves a counter claiming it was
 deliberate. Reasons are constants, not strings built from the payload — they
 are a primary key column, capped at 80 characters and bounded at 20 per
 workflow, so an interpolated id silently evicts the real reasons.
+
+**A data table's rows are not redacted *and* are displayed — the one place in
+this codebase where both are true, so never put a credential in one.**
+`ctx.state` is un-redacted because redaction would destroy the value it exists
+to hand back; a table row is the same, because the row *is* the thing you
+stored. What state has on top of that is invisibility — no view, no API, no log
+line — and a table has the opposite: it renders on the Tables tab and it is
+served over `/mcp/tables`. So the two properties that make each of the others
+safe do not both hold here, and the rule that closes the gap is the short one
+above. Secrets and the credential store are what credentials are for. There is
+no regex guarding this the way `variables.ts` guards its own store, because a
+table's columns are declared in a reviewed file rather than typed into a form —
+the review is the guard.
+
+**A table's structure is code and its rows are data, and the dashboard may
+only ever touch the second.** The Tables tab adds, edits and soft-deletes
+rows. It has no button that creates a table, adds a column, renames one or
+drops one, and adding one needs the "settled architecture" decision taken
+again — a browser-editable schema is the drift n8n was left to avoid. Adding a
+table is a file under `tables/` and a restart.
+
+**Data tables load once, at boot, and `reload.ts` does not touch them.**
+`loadTables()` is the only thing that writes DDL for them, and a schema change
+that happened because a file watcher fired is a migration nobody chose to run.
+The asymmetry inside it is deliberate and worth keeping: a new column is added
+silently (lossless), a column the definition dropped is **left in place** and
+warned about (deleting rows to tidy a schema is never the right default), and a
+column whose declared type no longer matches **stops the boot** — reading an
+INTEGER as JSON does not fail, it returns nonsense, and nonsense that boots is
+worse than a process that does not.
+
+**A `money()` column refuses a decimal rather than rounding it, and only the
+dashboard form converts.** The column holds whole minor units. The thing
+writing to it is frequently a model that has been handed "RM 42.50", and a
+silent `Math.round(v * 100)` in the validator would turn a 100× error into a
+stored number; the error message says `42.50 is 4250` so the caller can correct
+itself. The one place that *does* convert is `rowFromForm` in `app.ts`, because
+a form field states its units and has a person behind it. Do not "helpfully"
+add coercion anywhere between those two.
+
+**A null in a dedupe column opts the row out of deduping, and the lookup has to
+agree with the index.** SQLite's unique indexes treat NULLs as distinct, so the
+partial index would happily accept two null-keyed rows; `findByDedupe` returns
+early on a null for exactly that reason. Making the lookup match `IS NULL`
+instead would refuse rows the index allows, and the two disagreeing is how an
+optional idempotency key becomes a table that accepts one unkeyed row ever.
+
+**A table id is fifteen characters and is printed whole.** It is
+timestamp-first so `ORDER BY id` is chronological and can break ties for a
+column full of duplicate dates — which means a *prefix* of one is not unique,
+every row written in the same half-minute sharing its leading characters. An
+earlier version printed eight characters in MCP results and produced colliding
+ids within one listing. If you shorten it again, shorten the id, not the
+display.
+
+**`/mcp/tables` is a second endpoint, not six more tools on `/mcp`.** The bar
+above `mcp.ts` — a tool costs tokens on every turn of every conversation
+whether or not it is called — is the reason: a "what is failing" chat should
+not carry ledger tools, and a ledger chat should not carry ten operational
+ones. Its route is registered *before* `/mcp` in `app.ts`, because Hono matches
+in registration order and `/mcp` would otherwise swallow it.
+
+**An MCP token's table list is a closed set, and unreadable means all.** A
+token that names its tables does not pick up a table added to `tables/` later,
+which is the correct direction for a permission to drift in. A stored list that
+cannot be parsed falls back to *every* table rather than none — the alternative
+is a token that silently reaches nothing and reports the ledger as empty, which
+reads as a broken server rather than a corrupt column. It is not a boundary on
+its own; the token still had to be valid to get that far.
 
 **`ctx.state` is the one thing not redacted on the way to disk, and it must
 stay invisible.** Every other write to SQLite is observational, so scrubbing it
@@ -671,6 +745,14 @@ These were decided deliberately. Raise a trade-off before changing any of them:
   consent — for a once-per-credential action. The connection test is not the
   thin end of this: it makes one read-only call with credentials that already
   exist, and never redirects anywhere.
+- **Data tables: structure in code, rows in the database.** A table is a file
+  under `tables/`; the Tables tab and `/mcp/tables` edit its rows and can never
+  change its shape. This is the same decision as "workflows live in the repo as
+  files", applied to the one kind of state that has columns — and it is the
+  line that stops this becoming n8n's Data Tables, where the schema is rows in
+  a database and the columns are edited in a browser. The cost is that adding a
+  column is a commit and a restart; the benefit is that it is reviewable,
+  revertable, and visible to whoever reads the repo.
 - **The MCP endpoint answers about runs, never about workflows.** `src/server/mcp.ts`
   serves operational data — what failed, what a run did, what a hook rejected —
   and deliberately has no tool that returns a workflow's definition. That is the

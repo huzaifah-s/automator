@@ -1,6 +1,7 @@
 import type { ZodType } from "zod";
 import type { Logger } from "./logger.ts";
 import type { StateClient } from "./state.ts";
+import type { TableClient } from "./tables.ts";
 import type { Integrations } from "../integrations/index.ts";
 
 /** "workflow" means another workflow started this run through ctx.run(). */
@@ -246,6 +247,16 @@ export interface Ctx<Input = unknown> extends Integrations {
    */
   state: StateClient;
   /**
+   * A data table, by name — the rows this runner keeps on behalf of the things
+   * it automates, as opposed to `state`, which is what a workflow remembers
+   * about itself. Declared in `tables/`, queryable with `where` and
+   * `aggregate`, and rendered on the dashboard. See src/core/tables.ts.
+   *
+   * Throws if the name is not a loaded table, which is a typo caught on the
+   * first run rather than a silent empty result forever.
+   */
+  table(name: string): TableClient;
+  /**
    * Wraps a unit of work so it shows up in the run log with its own timing.
    * Purely observational — a failing step fails the run.
    */
@@ -424,6 +435,12 @@ export interface McpTokenRecord {
   last_used_at: number | null;
   /** Whatever the client called itself on the handshake, e.g. "claude-code 2.0.1". */
   last_client: string | null;
+  /**
+   * JSON array of data-table names this token may reach on /mcp/tables, or
+   * null for all of them. Stored as text because it is read once per request
+   * and never queried across rows.
+   */
+  tables: string | null;
   calls: number;
 }
 

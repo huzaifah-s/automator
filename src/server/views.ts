@@ -1,5 +1,6 @@
 import { html, raw } from "hono/html";
 import type { HtmlEscapedString } from "hono/utils/html";
+import type { ColumnDef, LoadedTable, Row } from "../core/tables.ts";
 import type {
   CallRecord,
   IgnoredRecord,
@@ -381,6 +382,38 @@ white-space:pre-wrap;word-break:break-word}
 .stats{grid-template-columns:repeat(2,1fr)}
 .brand span:last-child{display:none}}
 
+/* ---- data tables ---- */
+/* A data table's column count comes from a file rather than from this
+   stylesheet, so this is the one place that cannot use the .row grids above.
+   A real <table> in its own scroller: the page body never scrolls sideways,
+   the wide table does. */
+.dt{overflow-x:auto}
+.dt table{min-width:100%}
+.dt th,.dt td{white-space:nowrap}
+.dt td.wrap{white-space:normal;min-width:180px}
+.dt tbody tr:hover{background:var(--panel-2)}
+.dt td.num{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:12px}
+.dt td.acts{text-align:right}
+.dt td.acts form{display:inline}
+/* Soft-deleted rows are shown only when asked for, and when they are they must
+   not read as live ones. */
+.dt tr.gone td{opacity:.45;text-decoration:line-through}
+.dt tr.gone td.acts{opacity:1;text-decoration:none}
+/* The header cell carries the column's own help text as a title; the dotted
+   underline is what says there is something to hover. */
+.dt th[title]{text-decoration:underline dotted var(--border);text-underline-offset:3px}
+input[type=number],input[type=datetime-local]{background:var(--panel);width:100%;
+border:1px solid var(--border);color:var(--fg);border-radius:8px;padding:8px 11px;
+font:13px var(--sans);color-scheme:dark light}
+input[type=number]:focus,input[type=datetime-local]:focus{outline:none;border-color:var(--accent)}
+.field select{width:100%;padding:8px 11px}
+.field textarea{min-height:76px;font-family:var(--mono);font-size:12.5px}
+/* The add/edit form for a table is a grid of its columns rather than one
+   column of fields: a ten-column table makes a form nobody can see the bottom
+   of otherwise. */
+.form.cols{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}
+.form.cols .bar{grid-column:1/-1}
+
 /* ---- phone ----
    Narrower than this the row grids stop being columns at all. A three-column
    grid takes its width from the first column, and the first column is the
@@ -701,7 +734,7 @@ const ICON_PLAY = raw(
   `<svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-hidden="true"><path d="M4.6 3.1v9.8c0 .4.45.65.79.43l7.7-4.9a.5.5 0 0 0 0-.86l-7.7-4.9a.5.5 0 0 0-.79.43Z"/></svg>`,
 );
 
-type Tab = "workflows" | "executions" | "credentials" | "variables" | "mcp" | null;
+type Tab = "workflows" | "executions" | "tables" | "credentials" | "variables" | "mcp" | null;
 
 interface Shell {
   /** Browser title and, on detail pages, the breadcrumb next to the tabs. */
@@ -718,6 +751,8 @@ interface Shell {
     unconnected?: number | null;
     /** Tokens that have been used at least once — "how many things are connected". */
     agents?: number | null;
+    /** How many data tables are loaded. */
+    tables?: number | null;
   };
 }
 
@@ -738,6 +773,9 @@ function layout(shell: Shell, body: HtmlEscapedString | Promise<HtmlEscapedStrin
       }</a>
       <a class="tab" href="/runs" ${tab === "executions" ? raw('aria-current="page"') : ""}>Executions${
         badges.failed ? html`<span class="n bad">${badges.failed}</span>` : ""
+      }</a>
+      <a class="tab" href="/tables" ${tab === "tables" ? raw('aria-current="page"') : ""}>Tables${
+        badges.tables ? html`<span class="n">${badges.tables}</span>` : ""
       }</a>
       <a class="tab" href="/credentials" ${tab === "credentials" ? raw('aria-current="page"') : ""}>Credentials${
         badges.unconnected ? html`<span class="n bad">${badges.unconnected}</span>` : ""
@@ -2413,6 +2451,8 @@ export interface McpTokenView {
   lastUsedAt: number | null;
   lastClient: string | null;
   calls: number;
+  /** Data tables this token may reach on /mcp/tables, or null for all of them. */
+  tables: string[] | null;
 }
 
 /**
@@ -2439,6 +2479,8 @@ export function mcpTokensPage(args: {
   created?: { name: string; token: string } | null;
   /** True when DASHBOARD_USER/PASS are set — minting is refused without them. */
   authenticated: boolean;
+  /** Loaded data tables, offered as the optional scope on a new token. */
+  dataTables: string[];
   envToken: boolean;
   publicUrl: string | null;
   failedInWindow: number;
@@ -2552,6 +2594,21 @@ export function mcpTokensPage(args: {
                       run, which re-sends whatever that run sent.
                     </div>
                   </div>
+                  <div class="field">
+                    <label for="ttables">Data tables <span class="req">— optional</span></label>
+                    <input class="mono" type="text" id="ttables" name="tables"
+                           placeholder="expenses income"
+                           list="known-tables" autocomplete="off" spellcheck="false">
+                    <datalist id="known-tables">
+                      ${args.dataTables.map((t) => html`<option value="${t}"></option>`)}
+                    </datalist>
+                    <div class="help">
+                      Which tables this token may reach on <code class="mono">/mcp/tables</code>,
+                      separated by spaces. Leave it empty for all of them. A token that names
+                      its tables never sees the others — not in a result, not in its tool list —
+                      and does not pick up tables added later.
+                    </div>
+                  </div>
                   <div class="bar">
                     <button class="btn primary" type="submit">Create</button>
                     <label class="btn" for="addtok">Cancel</label>
@@ -2607,6 +2664,9 @@ export function mcpTokensPage(args: {
                       <span class="pill ${t.scope === "full" ? "skipped" : "muted"}">
                         ${t.scope === "full" ? "full" : "read only"}
                       </span>
+                      ${t.tables
+                        ? html`<div class="detail mono" title="Data tables this token can reach">${t.tables.join(" ")}</div>`
+                        : ""}
                     </div>
                     <div class="mono muted trunc hide-sm">${t.prefix}…</div>
                     <div class="muted trunc lused"
@@ -2827,6 +2887,338 @@ export function variablesPage(args: {
         <b>Nothing matches that filter</b>
         Clear the box above to see everything again.
       </div></div>
+    `,
+  );
+}
+
+/* ----------------------------------------------------------- data tables */
+
+/**
+ * The Tables tab.
+ *
+ * Two pages, and the split between them is the same one the rest of this file
+ * makes: a list you scan, and a page you work on. What is deliberately absent
+ * from both is any control that changes a table's *shape* — no add-column, no
+ * rename, no create-table. A table is a file under `tables/`, and the tab
+ * would be a lie about where its structure comes from if it offered otherwise.
+ * See src/core/tables.ts.
+ */
+
+export interface TableSummary {
+  table: LoadedTable;
+  rows: number;
+  /** Rows flagged for a second look, when the table has such a column. */
+  review: number | null;
+  /** When the newest live row was written, or null for an empty table. */
+  newest: number | null;
+}
+
+const ICON_TABLE = raw(
+  `<svg class="ricon" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="2" y="2.75" width="12" height="10.5" rx="1.5"/><path d="M2 6.25h12M6.5 6.25v7"/></svg>`,
+);
+
+/** The human label for a column — the definition's, or the name itself. */
+function columnLabel(name: string, col: ColumnDef): string {
+  return col.label ?? name;
+}
+
+/**
+ * A stored value as text for a cell.
+ *
+ * Money is the only one that is not the value itself: cents are what the
+ * column holds and a decimal is what a person reads, so the conversion lives
+ * here and at the form boundary, and nowhere in between. Everything that
+ * calculates — the aggregates, the MCP tools — works in cents throughout.
+ */
+function cellText(col: ColumnDef, value: unknown): string {
+  if (value === null || value === undefined) return "—";
+  switch (col.kind) {
+    case "money":
+      return (Number(value) / 100).toFixed(2);
+    case "bool":
+      return value ? "yes" : "no";
+    case "datetime":
+      return fmt(Number(value));
+    case "json":
+      return JSON.stringify(value);
+    default:
+      return String(value);
+  }
+}
+
+export function tablesPage(args: {
+  tables: TableSummary[];
+  failedInWindow: number;
+  workflowCount: number;
+  unconnected: number;
+}) {
+  const { tables } = args;
+  const totalRows = tables.reduce((n, t) => n + t.rows, 0);
+  const needsReview = tables.reduce((n, t) => n + (t.review ?? 0), 0);
+
+  return layout(
+    {
+      title: "Tables",
+      tab: "tables",
+      refresh: null,
+      badges: {
+        workflows: args.workflowCount,
+        failed: args.failedInWindow,
+        unconnected: args.unconnected || null,
+        tables: tables.length || null,
+      },
+    },
+    html`
+      <div class="stats">
+        <div class="stat"><b>${tables.length}</b><span>tables</span></div>
+        <div class="stat"><b>${totalRows}</b><span>rows</span></div>
+        <div class="stat">
+          <b class="${needsReview ? "skipped" : ""}">${needsReview}</b><span>need review</span>
+        </div>
+      </div>
+
+      <details class="note" ${tables.length === 0 ? raw("open") : ""}>
+        <summary>
+          <span><b>Structure is code, data is data.</b> Rows are edited here; columns are not.</span>
+        </summary>
+        <div class="body">
+          <p>
+            A table is a file under <code class="mono">tables/</code> that default-exports
+            <code class="mono">defineTable()</code>, discovered at boot the same way workflows
+            are. Adding a table, a column, or a category is a commit — which is what makes it
+            reviewable and revertable, and what keeps this tab from becoming the schema editor
+            we left n8n to avoid.
+          </p>
+          <p>
+            Everything stored here is <b>rendered as given and never scrubbed</b> — on this tab
+            and over MCP. It is for data, not credentials: those belong in
+            <a href="/credentials">Credentials</a>.
+          </p>
+        </div>
+      </details>
+
+      ${tables.length === 0
+        ? html`<div class="card"><div class="empty">
+            <b>No tables yet</b>
+            Add a file under <code class="mono">tables/</code> and restart.
+          </div></div>`
+        : html`
+            <div class="tiles">
+              ${tables.map(
+                (t) => html`
+                  <a href="/tables/${t.table.name}">
+                    <b>${ICON_TABLE} ${t.table.name}</b>
+                    <span>${t.table.description ?? "—"}</span>
+                    <div class="detail">
+                      ${t.rows} row${t.rows === 1 ? "" : "s"}
+                      ${t.review ? html` · <span class="skipped">${t.review} to review</span>` : ""}
+                      ${t.newest ? html` · ${relative(t.newest)}` : ""}
+                    </div>
+                    <div class="detail mono">${t.table.file}</div>
+                  </a>
+                `,
+              )}
+            </div>
+          `}
+    `,
+  );
+}
+
+/** One column's input control, pre-filled from `current` when editing. */
+function fieldFor(name: string, col: ColumnDef, current: unknown) {
+  const id = `f_${name}`;
+  const label = columnLabel(name, col);
+  const required = !col.nullable && col.default === undefined;
+  const value = current ?? (col.default !== undefined && current === undefined ? col.default : null);
+
+  const control = (() => {
+    switch (col.kind) {
+      case "enum":
+        return html`<select id="${id}" name="${name}" ${required ? raw("required") : ""}>
+          ${col.nullable ? html`<option value="">—</option>` : ""}
+          ${(col.values ?? []).map(
+            (v) => html`<option value="${v}" ${value === v ? raw("selected") : ""}>${v}</option>`,
+          )}
+        </select>`;
+      case "bool":
+        return html`<label class="check">
+          <input type="checkbox" id="${id}" name="${name}" value="1" ${value ? raw("checked") : ""}>
+          <span>${col.help ?? "Yes"}</span>
+        </label>`;
+      case "date":
+        return html`<input type="date" id="${id}" name="${name}"
+                           value="${value == null ? "" : String(value)}"
+                           ${required ? raw("required") : ""}>`;
+      case "datetime":
+        return html`<input type="datetime-local" id="${id}" name="${name}"
+                           value="${value == null ? "" : new Date(Number(value)).toISOString().slice(0, 16)}"
+                           ${required ? raw("required") : ""}>`;
+      case "money":
+        // Typed as a decimal and stored as cents. The form is the one boundary
+        // that converts, because it is the one boundary with a human on the
+        // other side; every API path takes cents and refuses a decimal, which
+        // is what stops a 100x error going in silently.
+        return html`<input type="number" step="0.01" id="${id}" name="${name}"
+                           value="${value == null ? "" : (Number(value) / 100).toFixed(2)}"
+                           ${required ? raw("required") : ""}>`;
+      case "int":
+      case "real":
+        return html`<input type="number" ${col.kind === "int" ? raw('step="1"') : raw('step="any"')}
+                           id="${id}" name="${name}" value="${value == null ? "" : String(value)}"
+                           ${required ? raw("required") : ""}>`;
+      case "json":
+        return html`<textarea id="${id}" name="${name}"
+                              placeholder="{}">${value == null ? "" : JSON.stringify(value, null, 2)}</textarea>`;
+      default:
+        return html`<input type="text" id="${id}" name="${name}"
+                           value="${value == null ? "" : String(value)}"
+                           ${required ? raw("required") : ""}>`;
+    }
+  })();
+
+  return html`<div class="field">
+    <label for="${id}">${label}
+      ${required ? "" : html`<span class="req">— optional</span>`}
+    </label>
+    ${control}
+    ${col.help && col.kind !== "bool" ? html`<div class="help">${col.help}</div>` : ""}
+  </div>`;
+}
+
+export function tablePage(args: {
+  table: LoadedTable;
+  rows: Row[];
+  total: number;
+  query: string;
+  showDeleted: boolean;
+  editing?: Row | null;
+  error?: string | null;
+  failedInWindow: number;
+  workflowCount: number;
+  unconnected: number;
+  tableCount: number;
+}) {
+  const { table: def, rows, editing } = args;
+  const columns = Object.entries(def.columns);
+  const formOpen = Boolean(editing) || Boolean(args.error);
+
+  const link = (params: Record<string, string | undefined>) => {
+    const q = new URLSearchParams();
+    if (params.q ?? args.query) q.set("q", params.q ?? args.query);
+    if ((params.deleted ?? (args.showDeleted ? "1" : "")) === "1") q.set("deleted", "1");
+    const s = q.toString();
+    return `/tables/${def.name}${s ? `?${s}` : ""}`;
+  };
+
+  return layout(
+    {
+      title: def.name,
+      tab: "tables",
+      refresh: null,
+      crumb: html`<span class="crumb"><a href="/tables">Tables</a> ／ <b>${def.name}</b></span>`,
+      badges: {
+        workflows: args.workflowCount,
+        failed: args.failedInWindow,
+        unconnected: args.unconnected || null,
+        tables: args.tableCount || null,
+      },
+    },
+    html`
+      ${args.error ? html`<div class="flash">${args.error}</div>` : ""}
+
+      <div class="stats">
+        <div class="stat"><b>${args.total}</b><span>rows${args.showDeleted ? " (with deleted)" : ""}</span></div>
+        <div class="stat"><b>${columns.length}</b><span>columns</span></div>
+        <div class="stat" title="${def.file}">
+          <b class="mono" style="font-size:13px">${def.folder ?? "—"}</b><span>folder</span>
+        </div>
+      </div>
+
+      ${def.description ? html`<div class="note">${def.description}</div>` : ""}
+
+      <div class="adderbox">
+        <input class="reveal" type="checkbox" id="addrow" ${formOpen ? raw("checked") : ""}>
+
+        <div class="toolbar">
+          <form method="get" action="/tables/${def.name}">
+            <input type="search" name="q" value="${args.query}"
+                   placeholder="Search ${def.name}…" autocomplete="off" spellcheck="false">
+            ${args.showDeleted ? html`<input type="hidden" name="deleted" value="1">` : ""}
+            <button class="btn" type="submit">Search</button>
+          </form>
+          <span class="grow"></span>
+          <a class="chip" href="${link({ deleted: args.showDeleted ? "" : "1" })}"
+             ${args.showDeleted ? raw('aria-current="true"') : ""}>Deleted</a>
+          <label class="btn primary" for="addrow">Add row</label>
+        </div>
+
+        <form class="card adder" method="post"
+              action="/tables/${def.name}${editing ? `/${editing.id}` : ""}">
+          <div class="form cols">
+            ${columns.map(([name, col]) => fieldFor(name, col, editing ? editing[name] : undefined))}
+            <div class="bar">
+              <button class="btn primary" type="submit">${editing ? "Save" : "Add"}</button>
+              ${editing
+                ? html`<a class="btn" href="${link({})}">Cancel</a>`
+                : html`<label class="btn" for="addrow">Cancel</label>`}
+              ${editing
+                ? html`<span class="muted mono" style="font-size:11.5px">${editing.id}</span>`
+                : ""}
+            </div>
+          </div>
+        </form>
+      </div>
+
+      ${rows.length === 0
+        ? html`<div class="card"><div class="empty">
+            <b>${args.query ? "Nothing matches that search" : "No rows yet"}</b>
+            ${args.query
+              ? html`<a href="${link({ q: "" })}">Clear the search</a> to see everything.`
+              : "Add one above, or let a workflow or an agent write it."}
+          </div></div>`
+        : html`
+            <div class="card dt">
+              <table>
+                <thead><tr>
+                  ${columns.map(
+                    ([name, col]) => html`<th ${col.help ? html`title="${col.help}"` : ""}>${columnLabel(name, col)}</th>`,
+                  )}
+                  <th>Written by</th>
+                  <th>Updated</th>
+                  <th></th>
+                </tr></thead>
+                <tbody>
+                  ${rows.map(
+                    (row) => html`
+                      <tr class="${row.deleted_at ? "gone" : ""}">
+                        ${columns.map(
+                          ([name, col]) => html`<td
+                            class="${col.kind === "money" || col.kind === "int" || col.kind === "real" ? "num" : ""}${
+                              col.kind === "text" ? " wrap" : ""
+                            }">${cellText(col, row[name])}</td>`,
+                        )}
+                        <td class="muted mono">${row.written_by ?? "—"}</td>
+                        <td class="muted" title="${fmt(row.updated_at)}">${relative(row.updated_at)}</td>
+                        <td class="acts">
+                          ${row.deleted_at
+                            ? html`<form method="post" action="/tables/${def.name}/${row.id}/restore">
+                                <button class="btn" type="submit">Restore</button>
+                              </form>`
+                            : html`
+                                <a class="btn" href="${link({})}${link({}).includes("?") ? "&" : "?"}edit=${row.id}">Edit</a>
+                                <form method="post" action="/tables/${def.name}/${row.id}/delete"
+                                      data-confirm="Delete this row? It stops being listed and can be restored.">
+                                  <button class="btn danger" type="submit">Delete</button>
+                                </form>
+                              `}
+                        </td>
+                      </tr>
+                    `,
+                  )}
+                </tbody>
+              </table>
+            </div>
+          `}
     `,
   );
 }

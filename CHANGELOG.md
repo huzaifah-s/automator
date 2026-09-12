@@ -6,6 +6,68 @@ Entries record the *reasoning*, not just the diff — `git log` already has the
 diff. If a change settled a question, say what was settled and what the losing
 option was, so nobody relitigates it from scratch.
 
+## 2026-09-12
+
+### Data tables — rows with columns, and a second MCP endpoint to ask about them
+
+`ctx.state` could already remember things between runs, but only as key/value.
+That is the wrong shape for anything you would ask "how much" about: answering
+"what did I spend on groceries in March" from a key/value store means pulling
+every value into memory and counting there, which is the exact failure
+`server/mcp.ts` was written to avoid for run history.
+
+**A table is now a file under `tables/` that default-exports `defineTable()`**,
+discovered at boot the way workflows are, with its rows in the same SQLite
+file. `ctx.table("expenses")` gives insert/update/query/aggregate; a Tables tab
+renders and edits rows; and `/mcp/tables` serves them to an agent.
+
+*What was settled: structure is code, data is data.* n8n grew a Data Tables
+feature where the schema is rows in a database and the columns are edited in a
+browser, and that is the drift this project left n8n to avoid. The losing
+option was a "New table" button — genuinely more convenient, and it would have
+made the repo stop being the answer to "what does this server store". So the
+dashboard adds, edits and soft-deletes *rows* and has no control that changes a
+table's shape. The cost is that a new column is a commit and a restart.
+
+*What was settled: a second MCP endpoint rather than more tools on the first.*
+Six table tools on `/mcp` would be six tool descriptions in the context of
+every operational conversation forever, and ten operational ones in every
+ledger conversation. `/mcp/tables` has its own tool list and its own tokens,
+and a token can be scoped to named tables — it then sees only those, including
+not in its tool list, and does not pick up tables added later.
+
+*What was traded.* Table rows are the first thing in this codebase that is both
+un-redacted (redaction would destroy the value, as with `ctx.state`) and
+displayed (unlike `ctx.state`, which nothing renders). The two properties that
+make each of those safe do not both hold, so the invariant is stated instead:
+never put a credential in a data table. The alternative considered was a
+`variables.ts`-style regex refusing credential-shaped values, and it was
+dropped because a table's columns are declared in a reviewed file rather than
+typed into a form — the review is the guard, and a heuristic that rejects
+legitimate data is one people work around.
+
+Three refusals are load-bearing rather than strict-for-its-own-sake. A
+`money()` column holds whole minor units and **refuses a decimal** instead of
+rounding it: the thing writing to it is often a model handed "RM 42.50", and a
+silent `* 100` turns a 100× error into a stored number, where an error saying
+`42.50 is 4250` gets corrected on the retry. An `enumOf` column refuses an
+unlisted value, which is what stops a category column collecting four spellings
+and quietly answering every later question about a third of the rows. And an
+unrecognised field is an error, not a value that never arrives.
+
+Deduping is opt-in per row: a null in the `dedupe` column opts out, matching
+what SQLite's unique indexes already do with NULLs. That is what lets an
+`entry_key` be optional — supply one and a retried write is a no-op, leave it
+out and two identical RM 5 coffees on the same day are two rows.
+
+Caught by running it: table ids were timestamp-first *and* abbreviated to eight
+characters in MCP results, so every row written in the same half-minute printed
+the same id. Ids are now fifteen characters and printed whole.
+
+Also closed while nearby: `/variables` was missing from the dashboard's
+basic-auth path list, so the Variables tab and its write routes were reachable
+without the dashboard password. It is in the list now, along with `/tables`.
+
 ## 2026-09-11
 
 ### Resume finishes the run it was given, instead of starting an empty one

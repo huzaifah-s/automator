@@ -652,6 +652,136 @@ Values that cannot round-trip are rejected rather than quietly mangled:
 `undefined`, functions, bigints, circular structures, and anything over
 `STATE_MAX_BYTES` all throw with a message naming the key.
 
+## Data tables
+
+`ctx.state` is a key/value store. A **data table** is the other half: rows with
+columns, which is what you need the moment a question starts with "how much" or
+"how many". Expenses, invoices, readings, anything you would otherwise have put
+in a spreadsheet.
+
+**Structure is code, data is data.** A table is a file under `tables/` that
+default-exports `defineTable()`, discovered at boot exactly the way workflows
+are. The Tables tab edits *rows*; it has no button that creates a table or
+changes a column. Adding one is a commit — reviewable, revertable, and visible
+to whoever reads the repo.
+
+```ts
+// tables/personal-finance/expenses.ts
+import { bool, date, defineTable, enumOf, money, text } from "../../src/core/define.ts";
+
+export default defineTable({
+  name: "expenses",
+  description: "Money out — receipts, bills and anything else spent.",
+  columns: {
+    occurred_on:  date(),
+    merchant:     text(),
+    amount_cents: money({ help: "Whole cents/sen. RM 42.50 is 4250." }),
+    currency:     text({ default: "MYR" }),
+    category:     enumOf(["food", "groceries", "transport", "other"]),
+    note:         text({ nullable: true }),
+    needs_review: bool({ default: false }),
+    entry_key:    text({ nullable: true }),
+  },
+  dedupe: "entry_key",
+  order: { column: "occurred_on", direction: "desc" },
+});
+```
+
+Every table also gets `id`, `created_at`, `updated_at`, `deleted_at` and
+`written_by` — the last of which is why "which of these did the agent write" is
+a column rather than a guess.
+
+Columns: `text()` `int()` `real()` `money()` `bool()` `date()` `datetime()`
+`json()` `enumOf([...])`. All take `{ nullable, default, label, help }`.
+
+### Reading and writing
+
+From a workflow, `ctx.table(name)`:
+
+```ts
+const expenses = ctx.table("expenses");
+
+expenses.insert({ occurred_on: "2026-09-02", merchant: "Jaya Grocer",
+                  amount_cents: 8750, category: "groceries" });
+
+// Aggregating happens in SQL, which is the point of having columns at all.
+expenses.aggregate({
+  select: [{ fn: "sum", column: "amount_cents", as: "total" }],
+  groupBy: ["category"],
+  where: [{ column: "occurred_on", op: ">=", value: "2026-09-01" }],
+});
+```
+
+`insert` `update` `get` `query` `count` `aggregate` `remove` `restore`. Nothing
+hard-deletes: `remove` is a soft delete, the row stays, and the Tables tab can
+put it back.
+
+Three things are refused rather than smoothed over, and each one is a mistake
+that would otherwise be stored:
+
+- **A decimal in a `money()` column.** It holds whole minor units, and the
+  error says `42.50 is 4250`. The dashboard form is the one place that converts
+  a typed decimal, because a form field states its units.
+- **A value outside an `enumOf`.** This is what stops a category column
+  collecting `Groceries`, `groceries` and `grocery` inside a month and
+  quietly answering every later question about a third of the rows.
+- **A field that is not a column.** A misspelt key is an error, not a value
+  that silently never arrives.
+
+### Idempotency
+
+A table's `dedupe` column is a unique key among live rows. A null opts out — so
+an optional `entry_key` means "supply a stable key and writing the same row
+twice is a no-op; leave it out and every insert is a row". This is what makes a
+retried tool call safe without making two identical RM 5 coffees on the same
+day collide.
+
+### The Tables tab
+
+Rows, a search box, add/edit/delete, and deleted rows behind a filter. Not
+behind `DASHBOARD_WRITE` — that flag is about whether a browser may put a
+credential into the encrypted store, which is a different question from whether
+it may correct a misread receipt. `DASHBOARD_USER`/`DASHBOARD_PASS` covers it,
+the same as Run now, Resume, Replay and the pause switch.
+
+### Asking an agent about them
+
+`/mcp/tables` is a **separate MCP endpoint** from `/mcp`, with its own tools and
+its own tokens:
+
+| Tool | |
+|---|---|
+| `tables` | The tables this token can reach, with their columns. Call it first. |
+| `rows` | Rows, filtered. |
+| `totals` | Sums, counts and averages, grouped — the arithmetic happens in SQL. |
+| `add_row` `edit_row` `delete_row` | Writes. Full-scope tokens only. |
+
+Two endpoints rather than one list of sixteen tools, because a tool is a cost
+paid on every turn of every conversation whether or not anything calls it — a
+"what is failing" chat should not be carrying ledger tools.
+
+A token can be **scoped to named tables** (the Data tables field on the MCP
+tab, or `tables` in the API body). It then sees only those: not in a result,
+not in its tool list, and not tables added later. Leave it empty for all of
+them.
+
+`totals` adds `currency` to the grouping whenever it is summing a `money()`
+column and you did not ask for it, because a total across currencies is a
+number that is not an amount of anything and looks exactly like one.
+
+```
+$ totals table=expenses sum=amount_cents group_by=["category"]
+
+category   currency  rows  total
+---------  --------  ----  ------
+groceries  MYR       2     130.50
+fuel       MYR       1     90.00
+shopping   USD       1     20.00
+```
+
+Money is stored as cents and *displayed* as decimals; written back it is cents
+again, and the validator refuses anything else rather than guessing.
+
 ## Approval gates
 
 There is no Wait node here, and there is not going to be one. A run is a single

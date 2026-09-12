@@ -32,6 +32,13 @@ import {
 } from "../core/credentials.ts";
 import { PROVIDERS, isProviderId, providerIds, type Provider } from "../core/providers.ts";
 import {
+  allTables,
+  getTable,
+  table as dataTable,
+  type ColumnDef,
+  type LoadedTable,
+} from "../core/tables.ts";
+import {
   deleteVariable,
   listVariables,
   setVariable,
@@ -40,6 +47,7 @@ import {
 import type { Registry } from "../core/loader.ts";
 import { planReplay, workflowsBlockedBy } from "./inspect.ts";
 import { createMcpRouter } from "./mcp.ts";
+import { createTableMcpRouter } from "./mcp-tables.ts";
 import {
   createMcpToken,
   deleteMcpToken,
@@ -50,6 +58,9 @@ import type { LoadedWorkflow, RunRecord, WebhookDecision } from "../core/types.t
 import {
   credentialFormPage,
   credentialsPage,
+  tablePage,
+  tablesPage,
+  type TableSummary,
   variablesPage,
   mcpTokensPage,
   DEFAULT_RANGE,
@@ -400,6 +411,9 @@ export function createApp(registry: Registry): Hono {
   // Registered before the auth middleware for the same reason /hooks is: an
   // agent authenticates with MCP_TOKEN, not with the dashboard's basic-auth
   // credentials. Unset, the router answers 503 rather than opening.
+  // Before "/mcp", so the more specific path wins: Hono matches in
+  // registration order and "/mcp" would otherwise swallow "/mcp/tables".
+  app.route("/mcp/tables", createTableMcpRouter());
   app.route("/mcp", createMcpRouter(registry));
 
   /* --------------------------------------------------------------- auth */
@@ -442,6 +456,14 @@ export function createApp(registry: Registry): Hono {
       "/secrets/*",
       "/mcp-tokens",
       "/mcp-tokens/*",
+      // Both of these were missing, which left the Variables tab — and every
+      // write route on it — reachable without the dashboard's credentials.
+      // Tables holds data rather than configuration, so the same omission
+      // would be worse here.
+      "/variables",
+      "/variables/*",
+      "/tables",
+      "/tables/*",
       "/api/*",
     ])
       app.use(p, auth);
@@ -849,6 +871,17 @@ export function createApp(registry: Registry): Hono {
   const dashboardAuthenticated = Boolean(user && pass);
   const publicUrl = process.env.PUBLIC_URL?.replace(/\/+$/, "") || null;
 
+  /** The stored scope for display. Unreadable means "all", as identify() has it. */
+  const parseTokenTables = (raw: string | null): string[] | null => {
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) && parsed.length ? parsed.map(String) : null;
+    } catch {
+      return null;
+    }
+  };
+
   const tokenViews = (): McpTokenView[] =>
     listMcpTokens().map((t) => ({
       id: t.id,
@@ -859,6 +892,7 @@ export function createApp(registry: Registry): Hono {
       lastUsedAt: t.last_used_at,
       lastClient: t.last_client,
       calls: t.calls,
+      tables: parseTokenTables(t.tables),
     }));
 
   const renderMcp = (
@@ -870,6 +904,7 @@ export function createApp(registry: Registry): Hono {
         tokens: tokenViews(),
         writable,
         authenticated: dashboardAuthenticated,
+        dataTables: allTables().map((t) => t.name),
         envToken: Boolean(process.env.MCP_TOKEN),
         publicUrl,
         created: opts.created ?? null,
@@ -882,6 +917,33 @@ export function createApp(registry: Registry): Hono {
     );
 
   app.get("/mcp-tokens", (c) => renderMcp(c));
+
+  /**
+   * The `tables` field on a new MCP token, from a form or a JSON body.
+   *
+   * Empty means every table, which is what a token was before this existed.
+   * An unknown name is refused rather than ignored: a token silently scoped to
+   * a table that does not exist reaches nothing, and the first symptom is an
+   * agent reporting that the ledger is empty.
+   */
+  const tableScopeFrom = (raw: unknown): string[] | undefined => {
+    const names = (
+      Array.isArray(raw) ? raw.map(String) : String(raw ?? "").split(/[\s,]+/)
+    )
+      .map((n) => n.trim())
+      .filter(Boolean);
+    if (names.length === 0) return undefined;
+
+    const known = new Set(allTables().map((t) => t.name));
+    const unknown = names.filter((n) => !known.has(n));
+    if (unknown.length) {
+      throw new Error(
+        `No such table: ${unknown.join(", ")}. Loaded tables are ` +
+          `${[...known].join(", ") || "(none)"}.`,
+      );
+    }
+    return names;
+  };
 
   app.post("/mcp-tokens", async (c) => {
     const denied = requireWrite(c);
@@ -901,7 +963,14 @@ export function createApp(registry: Registry): Hono {
     if (!name) return renderMcp(c, { error: "A token needs a name.", status: 400 });
     if (!isScope(scope)) return renderMcp(c, { error: "Scope must be read or full.", status: 400 });
 
-    const { token } = createMcpToken(name, scope);
+    let tables: string[] | undefined;
+    try {
+      tables = tableScopeFrom(form.tables);
+    } catch (err) {
+      return renderMcp(c, { error: err instanceof Error ? err.message : String(err), status: 400 });
+    }
+
+    const { token } = createMcpToken(name, scope, tables);
     // Answered with the page rather than a redirect, which every other form
     // here does. The plaintext exists for exactly this response — it is not in
     // the database and cannot go in a query string — so a redirect would throw
@@ -914,6 +983,209 @@ export function createApp(registry: Registry): Hono {
     if (denied) return denied;
     deleteMcpToken(c.req.param("id"));
     return c.redirect("/mcp-tokens", 303);
+  });
+
+  /* -------------------------------------------------------- data tables */
+
+  /*
+   * The Tables tab. Rows are editable here and columns are not — see
+   * core/tables.ts for why that line is where it is.
+   *
+   * Deliberately *not* behind DASHBOARD_WRITE. That flag decides whether a
+   * browser may put a credential into the encrypted store, which is a
+   * different question from whether it may correct a misread receipt: gating
+   * row editing on it would make the tab read-only by default and the feature
+   * pointless. DASHBOARD_USER/DASHBOARD_PASS is what covers this, the same as
+   * Run now, Resume, Replay and the pause switch.
+   */
+
+  /** Summary counts for the tiles on the index. */
+  const summarise = (def: LoadedTable): TableSummary => {
+    const client = dataTable(def.name);
+    const hasReview = def.columns.needs_review?.kind === "bool";
+    const newest = client.query({ limit: 1, order: { column: "updated_at", direction: "desc" } });
+    return {
+      table: def,
+      rows: client.count(),
+      review: hasReview
+        ? client.count({ where: [{ column: "needs_review", op: "=", value: true }] })
+        : null,
+      newest: newest[0]?.updated_at ?? null,
+    };
+  };
+
+  /**
+   * One submitted form as row values.
+   *
+   * Two conversions happen here and nowhere else, because this is the only
+   * boundary with a person on the other side of it:
+   *
+   *   - **money** is typed as a decimal and stored as minor units. Every other
+   *     way into the table takes cents and refuses a decimal outright, which
+   *     is what stops "42.50" being stored as 42 sen; a form field is the one
+   *     place the intent is unambiguous, so it is the one place that converts.
+   *   - **datetime-local** is a wall-clock string and the column is epoch
+   *     milliseconds.
+   *
+   * An empty field is `null` for a nullable column and *absent* otherwise —
+   * absent so the validator reports it as missing on an insert, and leaves it
+   * untouched on an update.
+   */
+  const rowFromForm = (
+    def: LoadedTable,
+    form: Record<string, unknown>,
+  ): Record<string, unknown> => {
+    const values: Record<string, unknown> = {};
+
+    for (const [name, col] of Object.entries(def.columns) as [string, ColumnDef][]) {
+      if (col.kind === "bool") {
+        values[name] = form[name] !== undefined;
+        continue;
+      }
+
+      const raw = form[name];
+      const text = typeof raw === "string" ? raw.trim() : "";
+      if (text === "") {
+        if (col.nullable) values[name] = null;
+        continue;
+      }
+
+      switch (col.kind) {
+        case "money": {
+          const amount = Number(text.replace(/[, ]/g, ""));
+          if (!Number.isFinite(amount)) throw new Error(`${name}: "${text}" is not an amount`);
+          // Rounding is safe here in a way it is not on the API: the form
+          // states its units, so a fractional cent is a typo rather than an
+          // ambiguity about which unit was meant.
+          values[name] = Math.round(amount * 100);
+          break;
+        }
+        case "int":
+        case "real": {
+          const n = Number(text);
+          if (!Number.isFinite(n)) throw new Error(`${name}: "${text}" is not a number`);
+          values[name] = col.kind === "int" ? Math.round(n) : n;
+          break;
+        }
+        case "datetime": {
+          const ms = Date.parse(text);
+          if (Number.isNaN(ms)) throw new Error(`${name}: "${text}" is not a date and time`);
+          values[name] = ms;
+          break;
+        }
+        case "json":
+          try {
+            values[name] = JSON.parse(text);
+          } catch {
+            throw new Error(`${name}: that is not valid JSON`);
+          }
+          break;
+        default:
+          values[name] = text;
+      }
+    }
+
+    return values;
+  };
+
+  const renderTable = (c: any, def: LoadedTable, error?: string | null, status = 200) => {
+    const client = dataTable(def.name);
+    const query = (c.req.query("q") ?? "").trim();
+    const showDeleted = c.req.query("deleted") === "1";
+    const editId = c.req.query("edit");
+
+    const opts = {
+      search: query || undefined,
+      includeDeleted: showDeleted,
+      limit: 500,
+    };
+
+    return c.html(
+      tablePage({
+        table: def,
+        rows: client.query(opts),
+        total: client.count({ search: opts.search, includeDeleted: showDeleted }),
+        query,
+        showDeleted,
+        editing: editId ? client.get(editId) : null,
+        error,
+        failedInWindow: store.statusCountsSince(Date.now() - DEFAULT_RANGE_MS).failed ?? 0,
+        workflowCount: registry.all().length,
+        unconnected: wantedCredentials().length,
+        tableCount: allTables().length,
+      }) as any,
+      status,
+    );
+  };
+
+  app.get("/tables", (c) =>
+    c.html(
+      tablesPage({
+        tables: allTables().map(summarise),
+        failedInWindow: store.statusCountsSince(Date.now() - DEFAULT_RANGE_MS).failed ?? 0,
+        workflowCount: registry.all().length,
+        unconnected: wantedCredentials().length,
+      }) as any,
+    ),
+  );
+
+  app.get("/tables/:name", (c) => {
+    const def = getTable(c.req.param("name"));
+    if (!def) return c.notFound();
+    return renderTable(c, def);
+  });
+
+  app.post("/tables/:name", async (c) => {
+    const def = getTable(c.req.param("name"));
+    if (!def) return c.notFound();
+    try {
+      // "error" rather than the default "ignore": somebody who filled in this
+      // form meant to add a row, and silently handing back the one that
+      // already had that key would look like the form did nothing.
+      const { row } = dataTable(def.name).insert(rowFromForm(def, await c.req.parseBody()), {
+        writtenBy: "dashboard",
+        ifExists: "error",
+      });
+      log.info(`Row ${row.id} added to ${def.name} from the dashboard`);
+    } catch (err) {
+      return renderTable(c, def, err instanceof Error ? err.message : String(err), 400);
+    }
+    return c.redirect(`/tables/${def.name}`, 303);
+  });
+
+  app.post("/tables/:name/:id", async (c) => {
+    const def = getTable(c.req.param("name"));
+    if (!def) return c.notFound();
+    try {
+      dataTable(def.name).update(c.req.param("id"), rowFromForm(def, await c.req.parseBody()), {
+        writtenBy: "dashboard",
+      });
+    } catch (err) {
+      return renderTable(c, def, err instanceof Error ? err.message : String(err), 400);
+    }
+    return c.redirect(`/tables/${def.name}`, 303);
+  });
+
+  app.post("/tables/:name/:id/delete", (c) => {
+    const def = getTable(c.req.param("name"));
+    if (!def) return c.notFound();
+    if (!dataTable(def.name).remove(c.req.param("id"))) {
+      return renderTable(c, def, "That row is already deleted, or was never there.", 400);
+    }
+    return c.redirect(`/tables/${def.name}`, 303);
+  });
+
+  app.post("/tables/:name/:id/restore", (c) => {
+    const def = getTable(c.req.param("name"));
+    if (!def) return c.notFound();
+    try {
+      if (!dataTable(def.name).restore(c.req.param("id"))) {
+        return renderTable(c, def, "That row is not deleted.", 400);
+      }
+    } catch (err) {
+      return renderTable(c, def, err instanceof Error ? err.message : String(err), 400);
+    }
+    return c.redirect(`/tables/${def.name}?deleted=1`, 303);
   });
 
   app.get("/variables", (c) => renderVariables(c));
@@ -1571,8 +1843,15 @@ export function createApp(registry: Registry): Hono {
     if (!name) return c.json({ error: "A token needs a name" }, 400);
     if (!isScope(scope)) return c.json({ error: "scope must be 'read' or 'full'" }, 400);
 
-    const { token, id } = createMcpToken(name, scope);
-    return c.json({ id, name, scope, token }, 201);
+    let tables: string[] | undefined;
+    try {
+      tables = tableScopeFrom((body as any).tables);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+
+    const { token, id } = createMcpToken(name, scope, tables);
+    return c.json({ id, name, scope, tables: tables ?? null, token }, 201);
   });
 
   app.delete("/api/mcp-tokens/:id", (c) =>

@@ -129,6 +129,35 @@ export function manual(): Trigger {
 }
 
 export { defineSecrets, defineSecretGroup, optionalSecret } from "./secrets.ts";
+/**
+ * Data tables — see src/core/tables.ts. A table file under `tables/` imports
+ * these the same way a workflow file imports defineWorkflow.
+ */
+export {
+  defineTable,
+  text,
+  int,
+  real,
+  money,
+  bool,
+  date,
+  datetime,
+  json,
+  enumOf,
+} from "./tables.ts";
+export type {
+  AggregateOptions,
+  ColumnDef,
+  ColumnKind,
+  InsertOptions,
+  InsertResult,
+  QueryOptions,
+  Row,
+  TableClient,
+  TableDef,
+  WhereClause,
+  WhereOp,
+} from "./tables.ts";
 export { defineCredential } from "./credentials.ts";
 export type { CredentialValues } from "./credentials.ts";
 export type { ProviderId } from "./providers.ts";

@@ -171,6 +171,7 @@ export {
   rows,
   note,
   formatMoney,
+  formatDuration,
   periodRange,
   isoDate,
   PERIOD_KEYS,

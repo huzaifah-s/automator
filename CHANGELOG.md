@@ -8,6 +8,70 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-13
 
+### `views/` and `tables/` were never typechecked, and the Slowest steps panel proved it
+
+`tsconfig.json` included `src` and `workflows`. The other two loaded
+directories were outside it, so nothing in `views/` or `tables/` was ever
+compiled by `bun run check` — which is the command AGENTS.md calls the gate.
+
+The runner-health page had been reading `s.avg_ms` and `s.retried` off
+`stepHotspots()`, which selects neither. `undefined` through `Math.round` is
+`NaN`, so the Average column read **`NaNms` on every row**, and Retried — a
+column for a number the steps table does not record at all — read as an em
+dash on every row. A page about how healthy the runner is had two columns of
+nothing, and the typo that caused it was the kind a compiler catches in
+milliseconds.
+
+**`include` is now `["src", "workflows", "views", "tables"]`.** Adding them
+surfaced exactly those three errors and nothing else, which is the happiest
+possible version of this discovery.
+
+The panel now shows what the query actually returns: Runs, Total, Average
+(derived as total ÷ runs — `COUNT(*)` in a `GROUP BY` is never zero), Slowest,
+and Failed. Total is new and was arguably the omission underneath the bug: the
+panel is *ordered* by total and its note describes total, while the total was
+the one figure not on screen.
+
+*Also:* `formatDuration` moved into `src/core/views.ts` and is exported from
+`define.ts`, so a view spells a duration the way the run pages already do —
+`src/server/views.ts`'s `dur()` now calls it. One spelling of `90000` for the
+whole dashboard.
+
+### The ledger shows what a purchase cost; the totals stay net
+
+Every figure on the finance page is `amount_cents - reimbursed_cents`, which is
+right for a total and wrong for a log. "Latest rows" is a log, and a lunch the
+wife had already paid back rendered as **`− RM 0.00`** — a row with a date, a
+merchant and an account claiming nothing was spent. Two of them in a row read
+as a duplicate to go and delete rather than as a settled debt.
+
+**That one panel now shows the amount charged**, with `Paid back` as its own
+column and `For` — who the money went on — beside `Paid by`. Both new columns
+follow the rule the "Paid by" column already followed: they appear only when
+they can vary, so a page filtered to one person does not grow a column
+restating the filter, and somebody who is never reimbursed never sees a column
+of em dashes.
+
+*What was settled: net is a property of totals, not of rows.* The alternative
+was keeping the panel net and explaining the zeroes in the note, which asks the
+reader to distrust the number in front of them. Every total above it is
+untouched and still net — checked against the same ledger: RM 168.40 out of
+pocket from RM 250 of purchases with RM 81.50 back.
+
+### The view control bar was three different widgets
+
+`Period` was a bare `<select>`, so the OS drew it: its own chevron, its own
+radius, and a couple of pixels shorter than the tickbox groups next to it. The
+Apply button was the dashboard's `.btn`, sized for a toolbar — shorter again
+and a different radius. Three controls on one row, three shapes.
+
+**One height (`--vh: 34px`) for every control on the bar**, and the select gets
+`appearance: none` with the chevron we draw ourselves — the same `.pick`
+treatment the dashboard's own selects have had all along. The tickbox group
+keeps it as a *minimum* height, because it has to grow when the boxes wrap on a
+narrow screen.
+
+
 ### `paid_by` — whose money left, which is not who it was for
 
 The ledger had two axes for an expense: `account`, which instrument carried it,

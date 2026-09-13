@@ -1,6 +1,7 @@
 import { html, raw } from "hono/html";
 import type { HtmlEscapedString } from "hono/utils/html";
 import type { ColumnDef, LoadedTable, Row } from "../core/tables.ts";
+import { formatDuration } from "../core/views.ts";
 import type { LoadedView, Panel } from "../core/views.ts";
 import type { ViewLinkRecord } from "../core/types.ts";
 import { VIEW_CSS, renderControls, renderPanels } from "./view-render.ts";
@@ -868,8 +869,9 @@ export function unauthorizedPage() {
 const fmt = (ts: number | null) =>
   ts ? new Date(ts).toISOString().replace("T", " ").slice(0, 19) : "—";
 
-const dur = (ms: number | null) =>
-  ms === null ? "—" : ms < 1000 ? `${ms}ms` : ms < 60_000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms / 60_000)}m`;
+// One spelling of a duration for the whole dashboard, views included — see
+// formatDuration in src/core/views.ts.
+const dur = (ms: number | null) => formatDuration(ms);
 
 /** "just now" / "4m ago" / "in 2h" — absolute time stays in the title attribute. */
 function relative(ts: number | null): string {

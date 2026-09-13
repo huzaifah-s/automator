@@ -364,6 +364,24 @@ export function formatMoney(cents: number | null | undefined, currency = "RM"): 
   return `${value < 0 ? "-" : ""}${currency}${currency ? " " : ""}${text}`;
 }
 
+/**
+ * Milliseconds as something you read rather than count digits in.
+ *
+ * The dashboard's own spelling of a duration, moved here so a view and a run
+ * page cannot disagree about what 90000 looks like — `src/server/views.ts`
+ * calls this one. Three bands, because the interesting question changes with
+ * the magnitude: a step that takes 40ms is compared against other millisecond
+ * steps, one that takes four minutes is not compared against anything, it is
+ * just slow.
+ */
+export function formatDuration(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(Number(ms))) return "—";
+  const n = Math.round(Number(ms));
+  if (n < 1000) return `${n}ms`;
+  if (n < 60_000) return `${(n / 1000).toFixed(1)}s`;
+  return `${Math.round(n / 60_000)}m`;
+}
+
 /* -------------------------------------------------------------- the view */
 
 export interface ViewDef {

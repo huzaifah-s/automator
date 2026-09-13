@@ -1,4 +1,4 @@
-import { bars, defineView, rows, series, stats } from "../../src/core/define.ts";
+import { bars, defineView, formatDuration, rows, series, stats } from "../../src/core/define.ts";
 
 /**
  * How the runner itself is doing — the Executions tab's numbers, arranged as a
@@ -97,22 +97,46 @@ export default defineView({
         empty: "Nothing failed in this window.",
       }),
 
+      /*
+       * Every column here is a field `stepHotspots` actually returns.
+       *
+       * It used to read `avg_ms` and `retried`, which the query has never
+       * selected: the first rendered as `NaNms` on every row (undefined
+       * through Math.round) and the second as an em dash, so the panel showed
+       * a column of nonsense beside a column of nothing. Nothing caught it
+       * because `views/` was outside the tsconfig — it is in it now, and this
+       * exact typo is a compile error today.
+       *
+       * The average is derived rather than selected. `COUNT(*)` in a GROUP BY
+       * is at least 1, so the division cannot be a divide-by-zero, and taking
+       * it from the same two numbers the row already shows means the three
+       * figures can be checked against each other by eye.
+       */
       rows({
         title: "Slowest steps",
-        note: "Total time spent in each step across the window, and how often it was retried.",
+        note:
+          "Total time spent in each step across the window, ordered by that total — the step " +
+          "worth looking at is usually a slowish one called constantly rather than a rare " +
+          "outlier. Failed counts the attempts that threw, not the runs that gave up.",
         columns: [
           { key: "workflow", label: "Workflow", mono: true },
           { key: "step", label: "Step" },
           { key: "runs", label: "Runs", align: "right", mono: true },
+          { key: "total", label: "Total", align: "right", mono: true },
           { key: "avg", label: "Average", align: "right", mono: true },
-          { key: "retried", label: "Retried", align: "right", mono: true },
+          { key: "worst", label: "Slowest", align: "right", mono: true },
+          { key: "failed", label: "Failed", align: "right", mono: true },
         ],
         data: slow.map((s) => ({
           workflow: s.workflow,
           step: s.name,
           runs: s.runs,
-          avg: s.avg_ms === null ? "—" : `${Math.round(s.avg_ms)}ms`,
-          retried: s.retried,
+          total: formatDuration(s.total),
+          avg: formatDuration(s.total / s.runs),
+          worst: formatDuration(s.worst),
+          // An em dash rather than a zero: a column of noughts with one 3 in it
+          // hides the 3, and "none" is not a quantity worth reading.
+          failed: s.failed === 0 ? "—" : String(s.failed),
         })),
         empty: "No steps recorded in this window.",
       }),

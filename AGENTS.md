@@ -975,7 +975,12 @@ These were decided deliberately. Raise a trade-off before changing any of them:
 
 ## Verifying before you finish
 
-1. `bun run check` passes.
+1. `bun run check` passes. It compiles all four loaded directories — `src`,
+   `workflows`, `views` and `tables`. It did not always: `views/` and `tables/`
+   sat outside `tsconfig.json` until a view read two fields off a query that
+   never selected them and shipped a column of `NaNms` to the dashboard. If you
+   add a fifth directory the loader reads, add it to `include` in the same
+   commit.
 2. `bun run list` shows the workflow you expect (this also proves it boots and
    that every declared secret is present). For a view, boot the server and open
    `/views` — a view that failed to load warns rather than aborting, so the log

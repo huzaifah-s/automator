@@ -82,26 +82,49 @@ background:var(--panel);border:1px solid var(--border);color:var(--fg)}
 .vhead{margin-bottom:18px}
 .vhead h1{font-size:20px;font-weight:600;letter-spacing:-.02em;margin:0 0 4px}
 .vhead p{color:var(--muted);font-size:13px;margin:0;max-width:70ch}
-.vctl{display:flex;gap:8px;align-items:end;flex-wrap:wrap;margin:14px 0 4px}
+/* Every control on this bar is the same box: same background, same border, same
+   radius and — the part that has to be stated once rather than arrived at three
+   times — the same height. A select left at its native appearance is drawn by
+   the OS instead, so it turned up a couple of pixels shorter than the tickbox
+   group with a system chevron on it, and the row read as three unrelated
+   widgets. --vh is that height, and the Apply button takes it too. */
+.vctl{--vh:34px;display:flex;gap:8px;align-items:end;flex-wrap:wrap;margin:14px 0 4px}
 .vctl label{display:flex;flex-direction:column;gap:3px;min-width:0}
 .vctl label>span{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
 .vctl select,.vctl input{background:var(--panel);border:1px solid var(--border);color:var(--fg);
-border-radius:8px;padding:7px 11px;font:13px var(--sans);min-width:0}
+border-radius:8px;padding:0 11px;height:var(--vh);font:13px var(--sans);min-width:0;
+box-sizing:border-box}
 .vctl select:focus,.vctl input:focus{outline:none;border-color:var(--accent)}
+/* The house select: the browser's own arrow off, ours drawn in its place, the
+   same way .pick does it on the dashboard. Without this the control keeps the
+   platform's border radius and background on some browsers whatever we set. */
+.vctl .vpick{position:relative;display:flex;min-width:0;max-width:100%}
+.vctl .vpick>select{appearance:none;-webkit-appearance:none;width:100%;padding-right:30px;
+text-overflow:ellipsis}
+.vctl .vpick::after{content:"";position:absolute;right:12px;top:50%;margin-top:-4px;
+width:5px;height:5px;pointer-events:none;
+border-right:1.6px solid var(--faint);border-bottom:1.6px solid var(--faint);transform:rotate(45deg)}
 /* A tickbox row is one control, so it takes the same label, the same box and
    the same height as the selects beside it — the boxes live inside the border
    rather than floating loose on the bar, which is what keeps "Period" and
    "For" reading as two controls instead of a control and some stray checkboxes. */
 .vctl .vgroup{display:flex;flex-direction:column;gap:3px;min-width:0}
 .vctl .vgroup>span{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+/* A floor and not a fixed height: on a narrow screen the boxes wrap onto a
+   second line, and the group has to grow with them rather than crop one. */
 .vctl .vgroup>.ticks{display:flex;flex-wrap:wrap;gap:4px 13px;align-items:center;
-background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:6px 11px;
-min-height:33px;box-sizing:border-box}
+background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:5px 11px;
+min-height:var(--vh);box-sizing:border-box}
 .vctl .vgroup:focus-within>.ticks{border-color:var(--accent)}
 .vctl .vtick{flex-direction:row;align-items:center;gap:5px;font:13px var(--sans);cursor:pointer}
 .vctl .vtick>span{font-size:13px;text-transform:none;letter-spacing:0;color:var(--fg)}
 .vctl .vtick>input{width:13px;height:13px;margin:0;padding:0;min-width:0;border-radius:3px;
 accent-color:var(--accent);cursor:pointer}
+/* The button is the same box as the controls it submits — the dashboard's .btn
+   is sized for a toolbar, which is two pixels shorter and a radius rounder than
+   everything on this row. */
+.vctl .btn{height:var(--vh);padding:0 14px;border-radius:8px;font:13px var(--sans);
+background:var(--panel-2);box-sizing:border-box}
 
 /* ---- views: panels ---- */
 .vpanel{margin-bottom:18px}
@@ -496,19 +519,28 @@ export function renderControls(def: ViewDef, values: Record<string, string>, act
   </form>`;
 }
 
+/*
+ * Both selects go inside a `.vpick` rather than sitting bare in the label: the
+ * wrapper is what positions the chevron we draw ourselves, once the browser's
+ * own is turned off. See the `.vpick` rules in VIEW_CSS for why the native one
+ * had to go — a select the OS draws is a different shape from the boxes beside
+ * it, whatever CSS says.
+ */
 function renderControl(key: string, control: ControlDef, value: string) {
   if (control.kind === "period") {
     const options = control.options ?? PERIOD_KEYS;
     return html`<label>
       <span>${control.label ?? "Period"}</span>
-      <select name="${key}">
-        ${options.map(
-          (o) =>
-            html`<option value="${o}" ${o === value ? raw("selected") : ""}>
-              ${PERIOD_LABELS[o] ?? o}
-            </option>`,
-        )}
-      </select>
+      <span class="vpick">
+        <select name="${key}">
+          ${options.map(
+            (o) =>
+              html`<option value="${o}" ${o === value ? raw("selected") : ""}>
+                ${PERIOD_LABELS[o] ?? o}
+              </option>`,
+          )}
+        </select>
+      </span>
     </label>`;
   }
   if (control.kind === "multi") {
@@ -543,17 +575,19 @@ function renderControl(key: string, control: ControlDef, value: string) {
     const options = choices(control.options);
     return html`<label>
       <span>${control.label ?? key}</span>
-      <select name="${key}">
-        ${control.all !== undefined
-          ? html`<option value="" ${value === "" ? raw("selected") : ""}>${control.all}</option>`
-          : ""}
-        ${options.map(
-          (o) =>
-            html`<option value="${o.value}" ${o.value === value ? raw("selected") : ""}>
-              ${o.label}
-            </option>`,
-        )}
-      </select>
+      <span class="vpick">
+        <select name="${key}">
+          ${control.all !== undefined
+            ? html`<option value="" ${value === "" ? raw("selected") : ""}>${control.all}</option>`
+            : ""}
+          ${options.map(
+            (o) =>
+              html`<option value="${o.value}" ${o.value === value ? raw("selected") : ""}>
+                ${o.label}
+              </option>`,
+          )}
+        </select>
+      </span>
     </label>`;
   }
   return html`<label>

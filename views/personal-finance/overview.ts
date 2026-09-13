@@ -14,12 +14,18 @@ import { account, bounds, monthLabel, pretty, ringgit, rm } from "./_money.ts";
  *
  * ## What the numbers here mean
  *
- * Spending is **net of reimbursements** everywhere on this page:
+ * Every **total** on this page is net of reimbursements:
  * `amount_cents - reimbursed_cents`, which is the number `tables/personal-
  * finance/expenses.ts` says is what you actually spent. Using the gross amount
  * would count money somebody handed back to you as your own spending, and
  * would disagree with the "still owed" panel at the bottom, which is built
  * from the difference between the two.
+ *
+ * "Latest rows" is the deliberate exception, and the only panel that is not a
+ * total. It is a log — one line per purchase — so it shows what was charged,
+ * with anything that came back in its own column beside it. Netted, a lunch
+ * paid back in full printed as `− RM 0.00`, which describes no event that ever
+ * happened. See the comment on that panel.
  *
  * "Still owed" reads `my_treat` as well as `paid_for`, because the first is
  * the only thing that says whether the money is coming back. Dropping it turns
@@ -110,7 +116,8 @@ export default defineView({
   title: "Personal Finance",
   description:
     "Money in and out by month, whose money it was, where it went, and what is " +
-    "still owed. Spending is net of anything paid back.",
+    "still owed. Every total is net of anything paid back; the ledger at the " +
+    "bottom shows each purchase at what it cost.",
 
   shareable: true,
 
@@ -378,17 +385,20 @@ export default defineView({
       category: string;
       account: string;
       paid_by: string | null;
+      paid_for: string | null;
       amount_cents: number;
+      reimbursed_cents: number;
       kind: string;
     }>(
       `SELECT occurred_on, created_at, merchant AS what, category, account,
               COALESCE(paid_by, 'me') AS paid_by,
-              amount_cents - reimbursed_cents AS amount_cents, 'out' AS kind
+              COALESCE(paid_for, 'me') AS paid_for,
+              amount_cents, reimbursed_cents, 'out' AS kind
          FROM ${expenses}
         WHERE deleted_at IS NULL AND occurred_on >= ? AND occurred_on <= ? ${who}
        UNION ALL
        SELECT occurred_on, created_at, payer AS what, category, account,
-              NULL AS paid_by, amount_cents, 'in'
+              NULL AS paid_by, NULL AS paid_for, amount_cents, 0, 'in'
          FROM ${income}
         WHERE deleted_at IS NULL AND occurred_on >= ? AND occurred_on <= ?
        ORDER BY occurred_on DESC, created_at DESC
@@ -399,6 +409,14 @@ export default defineView({
       from,
       to,
     );
+
+    /*
+     * Whether anything in view was paid back, which decides a column below.
+     * Taken from the rows themselves rather than from a second query: this is
+     * the same 25 rows the panel draws, so the column cannot appear for a row
+     * that is not on screen.
+     */
+    const paidBack = recent.some((r) => r.reimbursed_cents > 0);
 
     /* ------------------------------------------------------------ panels */
 
@@ -612,9 +630,32 @@ export default defineView({
         empty: "Nothing is waiting to be checked.",
       }),
 
+      /*
+       * The one panel on this page that shows a purchase **gross**, and the
+       * only one where that is the right number.
+       *
+       * Everything above is a total, and a total that counted money handed
+       * back to you would be wrong. This is a log: one line per thing that
+       * happened, and what happened was that RM 52 left your wallet. Netted
+       * off, a lunch your wife paid you back for in full rendered as
+       * `− RM 0.00` — a row with a date, a merchant and an account, reporting
+       * that you spent nothing, which reads as a data-entry bug rather than as
+       * a settled debt. Worse, two of them in a row look like a duplicate you
+       * need to go and delete.
+       *
+       * So the amount is what was charged, "Paid back" is its own column, and
+       * "For" says who the money went on — the three facts that make the row
+       * self-explanatory without opening the Tables tab. The totals upstairs
+       * are unchanged and still net.
+       */
       rows({
         title: "Latest rows",
-        note: "Newest first. Rows sharing a date are in the order they were entered.",
+        note:
+          "Newest first; rows sharing a date are in the order they were entered. Amount is " +
+          "what the purchase cost when it was made — unlike every total above it, it is not " +
+          "reduced by what came back, because this is a log of what happened and not a sum. " +
+          "Anything you were paid back for says so in its own column, and For is who the " +
+          "money was spent on rather than whose money it was.",
         columns: [
           { key: "date", label: "Date", mono: true },
           { key: "what", label: "What" },
@@ -626,16 +667,27 @@ export default defineView({
           ...(showMine && showCompany
             ? [{ key: "by", label: "Paid by" }]
             : []),
-          { key: "amount", label: "Amount", align: "right", mono: true },
+          // Same rule, one row down: with a single person ticked, every cell is
+          // the name you ticked.
+          ...(paidFor.length > 1 ? [{ key: "for", label: "For" }] : []),
+          { key: "amount", label: "Amount", align: "right" as const, mono: true },
+          // And again: a column of em dashes for somebody who is never paid
+          // back is a column about nothing.
+          ...(paidBack
+            ? [{ key: "back", label: "Paid back", align: "right" as const, mono: true }]
+            : []),
         ],
         data: recent.map((r) => ({
           date: r.occurred_on,
           what: r.what,
           category: pretty(r.category),
           account: account(r.account),
-          // Income has no `paid_by` — money arriving has no pocket it left.
+          // Income has neither column — money arriving has no pocket it left
+          // and nobody it was spent on.
           by: r.paid_by === null ? "—" : r.paid_by === "company" ? "Company" : "Me",
+          for: r.paid_for === null ? "—" : pretty(r.paid_for),
           amount: `${r.kind === "in" ? "+" : "−"}${rm(r.amount_cents)}`,
+          back: r.reimbursed_cents > 0 ? rm(r.reimbursed_cents) : "—",
         })),
         empty: "No rows in this period.",
       }),

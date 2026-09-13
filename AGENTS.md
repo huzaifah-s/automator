@@ -291,6 +291,33 @@ in the select as the bare key, because the second copy was typed
 `Record<string, string>` and a missing entry there is not a type error. The map
 is `Record<PeriodKey, string>` so that forgetting one cannot compile.
 
+**A `multi` control means what is ticked, and an empty set means nothing.**
+Reading "nothing ticked" as "no filter" is the tempting shortcut and it runs
+the control backwards at one end of its range — unticking the last box would
+put *more* on the page than unticking the second-to-last did. `resolveControls`
+returns `""`, `ctx.multi()` returns `[]`, and the view is expected to render an
+explanation rather than the whole table. There is a second reason it cannot be
+softened: an empty list is also `IN ()`, which is not valid SQL, so the
+alternative to handling it is a stack trace and not a quieter page.
+
+**The view routes read `c.req.queries()`, not `c.req.query()`.** A tickbox row
+submits every ticked box under the same name and `query()` returns only the
+first of them, which would silently reduce the control to its topmost ticked
+box — a filter that looks like it is working and is not. The empty hidden input
+the renderer emits before the boxes is load-bearing for the same feature: it is
+what makes the parameter present-but-empty when everything is unticked, which
+is the only thing distinguishing that from a first visit. Do not "tidy it away"
+— without it, clearing every box re-ticks the defaults on the next render.
+
+**A figure that can only be read one way, and that reading is false, comes off
+the page rather than getting a caveat.** The finance view's Net is income minus
+spending, and income has no `paid_by`/`paid_for` to filter on — so the moment
+the spending side is narrowed, the subtraction is between two things that are
+not comparable. Ticking only "Wife" produced a Net of nearly a whole salary
+reading as *you are up RM 8,870*. The tile and its column are now gated on the
+filter being whole (`netIsMeaningful`). Adding a footnote instead would have
+left the wrong number as the largest thing on the tile.
+
 **A column added to an existing data table is NULL on every row that predates
 it.** `syncSchema` issues a bare `ALTER TABLE … ADD COLUMN` — no `DEFAULT`, no
 backfill — because requiredness is enforced by the validator on the way in, not
@@ -298,7 +325,11 @@ by the constraint. A `default:` in the definition applies to *writes*, not to
 rows already on disk. So SQL in a view that filters on a new boolean has to say
 `COALESCE(col, 0) = 0`, and `col = 0` silently drops every older row. This bit
 `my_treat` on the expenses table, where the bare comparison would have emptied
-the "still owed" panel of exactly the debts it exists to show.
+the "still owed" panel of exactly the debts it exists to show, and it bit
+`paid_by` twice over — once in the `WHERE`, and once in a `GROUP BY`, where
+`COALESCE` in the filter but not the grouping drew a bar with no label at all
+for rows the filter had already counted as `me`. If you COALESCE a column in
+one clause, COALESCE it in all of them.
 
 **Views load after workflows, and a broken view warns instead of aborting the
 boot.** This is the opposite of a bad workflow or a bad table, and deliberately

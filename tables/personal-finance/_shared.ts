@@ -73,6 +73,21 @@ export const SOURCES = ["photo", "pdf", "text", "manual", "import"] as const;
  * **This records how a purchase was paid for, not the settling of it.** Paying
  * the RHB bill, or an Atome instalment, is not an expense — see the note on
  * `PAID_FOR` below and the "what not to log" rule in README.
+ *
+ * ## The company's accounts are named here too
+ *
+ * They sit in the same set rather than in one of their own, because `account`
+ * answers one question — which instrument carried this — and that question has
+ * the same shape whoever owns the instrument. Naming them individually is the
+ * rule above applied consistently: collapsing them into a single `company`
+ * would lose which company account a purchase is on, which is the one thing
+ * this column exists to say.
+ *
+ * `paid_by` on the expenses table is what says *whose money* it was, and it is
+ * the authoritative answer. This column agreeing with it — a `company_*`
+ * account on a `paid_by: company` row — is how it should be, but the pair is
+ * not enforced: the ledger would rather record an odd combination than refuse
+ * a real receipt.
  */
 export const ACCOUNTS = [
   "cash",
@@ -88,8 +103,53 @@ export const ACCOUNTS = [
   "grabpay",
   /** Usually foreign spend, so the `currency` column earns its keep here. */
   "wise",
+  /* The company's own instruments. See `PAID_BY`. */
+  "company_swipey",
+  "company_rhb",
+  "company_mbb",
   "other",
 ] as const;
+
+/**
+ * Whose money actually left.
+ *
+ * The third axis, and the one that was missing. `account` says which
+ * instrument carried the purchase and `paid_for` says who benefited from it;
+ * neither of them says whose pocket it came out of, and for somebody who owns
+ * the company paying the bill, that is a real and separate question.
+ *
+ * ## Why it could not be squeezed into `paid_for`
+ *
+ * It was, and that is the bug this set exists to fix. A company-paid internet
+ * bill logged as `paid_for: company` reads as *"I fronted this for the company
+ * and they owe me"* — so it lands in "Still owed to you" as a debt owed to
+ * you, which is the exact inverse of what happened. The two now decompose
+ * cleanly, and the four combinations all mean something:
+ *
+ *   - `paid_by: me,      paid_for: me`      — ordinary personal spending.
+ *   - `paid_by: me,      paid_for: company` — you fronted a work expense and
+ *     are claiming it back. Outstanding until `reimbursed_cents` catches up.
+ *   - `paid_by: company, paid_for: company` — the company buying its own
+ *     things. Here because you own it, not because it is your spending.
+ *   - `paid_by: company, paid_for: me`      — the company paying for something
+ *     of yours, like the internet at home.
+ *
+ * ## A company-paid row is never a debt, in either direction
+ *
+ * Nothing came out of your pocket, so nothing is owed back to you, and
+ * `reimbursed_cents` stays 0 on these rows — there is no payback to record
+ * when you were never out of pocket in the first place. The other direction —
+ * treating the last combination above as money you owe the company, the way an
+ * accountant would call it a director's drawing — is deliberately *not*
+ * modelled. It is your company; the dashboard shows what it paid for and
+ * leaves it at that.
+ *
+ * This is why the set is two values and not five. Adding `wife` here is a
+ * commit, and it should be one: it would mean the ledger has started recording
+ * purchases that were never yours, which is a decision about what this table
+ * is for rather than a new spelling.
+ */
+export const PAID_BY = ["me", "company"] as const;
 
 /**
  * Who the money was actually for.
@@ -114,15 +174,25 @@ export const ACCOUNTS = [
  * ever paid for as an outstanding debt.
  *
  * That is what `my_treat` on the expenses table is for: set it and the row is
- * simply your spending, still attributed to the person it was for. So "still
- * owed" is every row where `paid_for` is not `me`, `my_treat` is false, and
- * `amount_cents` and `reimbursed_cents` are not equal.
+ * simply your spending, still attributed to the person it was for.
+ *
+ * ## Which makes "still owed" a question about three columns
+ *
+ * A debt is money **you** are out of pocket for, so `paid_by` is the first
+ * term and not an afterthought: the company buying your family dinner leaves
+ * nobody owing you anything, however the other two columns read. In full, a
+ * row is still owed to you when `paid_by` is `me`, `paid_for` is not `me`,
+ * `my_treat` is false, and `amount_cents` and `reimbursed_cents` are not equal.
  */
 export const PAID_FOR = [
   "me",
   "wife",
   "family",
-  /** A work expense you will claim back. These stay outstanding for months. */
+  /**
+   * The company got the benefit. Whether that is a claim you are waiting on
+   * depends on `paid_by`: fronted by you it stays outstanding for months, and
+   * paid by the company itself it was never yours to be owed for.
+   */
   "company",
   "other",
 ] as const;
@@ -139,10 +209,15 @@ export const HELP = {
   account:
     "Which card, wallet or account carried the purchase — not how that card was later " +
     "paid off. A purchase on Atome or a credit card is recorded here in full, once.",
+  paidBy:
+    "Whose money actually left — not who it was for. `me` for anything out of your " +
+    "own pocket, `company` when the company paid the bill directly. A company-paid " +
+    "row is never money owed back to you, so leave reimbursed_cents at 0 on it.",
   paidFor:
     "Who it was really for — not whether they owe you for it. `me` unless you " +
     "fronted it for someone; if you expect it back, the payback goes in " +
-    "reimbursed_cents on this same row, never as income. If you do not, set my_treat.",
+    "reimbursed_cents on this same row, never as income. If you do not, set my_treat. " +
+    "Who benefited is a different question from whose money it was — that is paid_by.",
   // Kept to one sentence because the dashboard renders a bool's help as the
   // label beside its checkbox, where a paragraph does not fit. The longer
   // version of the rule is in the expenses table's own description, which is

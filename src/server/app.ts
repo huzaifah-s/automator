@@ -444,9 +444,16 @@ export function createApp(registry: Registry): Hono {
    * who can fix it, and a shared page shows nothing of the sort — a stack trace
    * on a public URL is a description of the inside of this server.
    */
+  /*
+   * `queries()` and not `query()`, because a `multi` control renders a row of
+   * checkboxes that all submit under the same name — `query()` hands back only
+   * the first of them, which would silently reduce every tickbox row to its
+   * topmost ticked box. Every other control still reads the first value; see
+   * `resolveControls`.
+   */
   const runView = async (
     def: LoadedView,
-    query: Record<string, string | undefined>,
+    query: Record<string, string | string[] | undefined>,
     opts: { isPublic: boolean },
   ): Promise<{ panels: Panel[]; controls: Record<string, string> }> => {
     const controls = resolveControls(def, query);
@@ -500,7 +507,7 @@ export function createApp(registry: Registry): Hono {
     if (!link || !def || !def.shareable) return c.notFound();
 
     noteViewLinkUse(link.id);
-    const { panels, controls } = await runView(def, c.req.query(), { isPublic: true });
+    const { panels, controls } = await runView(def, c.req.queries(), { isPublic: true });
 
     c.header("X-Robots-Tag", "noindex, nofollow");
     // A shared page is a live read of the database, and a proxy holding a copy
@@ -1348,7 +1355,7 @@ export function createApp(registry: Registry): Hono {
       status?: number;
     } = {},
   ) => {
-    const { panels, controls } = await runView(def, c.req.query(), { isPublic: false });
+    const { panels, controls } = await runView(def, c.req.queries(), { isPublic: false });
     return c.html(
       viewPage({
         view: def,
@@ -1935,7 +1942,7 @@ export function createApp(registry: Registry): Hono {
   app.get("/api/views/:name", async (c) => {
     const def = viewRegistry.get(c.req.param("name"));
     if (!def) return c.json({ error: "no such view" }, 404);
-    const { panels, controls } = await runView(def, c.req.query(), { isPublic: false });
+    const { panels, controls } = await runView(def, c.req.queries(), { isPublic: false });
     return c.json({ name: def.name, title: def.title, controls, panels });
   });
 

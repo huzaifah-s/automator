@@ -6,6 +6,94 @@ Entries record the *reasoning*, not just the diff — `git log` already has the
 diff. If a change settled a question, say what was settled and what the losing
 option was, so nobody relitigates it from scratch.
 
+## 2026-09-13
+
+### `paid_by` — whose money left, which is not who it was for
+
+The ledger had two axes for an expense: `account`, which instrument carried it,
+and `paid_for`, who benefited. A company paying its owner's RM18 internet bill
+fits neither, and the only place to put it was `paid_for: company` — which
+means *"I fronted this and they owe me"*. So the "still owed" panel reported an
+RM18 debt the company did not owe, from a row where nothing had left the
+owner's pocket at all. Seven months of "who owes me" would have been wrong in
+the same direction, quietly, for every bill the company settled.
+
+**A third column, `paid_by` (`me` | `company`), and the three now decompose
+cleanly:** `account` is the instrument, `paid_by` is whose money, `paid_for` is
+who benefited. All four combinations of the last two mean something, and the
+internet bill is `account: company_rhb`, `paid_by: company`, `paid_for: me`.
+`company_swipey`, `company_rhb` and `company_mbb` join the accounts set, named
+individually for the reason the personal cards already were — "which account is
+this on" is a question a generic `company` cannot answer.
+
+*What was settled: a company-paid row is not a debt in either direction.* The
+obvious completion is to book the last combination — the company paying for
+something personal — as money the owner owes the company, which is what an
+accountant means by a director's drawing. Rejected: it is a one-person company,
+the money is the same money either way, and the cost is a second debt direction
+in every panel that currently has one. The dashboard shows what the company
+paid for and stops there. Owing *you* still requires `paid_by: me`, which is
+now the first term of the "still owed" query rather than an afterthought.
+
+### `kind: "multi"` — a row of tickboxes, and the two rows the finance page hangs off it
+
+Views had `period`, `select` and `search`: one value each. Asking "what did I
+spend on my wife *and* family" meant a curated option for every combination
+somebody might want, or a `select` per person and a page that could only ever
+answer one at a time.
+
+**`multi` is any subset of a closed set**, resolved to a comma-joined list in
+the declared option order — so the same boxes are the same URL whatever order
+they were clicked, which is what makes a share link stable. `ctx.multi(name)`
+hands the view a `string[]` of values it declared.
+
+*What was settled: nothing ticked means nothing, not everything.* Reading an
+empty set as "no filter" is the shortcut that keeps a page from ever looking
+broken, and it runs the control backwards at one end of its range — unticking
+the last box would put *more* on the page than unticking the second-to-last
+did. Empty renders an empty page whose explanation is the row of empty boxes
+directly above it. It is also `IN ()`, which is not valid SQL, so the
+alternative was never a quieter page — it was a stack trace.
+
+*What this cost:* the view routes now read `c.req.queries()` rather than
+`c.req.query()`, because every ticked box submits under the same name and
+`query()` returns only the first — a filter that looks like it is working and
+is not. And an unticked checkbox submits nothing at all, indistinguishable from
+a first visit, so the renderer emits an empty hidden input before the boxes to
+keep the parameter present once the form has been submitted. Without it,
+clearing every box re-ticks the defaults on the next render.
+
+### The finance page grew two tickbox rows and lost a number
+
+*Whose money* and *For*, both opening fully ticked — the whole picture is the
+right first thing to see, and the split is already visible in the tiles. Plus a
+"Who it was for" breakdown, which answers the wife-and-family question without
+touching a control.
+
+*What was settled: Net comes off the page when the "For" row is narrowed.*
+Income has no `paid_by` or `paid_for` to filter on, so a narrowed spending side
+makes Net a subtraction between two things that are not comparable. Ticking
+only *Wife* produced a Net of nearly a whole salary, reading as *you are up
+RM 8,870*, when all it said was that little was spent on one person. The losing
+option was a footnote: it would have left the wrong number as the largest thing
+on the tile and asked the reader to notice. A figure that invites exactly one
+reading, and that reading is false, is worse than no figure.
+
+Two panels deliberately do not honour the tickboxes and say so on themselves:
+income (it has neither column), and "still owed to you", which is always
+`paid_by: me` because a debt to you can only arise from your own money.
+
+*Caught by running it, not by reading it:* `COALESCE(paid_for, 'me')` in the
+`WHERE` but a bare `paid_for` in the `GROUP BY` drew a bar with no label at all
+for pre-column rows the filter had already counted as `me` — the same
+`ALTER TABLE ADD COLUMN` hazard as `my_treat`, one clause further along. The
+invariant in AGENTS.md now says to COALESCE in every clause, not just the
+filter.
+
+**Deploying this needs a real deploy, not a workflow sync.** `src/` and
+`tables/` both changed, and a data table's schema is applied at boot — so
+`scripts/pull-workflows.sh` will refuse and alert, which is exactly its job.
+
 ## 2026-09-12
 
 ### Views — read-only pages, private by default, shareable by an unguessable link

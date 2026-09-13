@@ -45,7 +45,7 @@
 import { html, raw } from "hono/html";
 import type { HtmlEscapedString } from "hono/utils/html";
 import type { ControlDef, Panel, StatItem, Tone, ViewDef } from "../core/views.ts";
-import { PERIOD_KEYS, PERIOD_LABELS } from "../core/views.ts";
+import { choices, PERIOD_KEYS, PERIOD_LABELS } from "../core/views.ts";
 
 /** The most series one chart may carry. See the header for why it is three. */
 export const MAX_SERIES = 3;
@@ -88,6 +88,20 @@ background:var(--panel);border:1px solid var(--border);color:var(--fg)}
 .vctl select,.vctl input{background:var(--panel);border:1px solid var(--border);color:var(--fg);
 border-radius:8px;padding:7px 11px;font:13px var(--sans);min-width:0}
 .vctl select:focus,.vctl input:focus{outline:none;border-color:var(--accent)}
+/* A tickbox row is one control, so it takes the same label, the same box and
+   the same height as the selects beside it — the boxes live inside the border
+   rather than floating loose on the bar, which is what keeps "Period" and
+   "For" reading as two controls instead of a control and some stray checkboxes. */
+.vctl .vgroup{display:flex;flex-direction:column;gap:3px;min-width:0}
+.vctl .vgroup>span{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.vctl .vgroup>.ticks{display:flex;flex-wrap:wrap;gap:4px 13px;align-items:center;
+background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:6px 11px;
+min-height:33px;box-sizing:border-box}
+.vctl .vgroup:focus-within>.ticks{border-color:var(--accent)}
+.vctl .vtick{flex-direction:row;align-items:center;gap:5px;font:13px var(--sans);cursor:pointer}
+.vctl .vtick>span{font-size:13px;text-transform:none;letter-spacing:0;color:var(--fg)}
+.vctl .vtick>input{width:13px;height:13px;margin:0;padding:0;min-width:0;border-radius:3px;
+accent-color:var(--accent);cursor:pointer}
 
 /* ---- views: panels ---- */
 .vpanel{margin-bottom:18px}
@@ -497,10 +511,36 @@ function renderControl(key: string, control: ControlDef, value: string) {
       </select>
     </label>`;
   }
+  if (control.kind === "multi") {
+    const picked = new Set(value === "" ? [] : value.split(","));
+    return html`<div class="vgroup" role="group" aria-label="${control.label ?? key}">
+      <span>${control.label ?? key}</span>
+      <div class="ticks">
+        <!--
+          Always submitted, and always discarded on the way back in. Without it
+          a form with every box unticked sends no parameter at all and is
+          indistinguishable from a first visit, which would tick the defaults
+          again the moment you cleared them. See the multi branch of
+          resolveControls.
+        -->
+        <input type="hidden" name="${key}" value="" />
+        ${choices(control.options).map(
+          (o) =>
+            html`<label class="vtick">
+              <input
+                type="checkbox"
+                name="${key}"
+                value="${o.value}"
+                ${picked.has(o.value) ? raw("checked") : ""}
+              />
+              <span>${o.label}</span>
+            </label>`,
+        )}
+      </div>
+    </div>`;
+  }
   if (control.kind === "select") {
-    const options = control.options.map((o) =>
-      typeof o === "string" ? { value: o, label: o } : o,
-    );
+    const options = choices(control.options);
     return html`<label>
       <span>${control.label ?? key}</span>
       <select name="${key}">

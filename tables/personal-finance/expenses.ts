@@ -6,7 +6,14 @@ import {
   money,
   text,
 } from "../../src/core/define.ts";
-import { ACCOUNTS, EXPENSE_CATEGORIES, HELP, PAID_FOR, SOURCES } from "./_shared.ts";
+import {
+  ACCOUNTS,
+  EXPENSE_CATEGORIES,
+  HELP,
+  PAID_BY,
+  PAID_FOR,
+  SOURCES,
+} from "./_shared.ts";
 
 /**
  * Money out — one row per *purchase*, however it was captured.
@@ -33,11 +40,28 @@ import { ACCOUNTS, EXPENSE_CATEGORIES, HELP, PAID_FOR, SOURCES } from "./_shared
  * how it was paid — how the balance on that card is later cleared is the
  * card's business, not the ledger's.
  *
+ * ## Three columns, three different questions
+ *
+ * They are easy to mistake for each other and each answers only its own:
+ *
+ *   - `account`  — which card, wallet or bank *instrument* carried it.
+ *   - `paid_by`  — whose *money* left. Yours, or the company's.
+ *   - `paid_for` — who *benefited*.
+ *
+ * The company paying for the internet at home is all three at once:
+ * `account: company_rhb`, `paid_by: company`, `paid_for: me`. Collapsing that
+ * into `paid_for: company` — which is what this table forced before `paid_by`
+ * existed — says you fronted it and are owed for it, and the dashboard duly
+ * reports an RM 18 debt that never existed. See `PAID_BY` in `_shared.ts`.
+ *
  * ## Money you fronted for somebody else
  *
  * Stays one row, with `paid_for` set and the payback recorded here as
  * `reimbursed_cents` — never as a row in `income`. See `PAID_FOR` in
- * `_shared.ts` for why both halves of that matter.
+ * `_shared.ts` for why both halves of that matter. This is a `paid_by: me`
+ * story from beginning to end: a bill the company settled itself never left
+ * you out of pocket, so there is nothing to come back and
+ * `reimbursed_cents` stays 0.
  *
  * ## Your treat
  *
@@ -59,7 +83,10 @@ export default defineTable({
     "fronted for someone else is still one row — set paid_for and put the payback in " +
     "reimbursed_cents on that same row, never as income. paid_for says who it was FOR, " +
     "not that they owe you: if it was your treat and no money is coming back, set " +
-    "my_treat so the row is not reported as an outstanding debt.",
+    "my_treat so the row is not reported as an outstanding debt. paid_by is a SEPARATE " +
+    "question from paid_for — it says whose money left, not who benefited. The company " +
+    "paying for something of yours is paid_by: company with paid_for: me, and it is " +
+    "never a debt in either direction, so leave reimbursed_cents at 0 on it.",
 
   columns: {
     occurred_on: date({ label: "Date", help: HELP.occurredOn }),
@@ -68,6 +95,9 @@ export default defineTable({
     currency: text({ default: "MYR", label: "Currency", help: "ISO code. MYR unless it was spent abroad." }),
     category: enumOf(EXPENSE_CATEGORIES, { label: "Category" }),
     account: enumOf(ACCOUNTS, { label: "Paid with", help: HELP.account }),
+    // Between the instrument and the beneficiary, because that is the order
+    // the three read in on the form: paid with what, by whom, for whom.
+    paid_by: enumOf(PAID_BY, { default: "me", label: "Paid by", help: HELP.paidBy }),
     paid_for: enumOf(PAID_FOR, { default: "me", label: "For", help: HELP.paidFor }),
     my_treat: bool({ default: false, label: "My treat", help: HELP.myTreat }),
     reimbursed_cents: money({ default: 0, label: "Paid back", help: HELP.reimbursed }),

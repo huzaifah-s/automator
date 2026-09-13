@@ -177,6 +177,7 @@ export {
 } from "./views.ts";
 export type {
   BarRow,
+  ChoiceDef,
   ControlDef,
   Panel,
   Period,

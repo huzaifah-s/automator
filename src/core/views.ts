@@ -220,17 +220,53 @@ export interface Period {
   since: number | null;
 }
 
+/** A `select` or `multi` option, before the string shorthand is expanded. */
+export type ChoiceDef = readonly string[] | readonly { value: string; label: string }[];
+
 export type ControlDef =
   | { kind: "period"; label?: string; default?: PeriodKey; options?: readonly PeriodKey[] }
   | {
       kind: "select";
       label?: string;
-      options: readonly string[] | readonly { value: string; label: string }[];
+      options: ChoiceDef;
       default?: string;
       /** Label for the empty choice. Omit to make the control mandatory. */
       all?: string;
     }
+  /**
+   * A row of tickboxes — any subset of a closed set, where a `select` offers
+   * exactly one of it.
+   *
+   * **Nothing ticked means nothing, not everything.** The tempting shortcut is
+   * to read an empty set as "no filter applied", because it keeps a page from
+   * ever looking broken. It is the wrong way round: unticking the last box
+   * would then put *more* on the page than unticking the second-to-last did,
+   * which is a control that runs backwards at one end of its range. Empty
+   * renders an empty page, the reason is the row of empty boxes directly above
+   * it, and `ctx.multi()` hands the view a `[]` it can say so about.
+   *
+   * The value survives the querystring as a comma-joined list in the declared
+   * option order, so two pages with the same boxes ticked are the same URL
+   * whatever order they were clicked in — which is what makes a share link
+   * stable and a browser cache useful.
+   */
+  | {
+      kind: "multi";
+      label?: string;
+      options: ChoiceDef;
+      /**
+       * Ticked when the querystring says nothing at all. Omit for "all of
+       * them", which is the sensible opening state for a filter whose job is
+       * to *narrow* a page rather than to build one up from nothing.
+       */
+      default?: readonly string[];
+    }
   | { kind: "search"; label?: string; placeholder?: string };
+
+/** Expands the string shorthand so both renderer and resolver see one shape. */
+export function choices(options: ChoiceDef): { value: string; label: string }[] {
+  return options.map((o) => (typeof o === "string" ? { value: o, label: o } : o));
+}
 
 /**
  * Resolves a period key against the clock.
@@ -416,6 +452,16 @@ export interface ViewCtx {
   control(name: string): string;
   /** A `period` control, resolved against the clock. */
   period(name: string): Period;
+  /**
+   * A `multi` control's ticked values, in the order the file declared them.
+   *
+   * Every value is one of the declared options — anything else was dropped on
+   * the way in — so these are safe to *bind* as parameters. They are still not
+   * safe to interpolate, and nothing in a view ever interpolates a control
+   * value into SQL. An empty array means the reader unticked everything, and
+   * the view is expected to say so rather than quietly show them the lot.
+   */
+  multi(name: string): string[];
   /** Every resolved control, for building links back to the same page. */
   controls: Record<string, string>;
   /** When this render started, so every panel agrees on "now". */
@@ -455,6 +501,23 @@ export function defineView(def: ViewDef): ViewDef {
     }
     if (control.kind === "select" && control.options.length === 0) {
       throw new Error(`View "${def.name}": control "${key}" is a select with no options`);
+    }
+    if (control.kind === "multi") {
+      if (control.options.length === 0) {
+        throw new Error(`View "${def.name}": control "${key}" is a multi with no options`);
+      }
+      // Caught here rather than shrugged off at resolve time, because a
+      // default that is not an option is a page that silently opens with a
+      // different set ticked than the file says — the kind of wrong that looks
+      // right until somebody compares the two.
+      const values = choices(control.options).map((o) => o.value);
+      for (const picked of control.default ?? []) {
+        if (!values.includes(picked)) {
+          throw new Error(
+            `View "${def.name}": control "${key}" defaults to "${picked}", which is not one of its options`,
+          );
+        }
+      }
     }
   }
   return def;
@@ -531,23 +594,59 @@ const runReader: RunReader = {
  */
 export function resolveControls(
   def: ViewDef,
-  query: Record<string, string | undefined>,
+  query: Record<string, string | string[] | undefined>,
 ): Record<string, string> {
+  /**
+   * Every control but `multi` reads one value, and a repeated parameter is a
+   * malformed link rather than a meaningful one — so the first wins, which is
+   * what `c.req.query()` did before this signature was widened to let a
+   * tickbox row see all of its own boxes.
+   */
+  const one = (raw: string | string[] | undefined): string =>
+    (Array.isArray(raw) ? (raw[0] ?? "") : (raw ?? "")).trim();
+
   const out: Record<string, string> = {};
   for (const [key, control] of Object.entries(def.controls ?? {})) {
-    const given = (query[key] ?? "").trim();
+    const raw = query[key];
     if (control.kind === "period") {
       const offered = control.options ?? PERIOD_KEYS;
       const fallback = control.default ?? offered[0]!;
+      const given = one(raw);
       out[key] = (offered as readonly string[]).includes(given) ? given : fallback;
     } else if (control.kind === "select") {
-      const values = control.options.map((o) => (typeof o === "string" ? o : o.value));
+      const values = choices(control.options).map((o) => o.value);
       const fallback = control.default ?? (control.all !== undefined ? "" : values[0]!);
+      const given = one(raw);
       out[key] = values.includes(given) ? given : fallback;
+    } else if (control.kind === "multi") {
+      const values = choices(control.options).map((o) => o.value);
+      /*
+       * The querystring is absent entirely on a first visit and present-but-
+       * empty when the form was submitted with every box unticked, and those
+       * two have to mean different things — the default set, and nothing.
+       *
+       * An unticked checkbox submits no parameter at all, so the two would be
+       * indistinguishable. What separates them is the empty hidden input the
+       * renderer puts in front of the boxes: it makes the parameter always
+       * present once the form has been submitted, and its own blank value
+       * falls out of the filter below along with anything else unrecognised.
+       * A hand-written `?k=me,company` works for the same reason.
+       */
+      if (raw === undefined) {
+        out[key] = (control.default ?? values).filter((v) => values.includes(v)).join(",");
+        continue;
+      }
+      const given = new Set(
+        (Array.isArray(raw) ? raw : [raw]).flatMap((v) => v.split(",")).map((v) => v.trim()),
+      );
+      // Filtered through the declared order rather than the order they arrived
+      // in, so the same set of boxes is always the same string: one share
+      // link, one cache key, and a stable value to compare against.
+      out[key] = values.filter((v) => given.has(v)).join(",");
     } else {
       // Free text. Capped so a control value cannot become a payload, and
       // views are handed it as data — never spliced into SQL.
-      out[key] = given.slice(0, 120);
+      out[key] = one(raw).slice(0, 120);
     }
   }
   return out;
@@ -599,6 +698,14 @@ export function buildViewCtx(
         throw new Error(`View "${def.name}" has no period control named "${name}"`);
       }
       return periodRange((controls[name] ?? control.default ?? "30d") as PeriodKey, new Date(now));
+    },
+    multi(name) {
+      const control = def.controls?.[name];
+      if (!control || control.kind !== "multi") {
+        throw new Error(`View "${def.name}" has no multi control named "${name}"`);
+      }
+      const value = controls[name] ?? "";
+      return value === "" ? [] : value.split(",");
     },
     controls,
     now,

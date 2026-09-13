@@ -817,10 +817,42 @@ outstanding" answerable.
 dinner and fronting the family dinner are the same `paid_for` and different
 events, so a third column settles it: `my_treat`. Set it and the row is simply
 your spending, still attributed to the person it was for; leave it off and the
-row stays outstanding until `reimbursed_cents` catches up. So what you are
-still owed is every row where `paid_for` is not `me`, `my_treat` is false, and
-the two amounts differ — reading `paid_for` alone reports every meal you ever
-bought somebody as a debt they do not know about.
+row stays outstanding until `reimbursed_cents` catches up — reading `paid_for`
+alone reports every meal you ever bought somebody as a debt they do not know
+about.
+
+**Whose money left is a third question again, and it is `paid_by`.** Three
+columns, three things they each answer and nothing else:
+
+| column | question |
+| --- | --- |
+| `account` | which card, wallet or bank *instrument* carried it |
+| `paid_by` | whose *money* left — `me` or `company` |
+| `paid_for` | who *benefited* |
+
+The case that forced it: your own company pays the RM18 internet bill. Without
+`paid_by` the only place to put that is `paid_for = company`, which says *you
+fronted it and are owed for it* — so an RM18 debt appears that nobody owes.
+With all three columns it is `account = company_rhb`, `paid_by = company`,
+`paid_for = me`, and all four combinations mean something:
+
+```
+paid_by = me       paid_for = me        ordinary personal spending
+paid_by = me       paid_for = company   a claim you are waiting on
+paid_by = company  paid_for = company   the company buying its own things
+paid_by = company  paid_for = me        the company paying for something of yours
+```
+
+A company-paid row is **never a debt in either direction**. Nothing left your
+pocket, so `reimbursed_cents` stays 0 on it; and the reverse — calling it money
+you owe the company, the way an accountant would book a director's drawing — is
+deliberately not modelled. It is your company. The dashboard shows what it paid
+for and leaves it there.
+
+Which makes "still owed to you" a question about three columns: `paid_by` is
+`me`, `paid_for` is not `me`, `my_treat` is false, and the two amounts differ.
+The company buying your family dinner leaves nobody owing you anything,
+however the other two columns read.
 
 Both questions are one `totals` call, because `sum` takes several columns:
 
@@ -880,12 +912,50 @@ export default defineView({
 });
 ```
 
+### Controls
+
+Filters rendered above the panels and resolved from the querystring, so the
+state of the page is the URL and a share link carries whatever its sender was
+looking at. Four kinds:
+
+```ts
+controls: {
+  period: { kind: "period", default: "12m", options: ["7d", "12m", "all"] },
+  cat:    { kind: "select", label: "Category", options: ["food", "rent"], all: "Everything" },
+  who:    { kind: "multi",  label: "For", options: [{ value: "me", label: "Me" }] },
+  q:      { kind: "search", placeholder: "Merchant" },
+}
+```
+
+Read them back with `ctx.period(name)` (resolved against the clock),
+`ctx.multi(name)` (a `string[]`), or `ctx.control(name)` for the other two.
+
+Anything unrecognised falls back to the default rather than being rejected: a
+share link with a stale parameter on it should render the page, not a 400.
+Every value handed to a view is one the file declared — so it is safe to
+*bind*, and still never safe to interpolate.
+
+Two things about `multi` specifically:
+
+- **Nothing ticked means nothing, not everything.** The tempting shortcut is to
+  read an empty set as "no filter", because it keeps a page from ever looking
+  broken. It runs the control backwards at one end of its range: unticking the
+  last box would put *more* on the page than unticking the second-to-last did.
+  `ctx.multi()` hands back `[]` and the view is expected to say so — the reason
+  is the row of empty boxes right above the message.
+- An unticked checkbox submits **no parameter at all**, which is
+  indistinguishable from a first visit. What separates them is an empty hidden
+  input the renderer puts in front of the boxes, so the parameter is always
+  present once the form has been submitted. That is also why the view routes
+  read `c.req.queries()` and not `c.req.query()` — the latter returns only the
+  first value, which would silently reduce a tickbox row to its topmost box.
+
 ### What a view can read
 
 On `ctx`: `table(name)` (the *read* side of a data table — query, count,
 aggregate, get), `tables()`, `runs` (the numbers behind the Executions tab —
 `counts`, `list`, `daily`, `stepHotspots`, `callHotspots`), `control(name)`,
-`period(name)`, `controls`, `now`, and `isPublic`.
+`period(name)`, `multi(name)`, `controls`, `now`, and `isPublic`.
 
 And `ctx.sql` for the queries the other two cannot express — a sum of an
 *expression*, a `substr` of a date to group by month, a union across two
@@ -956,21 +1026,48 @@ you how the month went.
 ### The personal-finance view
 
 `views/personal-finance/overview.ts` is the worked example — money in and out
-by month, spending by category and by account, what is still owed, what needs a
-second look, and the latest rows, all scoped by one period control.
+by month, spending by category, by account and by who it was for, what is still
+owed, what needs a second look, and the latest rows.
 
-Three things in it are the interesting ones. Spending is **net of
-reimbursements** (`amount_cents - reimbursed_cents`) everywhere on the page,
-which is the number the tables say is what you actually spent. "Still owed to
-you" is deliberately **not** bounded by the period — a company claim sits for
-months, and filtering it to *this month* would quietly report the debt as
-settled the moment the calendar turned over — and it reads `my_treat` as well
-as `paid_for`, because only the first says whether the money is coming back.
+Spending is **net of reimbursements** (`amount_cents - reimbursed_cents`)
+everywhere on the page, which is the number the tables say is what you actually
+spent. "Still owed to you" is deliberately **not** bounded by the period — a
+company claim sits for months, and filtering it to *this month* would quietly
+report the debt as settled the moment the calendar turned over — and it reads
+`my_treat` as well as `paid_for`, because only the first says whether the money
+is coming back.
 
 The period defaults to **this month**, which is the question the page is opened
 with, and offers *Today* and *Last 7 days* for the other half of the usage —
 checking what was logged after a day of spending. Whichever one is selected is
 in the URL, so a share link carries the slice its sender was looking at.
+
+**Two tickbox rows on top of it** — *Whose money* (`paid_by`) and *For*
+(`paid_for`) — both opening with everything ticked, because the whole picture
+is the right first thing to see and the split is already visible in the tiles.
+
+The page never adds the two pockets into a single headline. **Net is income
+minus your own spending only**, because a bill the company settled never
+touched your balance and cannot change what is left of it; the company figure
+sits beside it rather than inside it. Three details fall out of taking that
+seriously:
+
+- **Net disappears when the *For* row is narrowed.** Income cannot be filtered,
+  so subtracting a slice of spending from all of income is not a comparison.
+  Ticking only *Wife* was producing a Net of nearly a whole salary reading as
+  "you are up RM 8,870", when all it said was that little was spent on one
+  person. A number that invites one reading, and that reading is false, is
+  worse than no number.
+- **"Still owed to you" is always `paid_by = me`**, whatever is ticked. A debt
+  *to you* can only arise from your own money, so unticking *Mine* cannot turn
+  company-paid rows into debts. It does honour the *For* row, because "what
+  does my wife owe me" is a real question.
+- **Income is never filtered by either row** and says so on the tile, because
+  money arriving has no pocket it left.
+
+Untick everything in a row and you get an empty page saying exactly that,
+rather than the whole ledger back. See `kind: "multi"` under *Controls* for why
+that is the right way round.
 
 ## Approval gates
 

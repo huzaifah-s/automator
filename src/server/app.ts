@@ -231,8 +231,13 @@ export function createApp(registry: Registry): Hono {
     if (method !== "GET" && method !== "HEAD") {
       try {
         raw = await c.req.raw.text();
-      } catch {
-        reject("unreadable body");
+      } catch (err) {
+        // The stream broke before the body arrived: the caller hung up, or a
+        // proxy cut it. The message says which, and is safe to store — it is
+        // ours, not the body's.
+        const why = err instanceof Error ? err.message : String(err);
+        log.warn(`Body for ${wf.name} unreadable — ${why}`);
+        reject("unreadable body", why);
         return c.json({ error: "Could not read request body" }, 400);
       }
     }

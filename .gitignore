@@ -5,3 +5,7 @@ data/
 !.env.example
 *.log
 .DS_Store
+
+# Claude Code per-machine state: approved commands and a preview launch config
+.claude/settings.local.json
+.claude/launch.json

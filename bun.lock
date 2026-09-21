@@ -12,12 +12,12 @@
         "nodemailer": "^7.0.9",
         "openai": "^6.7.0",
         "postgres": "^3.4.7",
+        "typescript": "^5.9.3",
         "zod": "^4.1.12",
       },
       "devDependencies": {
         "@types/bun": "^1.2.24",
         "@types/nodemailer": "^7.0.4",
-        "typescript": "^5.9.3",
       },
     },
   },

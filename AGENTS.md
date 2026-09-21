@@ -29,6 +29,8 @@ There is no test suite. Verify by running the thing (see **Verifying** below).
 src/core/          define · loader · runner · scheduler · poll · db · secrets
                    secret-store · credentials · providers · crypto · redact
                    capture · state · tables · pause · logger · alerts · types
+                   flow (the workflow page's node graph, read from source
+                   with the TypeScript compiler — the one runtime use of it)
 src/cli/           secrets — the write side of the store, run before the loader
 src/integrations/  index (barrel + lazy ctx clients) · http · messaging
                    ai · email · sql · sheets · scrape · oauth
@@ -275,6 +277,18 @@ readonly database*. Do not "simplify" this by running view queries on the main
 handle and trusting the regex, and do not relax the regex on the grounds that
 the handle covers it — the readable error is what stops somebody debugging a
 typo for ten minutes.
+
+**The flow view is static analysis, and it may only ever omit.** `src/core/flow.ts`
+parses a workflow with the TypeScript compiler and walks `run()`; it never
+imports or executes the file. When it cannot follow something — a step behind
+a variable, a helper reached through an object — the answer is a missing node
+or a `{expr}` label and an entry in `notes`, never a guessed one: a graph that
+shows a step the code does not have is worse than one with a gap. Two things
+it depends on that look like tidying targets: `typescript` is a runtime
+dependency now, not a dev one, because the Docker image installs with
+`--production`; and the cache in `flowFor` is keyed on the mtime of every file
+the derivation read, which is what makes an edit to a `_` helper re-draw a
+graph whose workflow hash did not move.
 
 **Nothing from a querystring may be interpolated into a view's SQL.** Values go
 through placeholders; a table's physical name goes through `ctx.from()`, which

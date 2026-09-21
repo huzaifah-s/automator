@@ -4,6 +4,7 @@ import { basicAuth } from "hono/basic-auth";
 import { HTTPException } from "hono/http-exception";
 import { logger as httpLogger } from "hono/logger";
 import { store } from "../core/db.ts";
+import { callersOf, flowFor } from "../core/flow.ts";
 import { log } from "../core/logger.ts";
 import { acceptDelivery, deliver } from "../core/inbox.ts";
 import { alertRejection } from "../core/alerts.ts";
@@ -154,6 +155,9 @@ function resolveRange(q: { range: string; from: string; to: string }): RunRange 
 
 export function createApp(registry: Registry): Hono {
   const app = new Hono();
+  // The same default index.ts uses; the flow reader needs the directory the
+  // files were loaded from, and a LoadedWorkflow only carries the relative path.
+  const workflowsDir = process.env.WORKFLOWS_DIR ?? "./workflows";
 
   if (process.env.LOG_LEVEL === "debug") app.use("*", httpLogger());
 
@@ -683,6 +687,8 @@ export function createApp(registry: Registry): Hono {
         store.lastPoll(wf.name),
         store.ignoredFor(wf.name),
         pausedInfo(wf.name),
+        flowFor(wf, workflowsDir),
+        callersOf(wf.name, registry.all(), workflowsDir),
       ) as any,
     );
   });
@@ -1756,6 +1762,19 @@ export function createApp(registry: Registry): Hono {
         lastAt: new Date(r.last_at).toISOString(),
       })),
     );
+  });
+
+  /**
+   * The node graph read from the workflow's source — the same one the
+   * workflow page draws. Static: what the code can do, not what a run did.
+   */
+  app.get("/api/workflows/:name/flow", (c) => {
+    const wf = registry.get(c.req.param("name"));
+    if (!wf) return c.json({ error: "Unknown workflow" }, 404);
+    return c.json({
+      ...flowFor(wf, workflowsDir),
+      calledBy: callersOf(wf.name, registry.all(), workflowsDir),
+    });
   });
 
   /** Why a workflow's hook is turning callers away, reason by reason. */

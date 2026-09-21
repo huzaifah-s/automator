@@ -3,6 +3,7 @@ import type { HtmlEscapedString } from "hono/utils/html";
 import type { ColumnDef, LoadedTable, Row } from "../core/tables.ts";
 import { formatDuration } from "../core/views.ts";
 import type { LoadedView, Panel } from "../core/views.ts";
+import type { Flow, FlowNode, FlowUse } from "../core/flow.ts";
 import type { ViewLinkRecord } from "../core/types.ts";
 import { VIEW_CSS, renderControls, renderPanels } from "./view-render.ts";
 import type {
@@ -228,6 +229,74 @@ border:1px solid currentColor;white-space:nowrap;text-transform:lowercase}
 .skipped{color:var(--yellow)}
 .tag{font-size:10px;padding:1px 6px;border-radius:5px;background:var(--panel-2);
 border:1px solid var(--border);color:var(--muted);white-space:nowrap}
+
+/* ---- flow ----
+   The n8n view: one column of nodes, top to bottom, read from the source.
+   Nothing is positioned by hand — a loop or a branch is a box around the
+   nodes inside it, and an if with an else splits into two columns. The
+   edges are drawn by each node's ::before, which keeps the markup to a list
+   and means a group's edge lines up with its first child's for free. */
+.flowcard{padding:18px 16px 12px}
+.flow{display:flex;flex-direction:column;align-items:stretch;width:100%}
+.flow>*+*{margin-top:22px;position:relative}
+.flow>*+*::before{content:"";position:absolute;left:50%;top:-22px;height:22px;
+border-left:2px solid var(--border);margin-left:-1px}
+.flow>*+*::after{content:"";position:absolute;left:50%;top:-6px;width:6px;height:6px;
+margin-left:-4px;border-right:2px solid var(--border);border-bottom:2px solid var(--border);
+transform:rotate(45deg)}
+.fnode{display:flex;gap:11px;align-items:flex-start;padding:10px 13px;
+background:var(--panel-2);border:1px solid var(--border);border-radius:10px;
+width:min(100%,460px);margin-left:auto;margin-right:auto;min-width:0}
+.fnode.trigger{border-color:color-mix(in srgb,var(--accent) 55%,var(--border));
+background:var(--accent-soft)}
+.fnode.run{border-style:dashed}
+.fnode .fk{flex:none;width:26px;height:26px;border-radius:7px;display:grid;place-items:center;
+background:var(--panel);border:1px solid var(--border);color:var(--muted)}
+.fnode.trigger .fk{color:var(--accent);border-color:transparent}
+.fnode .fbody{min-width:0;flex:1}
+.fnode b{display:block;font-weight:600;letter-spacing:-.01em;line-height:1.35;word-break:break-word}
+.fnode.action b{font-family:var(--mono);font-weight:500;font-size:12.5px}
+.fnode .fsub{display:block;margin-top:2px;font-family:var(--mono);font-size:11.5px;color:var(--muted);
+line-height:1.5;word-break:break-word}
+.fnode .fsub i{font-style:normal;color:var(--faint)}
+.fnode .fvia{display:block;margin-top:2px;font-size:11px;color:var(--faint)}
+.fnode .fsub a{font-weight:600}
+/* A step's name has a hole in it — lock {page.id} — and the hole reads as a
+   variable, not as text somebody typed. */
+.fnode b em{font-style:normal;color:var(--accent);font-family:var(--mono);font-size:12px;font-weight:500}
+.fnode.gate .fk{border-radius:50%}
+.fnode.gate b{font-family:var(--mono);font-weight:500;font-size:12.5px}
+.fend{display:flex;justify-content:center}
+.fend.inline{justify-content:flex-start;margin-top:6px}
+.fend>span{display:inline-flex;align-items:center;gap:7px;padding:4px 11px;border-radius:20px;
+font-size:12px;font-family:var(--mono);color:var(--muted);border:1px solid var(--border);
+background:var(--panel);max-width:100%;min-width:0}
+.fend>span>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fend.throws>span{color:var(--red);border-color:color-mix(in srgb,var(--red) 45%,var(--border))}
+.fend.leaves>span{border-style:dashed;color:var(--faint)}
+.fend svg{flex:none}
+.fgroup{border:1px dashed var(--border);border-radius:12px;padding:12px 12px 14px;width:100%}
+.fgroup>.fglabel{display:flex;align-items:center;gap:7px;margin:-1px 0 12px;font-size:12px;
+font-weight:600;color:var(--muted);font-family:var(--mono);word-break:break-word}
+.fgroup>.fglabel svg{flex:none;color:var(--faint)}
+.fgroup.loop{border-color:color-mix(in srgb,var(--accent) 40%,var(--border))}
+.fgroup.loop>.fglabel{color:var(--accent)}
+.fgroup.catch{border-color:color-mix(in srgb,var(--yellow) 50%,var(--border))}
+.fgroup.catch>.fglabel{color:var(--yellow)}
+.fsplit{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start}
+.fsplit>div{min-width:0}
+.fsplit .fhead{text-align:center;font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;
+color:var(--faint);font-weight:600;margin-bottom:8px}
+.fcases{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;align-items:start}
+.fcases>div{min-width:0}
+.fcases .fhead{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-bottom:8px;
+text-align:center;word-break:break-word}
+.fside{margin-top:18px;padding-top:14px;border-top:1px solid var(--border-soft)}
+.fside>.fglabel{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--red);
+font-weight:600;margin-bottom:10px;display:flex;align-items:center;gap:6px}
+.fnote{margin:14px 0 0;font-size:12px;color:var(--faint)}
+.fnote code{font-family:var(--mono);font-size:11.5px}
+.fempty{padding:18px;text-align:center;color:var(--muted);font-size:13px}
 
 /* ---- health strip ---- */
 .spark{display:flex;gap:2px;align-items:flex-end;height:16px}
@@ -593,6 +662,9 @@ details.item>summary{flex-wrap:wrap}
    stripe of punctuation. */
 .logline{display:flex;flex-wrap:wrap;gap:2px 9px;padding:7px 14px}
 .logline>:last-child{flex:1 1 100%}
+.fsplit{grid-template-columns:1fr}
+.flowcard{padding:14px 10px 10px}
+.fgroup{padding:10px 8px 12px}
 }
 `;
 
@@ -1503,6 +1575,227 @@ function runsTable(
 
 /* --------------------------------------------------------------- workflow */
 
+/* ------------------------------------------------------------------ flow */
+
+/** What the html tag returns; a nested one may be a promise. */
+type Html = HtmlEscapedString | Promise<HtmlEscapedString>;
+
+const FICON = {
+  trigger: raw(
+    `<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9.5 1 3 9.5h4L6.5 15 13 6.5H9L9.5 1Z"/></svg>`,
+  ),
+  step: raw(
+    `<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" rx="2.5"/></svg>`,
+  ),
+  action: raw(
+    `<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M2.5 8h9M8 4.5 11.5 8 8 11.5"/></svg>`,
+  ),
+  run: raw(
+    `<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M6.5 3.5h6v6M12.5 3.5 6 10M3.5 6.5v6h6"/></svg>`,
+  ),
+  loop: raw(
+    `<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 8a5 5 0 0 1 8.5-3.6M13 8a5 5 0 0 1-8.5 3.6"/><path d="M11.5 1.5v3h-3M4.5 14.5v-3h3"/></svg>`,
+  ),
+  branch: raw(
+    `<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M8 2 14 8 8 14 2 8Z"/></svg>`,
+  ),
+  catch: raw(
+    `<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M8 2.5 14.5 13.5H1.5L8 2.5ZM8 7v3M8 12v.5"/></svg>`,
+  ),
+  end: raw(
+    `<svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-hidden="true"><circle cx="8" cy="8" r="4.5"/></svg>`,
+  ),
+  fail: raw(
+    `<svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>`,
+  ),
+  leaves: raw(
+    `<svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M13 3v4a3 3 0 0 1-3 3H3M6 6.5 3 10l3 3.5"/></svg>`,
+  ),
+};
+
+/**
+ * A step's name with its holes marked: `lock {page.id}` came from a template
+ * literal, and `{page.id}` is a value the run fills in, not words somebody
+ * wrote. The braces are the analyser's — see labelOf() in flow.ts.
+ */
+function flowLabel(label: string) {
+  const parts = label.split(/(\{[^}]*\})/);
+  return parts.map((p) => (p.startsWith("{") ? html`<em>${p}</em>` : html`${p}`));
+}
+
+function flowUses(uses: FlowUse[], runs: string[]) {
+  if (uses.length === 0 && runs.length === 0) return "";
+  return html`<span class="fsub">
+    ${uses.map(
+      (u, i) => html`${i > 0 ? html`<i> · </i>` : ""}${u.name}${u.target ? html` <i>${u.target}</i>` : ""}`,
+    )}
+    ${runs.map(
+      (name, i) =>
+        html`${i > 0 || uses.length > 0 ? html`<i> · </i>` : ""}runs <a href="/workflows/${name}">${name}</a>`,
+    )}
+  </span>`;
+}
+
+/** "via notify()" — the step lives in a helper, not in run() itself. */
+const flowVia = (helper: string | undefined) =>
+  helper ? html`<span class="fvia">in ${helper}()</span>` : "";
+
+function flowNode(node: FlowNode): Html {
+  switch (node.kind) {
+    case "step":
+      return html`<div class="fnode step">
+        <span class="fk">${FICON.step}</span>
+        <div class="fbody"><b>${flowLabel(node.label)}</b>${flowUses(node.uses, node.runs)}${flowVia(node.helper)}</div>
+      </div>`;
+    case "action":
+      return html`<div class="fnode action">
+        <span class="fk">${FICON.action}</span>
+        <div class="fbody">
+          <b>${node.label}${node.uses[0]?.target ? html` <span class="muted">${node.uses[0].target}</span>` : ""}</b>
+          ${node.runs.length ? flowUses([], node.runs) : ""}${flowVia(node.helper)}
+        </div>
+      </div>`;
+    case "run":
+      return html`<div class="fnode run">
+        <span class="fk">${FICON.run}</span>
+        <div class="fbody">
+          <b>run <a href="/workflows/${node.workflow}">${node.workflow}</a></b>
+          <span class="fsub">waits for it, and inherits this run's slot</span>${flowVia(node.helper)}
+        </div>
+      </div>`;
+    case "loop":
+      return html`<div class="fgroup loop">
+        <div class="fglabel">${FICON.loop} ${node.label}</div>
+        ${flowNodes(node.body)}
+      </div>`;
+    case "catch":
+      return html`<div class="fgroup catch">
+        <div class="fglabel">${FICON.catch} ${node.label}</div>
+        ${flowNodes(node.body)}
+      </div>`;
+    case "branch": {
+      // `if (x) return …` — a gate, not a box. One row: the condition, and
+      // where the flow goes when it holds. A box around one pill was the
+      // tallest thing on the page and said the least.
+      const only = node.body[0];
+      if (node.else.length === 0 && node.body.length === 1 && only?.kind === "end") {
+        return html`<div class="fnode gate">
+          <span class="fk">${FICON.branch}</span>
+          <div class="fbody"><b>${node.label}</b>${flowEnd(only, true)}</div>
+        </div>`;
+      }
+      return html`<div class="fgroup branch">
+        <div class="fglabel">${FICON.branch} ${node.label}</div>
+        ${node.else.length > 0
+          ? html`<div class="fsplit">
+              <div><div class="fhead">yes</div>${flowNodes(node.body)}</div>
+              <div><div class="fhead">no</div>${flowNodes(node.else)}</div>
+            </div>`
+          : flowNodes(node.body)}
+      </div>`;
+    }
+    case "switch":
+      return html`<div class="fgroup branch">
+        <div class="fglabel">${FICON.branch} ${node.label}</div>
+        <div class="fcases">
+          ${node.cases.map((c) => html`<div><div class="fhead">${c.label}</div>${flowNodes(c.body)}</div>`)}
+        </div>
+      </div>`;
+    case "end":
+      return flowEnd(node, false);
+  }
+}
+
+/**
+ * Where a path stops. Inside a helper a `return` leaves the helper and the
+ * run carries on after the call; only in run() itself is it the end of the
+ * flow. `inline` is the gate form: the pill sits under its condition.
+ */
+function flowEnd(node: Extract<FlowNode, { kind: "end" }>, inline: boolean): Html {
+  const cls = inline ? "fend inline" : "fend";
+  if (node.helper && !node.throws) {
+    return html`<div class="${cls} leaves">
+      <span>${FICON.leaves}<span>skips the rest of ${node.helper}()</span></span>
+    </div>`;
+  }
+  return html`<div class="${cls} ${node.throws ? "throws" : ""}">
+    <span>${node.throws ? FICON.fail : FICON.end}<span title="${node.label}"
+      >${node.throws ? flowLabel(node.label) : node.label}</span></span>
+  </div>`;
+}
+
+function flowNodes(nodes: FlowNode[]): Html {
+  return html`<div class="flow">${nodes.map(flowNode)}</div>`;
+}
+
+/**
+ * How a run of this workflow begins — its own trigger, plus every workflow
+ * whose flow calls it with `ctx.run()`, which is a way of being started that
+ * the trigger line on the Definition table does not mention.
+ */
+function flowTrigger(wf: LoadedWorkflow, callers: string[]) {
+  const t = wf.trigger;
+  const title =
+    t.kind === "cron"
+      ? html`on a schedule`
+      : t.kind === "poll"
+        ? html`when the poll finds something`
+        : t.kind === "webhook"
+          ? html`when ${t.method ?? "POST"} <em>/hooks/${t.path}</em> arrives`
+          : callers.length > 0
+            ? html`when another workflow runs it`
+            : html`by hand`;
+  const detail =
+    t.kind === "cron" || t.kind === "poll"
+      ? html`${t.expression}${t.tz ? html` <i>${t.tz}</i>` : ""}`
+      : t.kind === "webhook"
+        ? html`${t.filter ? html`filtered <i>·</i> ` : ""}${t.respond === "sync" ? "answers when done" : "answers 202, then runs"}`
+        : html`Run now on this page`;
+  return html`<div class="fnode trigger">
+    <span class="fk">${FICON.trigger}</span>
+    <div class="fbody">
+      <b>${title}</b>
+      <span class="fsub">${detail}</span>
+      ${callers.length > 0
+        ? html`<span class="fsub">also run by
+            ${callers.map((c, i) => html`${i > 0 ? ", " : " "}<a href="/workflows/${c}">${c}</a>`)}</span>`
+        : ""}
+    </div>
+  </div>`;
+}
+
+/**
+ * The Flow section of a workflow page. Read from the file, not from any run:
+ * it is the shape of the code, and the note under it says so, because the
+ * first question is going to be "why does this show a step that no run has".
+ */
+function flowSection(wf: LoadedWorkflow, flow: Flow, callers: string[]) {
+  const helpers = flow.files.filter((f) => f !== wf.file);
+  return html`
+    <h2>Flow</h2>
+    <div class="card flowcard">
+      ${flow.error
+        ? html`<div class="flow">${flowTrigger(wf, callers)}</div>
+            <p class="fempty">Could not read the flow from the source — ${flow.error}.</p>`
+        : html`<div class="flow">${flowTrigger(wf, callers)}${flow.nodes.map(flowNode)}</div>`}
+      ${flow.onFailure && flow.onFailure.length > 0
+        ? html`<div class="fside">
+            <div class="fglabel">${FICON.catch} if the run fails</div>
+            ${flowNodes(flow.onFailure)}
+          </div>`
+        : ""}
+      <p class="fnote">
+        Read from <code>workflows/${wf.file}</code>${
+          helpers.length > 0
+            ? html` and ${helpers.map((f, i) => html`${i > 0 ? ", " : ""}<code>${f}</code>`)}`
+            : ""
+        }. This is every path the code can take, not what one run did — open a run below for that.
+        ${flow.notes.length > 0 ? html`Not followed: ${flow.notes.join("; ")}.` : ""}
+      </p>
+    </div>
+  `;
+}
+
 export function workflowPage(
   wf: LoadedWorkflow,
   next: Date | null,
@@ -1518,6 +1811,9 @@ export function workflowPage(
   ignored: IgnoredRecord[] = [],
   /** The pause an operator put on this one, or null. */
   paused: WorkflowPause | null = null,
+  /** The node graph read from the source, and the workflows that ctx.run() this one. */
+  flow: Flow | null = null,
+  callers: string[] = [],
 ) {
   const disabled = wf.enabled === false;
   const polls = wf.trigger.kind === "poll";
@@ -1584,6 +1880,8 @@ export function workflowPage(
           : ""}
 
       ${wf.description ? html`<p class="muted" style="margin:0 0 4px">${wf.description}</p>` : ""}
+
+      ${flow ? flowSection(wf, flow, callers) : ""}
 
       <h2>Definition</h2>
       <div class="card"><table class="kv"><tbody>

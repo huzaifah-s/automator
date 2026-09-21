@@ -1170,6 +1170,30 @@ run away with your disk. Request *headers* are never captured at all, so
 Set `CAPTURE_DATA=false` to turn observational capture off. Step outputs are
 still stored — resume depends on them.
 
+### The flow — a workflow as a node graph
+
+The top of every workflow page is a **Flow**: the workflow drawn as a column
+of nodes, the way n8n would draw it. The trigger is the first node, each
+`ctx.step()` is a node with what it calls under its name (`http.patch
+api.notion.com`, `telegram.send`), a `for` is a box around the nodes it
+repeats, an `if` is a box or — when all it does is `return` — a single gate
+row, and a `ctx.run()` is a link to the workflow it starts. A workflow built
+by a factory in a `_` file, or one whose steps live in a helper like
+`notify()`, draws the same way; the note under the graph says which files it
+was read from, and a step that came from a helper says so.
+
+It is read from the **source**, not from any run. The runner parses the file
+with the TypeScript compiler and walks `run()`, so the graph is every path the
+code can take — a run page shows the one path a run actually took. That is
+also why a step that no run has ever reached is still on it. The trigger node
+lists the other workflows that `ctx.run()` this one, which the trigger line in
+the Definition table cannot know.
+
+It is best effort, and it errs by leaving things out rather than inventing
+them: a step whose name is computed at runtime shows as `{expr}`, a helper the
+analyser cannot find is skipped, and a name it could not follow is listed in
+the note. `GET /api/workflows/<name>/flow` returns the same graph as JSON.
+
 ### Pausing a workflow from the dashboard
 
 Every row on the **Workflows** tab has an on/off switch, and the workflow page

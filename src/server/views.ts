@@ -250,8 +250,16 @@ min-width:0}
 .fbox[open]>summary .fclose{display:inline}
 .fbox>summary>svg:last-child{color:var(--faint);transition:transform .15s}
 .fbox[open]>summary>svg:last-child{transform:rotate(90deg)}
-.flowin{padding:16px 16px 12px}
-.flegend{display:flex;flex-wrap:wrap;gap:6px 18px;margin:0 0 18px;font-size:12px;color:var(--muted)}
+/* A canvas: the dot grid is what says "diagram" before a single node is
+   read, and the column is held to the width of a node plus a box's padding
+   so a box hugs what is inside it instead of spanning the page. */
+.flowin{padding:16px 16px 12px;
+background-image:radial-gradient(color-mix(in srgb,var(--border) 80%,transparent) 1px,transparent 1.5px);
+background-size:18px 18px;background-position:9px 9px}
+.flowin>.flow,.flowin>.fside{max-width:640px;margin-left:auto;margin-right:auto}
+.flowin>.fside{margin-top:22px}
+.flegend{display:flex;flex-wrap:wrap;gap:6px 6px;margin:0 0 18px;font-size:12px;color:var(--muted)}
+.flegend span{padding:3px 9px 3px 4px;border-radius:20px;background:var(--panel);border:1px solid var(--border-soft)}
 .flegend span{display:inline-flex;align-items:center;gap:7px}
 .flegend .fk{width:20px;height:20px;font-size:11px}
 
@@ -259,17 +267,20 @@ min-width:0}
 .flow{display:flex;flex-direction:column;align-items:stretch;width:100%}
 .flow>*+*{margin-top:22px;position:relative}
 .flow>*+*::before{content:"";position:absolute;left:50%;top:-22px;height:22px;
-border-left:2px solid var(--border);margin-left:-1px}
-.flow>*+*::after{content:"";position:absolute;left:50%;top:-6px;width:6px;height:6px;
-margin-left:-4px;border-right:2px solid var(--border);border-bottom:2px solid var(--border);
-transform:rotate(45deg)}
+border-left:2px solid var(--faint);margin-left:-1px;opacity:.7}
+.flow>*+*::after{content:"";position:absolute;left:50%;top:-7px;width:7px;height:7px;
+margin-left:-4.5px;border-right:2px solid var(--faint);border-bottom:2px solid var(--faint);
+transform:rotate(45deg);opacity:.7}
 
 /* One node. The square on the left is the number for a step and an icon for
    everything else; the small label above the title says which kind it is,
    in words, so nobody has to learn the icons. */
 .fn{display:flex;gap:12px;align-items:flex-start;padding:11px 14px 12px;
 background:var(--panel);border:1px solid var(--border);border-radius:10px;
-width:min(100%,480px);margin-left:auto;margin-right:auto;min-width:0}
+width:min(100%,480px);margin-left:auto;margin-right:auto;min-width:0;
+box-shadow:0 1px 2px rgba(0,0,0,.18),0 6px 18px -12px rgba(0,0,0,.5);
+transition:border-color .12s,transform .12s}
+.fn:hover{border-color:color-mix(in srgb,var(--accent) 45%,var(--border));transform:translateY(-1px)}
 .fk{flex:none;width:28px;height:28px;border-radius:8px;display:grid;place-items:center;
 background:var(--panel-2);border:1px solid var(--border);color:var(--muted);
 font:600 13px/1 var(--sans);font-variant-numeric:tabular-nums}
@@ -282,7 +293,8 @@ color:var(--faint);font-weight:600;margin:1px 0 2px}
 .fn b i{color:var(--muted)}
 .fn b em,.fn code,.fg code,.fthen code{font-family:var(--mono);font-size:12px;font-weight:500;color:var(--accent)}
 .fn b em{font-size:12px}
-.fdoc{margin:4px 0 0;font-size:12.5px;color:var(--muted);line-height:1.45}
+.fdoc{margin:4px 0 0;font-size:12.5px;color:var(--muted);line-height:1.45;
+display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .fthen{margin:5px 0 0;font-size:12.5px;color:var(--fg);line-height:1.45}
 .fthen.bad{color:var(--red)}
 .fthen.quiet{color:var(--faint);font-size:12px;margin-top:2px}
@@ -297,7 +309,8 @@ background:var(--accent-soft);font-family:var(--sans);font-weight:600}
 .fchip svg{flex:none}
 
 /* Kinds, by the colour of the square. */
-.fn.k-trigger{border-color:color-mix(in srgb,var(--accent) 55%,var(--border));background:var(--accent-soft)}
+.fn.k-trigger{border-color:color-mix(in srgb,var(--accent) 55%,var(--border));
+background:linear-gradient(135deg,var(--accent-soft),color-mix(in srgb,var(--accent-soft) 60%,var(--panel)))}
 .fn.k-trigger .fk,.fk.k-trigger{background:var(--accent);border-color:var(--accent);color:#fff}
 .fn.k-trigger .fkind{color:var(--accent)}
 .fn.k-step .fk,.fk.k-step{background:var(--fg);border-color:var(--fg);color:var(--bg)}
@@ -335,7 +348,7 @@ border:1px solid currentColor}
 /* Boxes. A tint says which kind it is from across the room; the label row
    inside repeats it in words. */
 .fg{border:1px solid var(--border);border-radius:12px;padding:12px 12px 12px;width:100%;
-background:var(--sunk)}
+background:color-mix(in srgb,var(--sunk) 88%,transparent)}
 .fg>.fglabel{display:flex;align-items:center;gap:9px;margin:0 0 14px;min-width:0;flex-wrap:wrap}
 .fg>.fglabel .fkind{margin:0;flex:none}
 .fg>.fglabel b{font-weight:600;font-size:13.5px;min-width:0;word-break:break-word;flex:1 1 200px}

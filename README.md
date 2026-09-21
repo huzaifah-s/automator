@@ -1172,22 +1172,27 @@ still stored — resume depends on them.
 
 ### The flow — a workflow as a node graph
 
-The top of every workflow page is a **Flow**: the workflow drawn as a column
-of nodes, the way n8n would draw it. The trigger is the first node, each
-`ctx.step()` is a node with what it calls under its name (`http.patch
-api.notion.com`, `telegram.send`), a `for` is a box around the nodes it
-repeats, an `if` is a box or — when all it does is `return` — a single gate
-row, and a `ctx.run()` is a link to the workflow it starts. A workflow built
-by a factory in a `_` file, or one whose steps live in a helper like
-`notify()`, draws the same way; the note under the graph says which files it
-was read from, and a step that came from a helper says so.
+Under the description on every workflow page is a **Flow** button. Open it
+and the workflow is drawn as a column of nodes, the way n8n would draw it:
+the trigger first, then each `ctx.step()` as a numbered node with the first
+sentence of its comment and what it calls underneath (`http.patch
+api.notion.com`, `telegram.send`), a `for` as a **Loop** box around the nodes
+it repeats, an `if` as a **Check** — a box when there is work inside it, a
+single row when all it does is stop (`If no stage → stop here and return
+{…}`) — and where the run ends or fails. Conditions are put into words where
+the shape allows (`!stage` is "no stage", `pages.length === 0` is "pages is
+empty"); hovering one shows it as written. A `ctx.run()` is a link to the
+workflow it starts, and the trigger node lists the workflows that start this
+one that way. It stays closed until you open it, and remembers that you did.
+
+A workflow built by a factory in a `_` file, or one whose steps live in a
+helper like `notify()`, draws the same way, with the helper's steps boxed
+under its name; the note under the graph says which files it was read from.
 
 It is read from the **source**, not from any run. The runner parses the file
 with the TypeScript compiler and walks `run()`, so the graph is every path the
 code can take — a run page shows the one path a run actually took. That is
-also why a step that no run has ever reached is still on it. The trigger node
-lists the other workflows that `ctx.run()` this one, which the trigger line in
-the Definition table cannot know.
+also why a step that no run has ever reached is still on it.
 
 It is best effort, and it errs by leaving things out rather than inventing
 them: a step whose name is computed at runtime shows as `{expr}`, a helper the

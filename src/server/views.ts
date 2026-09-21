@@ -232,11 +232,30 @@ border:1px solid var(--border);color:var(--muted);white-space:nowrap}
 
 /* ---- flow ----
    The n8n view: one column of nodes, top to bottom, read from the source.
-   Nothing is positioned by hand — a loop or a branch is a box around the
-   nodes inside it, and an if with an else splits into two columns. The
+   Nothing is positioned by hand — a loop or a check is a box around the
+   nodes inside it, and a check with an else splits into two columns. The
    edges are drawn by each node's ::before, which keeps the markup to a list
-   and means a group's edge lines up with its first child's for free. */
-.flowcard{padding:18px 16px 12px}
+   and means a box's edge lines up with its first child's for free.
+   Closed by default: it is the tallest thing on the page and the thing you
+   want least often, so it is a button that remembers being opened. */
+.fbox{background:var(--panel);border:1px solid var(--border);border-radius:10px;margin:14px 0 4px}
+.fbox>summary{display:flex;align-items:center;gap:10px;padding:11px 14px;cursor:pointer;list-style:none;
+min-width:0}
+.fbox>summary::-webkit-details-marker{display:none}
+.fbox>summary:hover{background:var(--panel-2)}
+.fbox[open]>summary{border-bottom:1px solid var(--border-soft)}
+.fbox>summary .ftitle{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+.fbox>summary .fopen,.fbox>summary .fclose{font-size:12px;color:var(--accent);font-weight:600}
+.fbox>summary .fclose,.fbox[open]>summary .fopen{display:none}
+.fbox[open]>summary .fclose{display:inline}
+.fbox>summary>svg:last-child{color:var(--faint);transition:transform .15s}
+.fbox[open]>summary>svg:last-child{transform:rotate(90deg)}
+.flowin{padding:16px 16px 12px}
+.flegend{display:flex;flex-wrap:wrap;gap:6px 18px;margin:0 0 18px;font-size:12px;color:var(--muted)}
+.flegend span{display:inline-flex;align-items:center;gap:7px}
+.flegend .fk{width:20px;height:20px;font-size:11px}
+
+/* The column, and the arrows between siblings. */
 .flow{display:flex;flex-direction:column;align-items:stretch;width:100%}
 .flow>*+*{margin-top:22px;position:relative}
 .flow>*+*::before{content:"";position:absolute;left:50%;top:-22px;height:22px;
@@ -244,57 +263,90 @@ border-left:2px solid var(--border);margin-left:-1px}
 .flow>*+*::after{content:"";position:absolute;left:50%;top:-6px;width:6px;height:6px;
 margin-left:-4px;border-right:2px solid var(--border);border-bottom:2px solid var(--border);
 transform:rotate(45deg)}
-.fnode{display:flex;gap:11px;align-items:flex-start;padding:10px 13px;
-background:var(--panel-2);border:1px solid var(--border);border-radius:10px;
-width:min(100%,460px);margin-left:auto;margin-right:auto;min-width:0}
-.fnode.trigger{border-color:color-mix(in srgb,var(--accent) 55%,var(--border));
-background:var(--accent-soft)}
-.fnode.run{border-style:dashed}
-.fnode .fk{flex:none;width:26px;height:26px;border-radius:7px;display:grid;place-items:center;
-background:var(--panel);border:1px solid var(--border);color:var(--muted)}
-.fnode.trigger .fk{color:var(--accent);border-color:transparent}
-.fnode .fbody{min-width:0;flex:1}
-.fnode b{display:block;font-weight:600;letter-spacing:-.01em;line-height:1.35;word-break:break-word}
-.fnode.action b{font-family:var(--mono);font-weight:500;font-size:12.5px}
-.fnode .fsub{display:block;margin-top:2px;font-family:var(--mono);font-size:11.5px;color:var(--muted);
-line-height:1.5;word-break:break-word}
-.fnode .fsub i{font-style:normal;color:var(--faint)}
-.fnode .fvia{display:block;margin-top:2px;font-size:11px;color:var(--faint)}
-.fnode .fsub a{font-weight:600}
-/* A step's name has a hole in it — lock {page.id} — and the hole reads as a
-   variable, not as text somebody typed. */
-.fnode b em{font-style:normal;color:var(--accent);font-family:var(--mono);font-size:12px;font-weight:500}
-.fnode.gate .fk{border-radius:50%}
-.fnode.gate b{font-family:var(--mono);font-weight:500;font-size:12.5px}
-.fend{display:flex;justify-content:center}
-.fend.inline{justify-content:flex-start;margin-top:6px}
-.fend>span{display:inline-flex;align-items:center;gap:7px;padding:4px 11px;border-radius:20px;
-font-size:12px;font-family:var(--mono);color:var(--muted);border:1px solid var(--border);
-background:var(--panel);max-width:100%;min-width:0}
-.fend>span>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.fend.throws>span{color:var(--red);border-color:color-mix(in srgb,var(--red) 45%,var(--border))}
-.fend.leaves>span{border-style:dashed;color:var(--faint)}
-.fend svg{flex:none}
-.fgroup{border:1px dashed var(--border);border-radius:12px;padding:12px 12px 14px;width:100%}
-.fgroup>.fglabel{display:flex;align-items:center;gap:7px;margin:-1px 0 12px;font-size:12px;
-font-weight:600;color:var(--muted);font-family:var(--mono);word-break:break-word}
-.fgroup>.fglabel svg{flex:none;color:var(--faint)}
-.fgroup.loop{border-color:color-mix(in srgb,var(--accent) 40%,var(--border))}
-.fgroup.loop>.fglabel{color:var(--accent)}
-.fgroup.catch{border-color:color-mix(in srgb,var(--yellow) 50%,var(--border))}
-.fgroup.catch>.fglabel{color:var(--yellow)}
+
+/* One node. The square on the left is the number for a step and an icon for
+   everything else; the small label above the title says which kind it is,
+   in words, so nobody has to learn the icons. */
+.fn{display:flex;gap:12px;align-items:flex-start;padding:11px 14px 12px;
+background:var(--panel);border:1px solid var(--border);border-radius:10px;
+width:min(100%,480px);margin-left:auto;margin-right:auto;min-width:0}
+.fk{flex:none;width:28px;height:28px;border-radius:8px;display:grid;place-items:center;
+background:var(--panel-2);border:1px solid var(--border);color:var(--muted);
+font:600 13px/1 var(--sans);font-variant-numeric:tabular-nums}
+.fn .fbody{min-width:0;flex:1}
+.fkind{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.07em;
+color:var(--faint);font-weight:600;margin:1px 0 2px}
+.fn b{display:block;font-weight:600;letter-spacing:-.01em;line-height:1.35;word-break:break-word;font-size:13.5px}
+.fn b.mono{font-family:var(--mono);font-weight:500;font-size:12.5px}
+.fn b i,.fn b em{font-style:normal}
+.fn b i{color:var(--muted)}
+.fn b em,.fn code,.fg code,.fthen code{font-family:var(--mono);font-size:12px;font-weight:500;color:var(--accent)}
+.fn b em{font-size:12px}
+.fdoc{margin:4px 0 0;font-size:12.5px;color:var(--muted);line-height:1.45}
+.fthen{margin:5px 0 0;font-size:12.5px;color:var(--fg);line-height:1.45}
+.fthen.bad{color:var(--red)}
+.fthen.quiet{color:var(--faint);font-size:12px;margin-top:2px}
+.fchips{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}
+.fchip{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:20px;
+font:12px var(--mono);color:var(--muted);background:var(--panel-2);border:1px solid var(--border-soft);
+max-width:100%;min-width:0;word-break:break-all}
+.fchip i{font-style:normal;color:var(--faint)}
+.fchip.run{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 35%,var(--border));
+background:var(--accent-soft);font-family:var(--sans);font-weight:600}
+.fchip.run:hover{text-decoration:none;border-color:var(--accent)}
+.fchip svg{flex:none}
+
+/* Kinds, by the colour of the square. */
+.fn.k-trigger{border-color:color-mix(in srgb,var(--accent) 55%,var(--border));background:var(--accent-soft)}
+.fn.k-trigger .fk,.fk.k-trigger{background:var(--accent);border-color:var(--accent);color:#fff}
+.fn.k-trigger .fkind{color:var(--accent)}
+.fn.k-step .fk,.fk.k-step{background:var(--fg);border-color:var(--fg);color:var(--bg)}
+.fn.k-run .fk{background:var(--accent-soft);border-color:color-mix(in srgb,var(--accent) 40%,var(--border));color:var(--accent)}
+.fn.k-check .fk,.fk.k-check,.fg.k-check>.fglabel .fk{color:var(--yellow);
+border-color:color-mix(in srgb,var(--yellow) 45%,var(--border));background:color-mix(in srgb,var(--yellow) 12%,var(--panel))}
+.fn.k-check .fkind{color:var(--yellow)}
+.fk.k-loop,.fg.k-loop>.fglabel .fk{color:var(--accent);
+border-color:color-mix(in srgb,var(--accent) 45%,var(--border));background:var(--accent-soft)}
+.fn.k-done .fk,.fk.k-done{color:var(--green);border-color:color-mix(in srgb,var(--green) 45%,var(--border));
+background:color-mix(in srgb,var(--green) 12%,var(--panel))}
+.fn.k-done .fkind{color:var(--green)}
+.fn.k-fail .fk,.fk.k-fail,.fg.k-fail>.fglabel .fk,.fg.k-catch>.fglabel .fk{color:var(--red);
+border-color:color-mix(in srgb,var(--red) 45%,var(--border));background:color-mix(in srgb,var(--red) 12%,var(--panel))}
+.fn.k-fail .fkind,.fg.k-fail>.fglabel .fkind,.fg.k-catch>.fglabel .fkind{color:var(--red)}
+.fn.k-fail b{color:var(--red)}
+.fn.k-leave{border-style:dashed}
+.fn.k-leave b{color:var(--muted);font-weight:500}
+.fn.k-done,.fn.k-fail,.fn.k-leave{padding:9px 14px 10px;width:min(100%,400px)}
+.fn.k-done .fk,.fn.k-fail .fk,.fn.k-leave .fk{width:24px;height:24px;border-radius:50%}
+
+/* Boxes. A tint says which kind it is from across the room; the label row
+   inside repeats it in words. */
+.fg{border:1px solid var(--border);border-radius:12px;padding:12px 12px 12px;width:100%;
+background:var(--sunk)}
+.fg>.fglabel{display:flex;align-items:center;gap:9px;margin:0 0 14px;min-width:0;flex-wrap:wrap}
+.fg>.fglabel .fkind{margin:0;flex:none}
+.fg>.fglabel b{font-weight:600;font-size:13.5px;min-width:0;word-break:break-word;flex:1 1 200px}
+.fg>.fglabel .fdoc{display:inline;font-weight:400}
+.fg>.fgfoot{margin:12px 0 0;text-align:center;font-size:12px;color:var(--faint)}
+.fg.k-check{border-color:color-mix(in srgb,var(--yellow) 40%,var(--border));
+background:color-mix(in srgb,var(--yellow) 4%,var(--sunk))}
+.fg.k-check>.fglabel .fkind{color:var(--yellow)}
+.fg.k-loop{border-color:color-mix(in srgb,var(--accent) 40%,var(--border));
+background:color-mix(in srgb,var(--accent) 4%,var(--sunk))}
+.fg.k-loop>.fglabel .fkind{color:var(--accent)}
+.fg.k-catch,.fg.k-fail{border-color:color-mix(in srgb,var(--red) 35%,var(--border));
+background:color-mix(in srgb,var(--red) 3%,var(--sunk))}
+.fg.k-part{border-style:dashed;background:transparent}
 .fsplit{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start}
 .fsplit>div{min-width:0}
-.fsplit .fhead{text-align:center;font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;
+.fhead{text-align:center;font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;
 color:var(--faint);font-weight:600;margin-bottom:8px}
 .fcases{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;align-items:start}
 .fcases>div{min-width:0}
-.fcases .fhead{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-bottom:8px;
-text-align:center;word-break:break-word}
-.fside{margin-top:18px;padding-top:14px;border-top:1px solid var(--border-soft)}
-.fside>.fglabel{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--red);
-font-weight:600;margin-bottom:10px;display:flex;align-items:center;gap:6px}
-.fnote{margin:14px 0 0;font-size:12px;color:var(--faint)}
+.fcases .fhead{font-family:var(--mono);text-transform:none;letter-spacing:0;font-size:11.5px;
+color:var(--muted);word-break:break-word}
+.fside{margin-top:22px}
+.fnote{margin:16px 0 0;font-size:12px;color:var(--faint);line-height:1.5}
 .fnote code{font-family:var(--mono);font-size:11.5px}
 .fempty{padding:18px;text-align:center;color:var(--muted);font-size:13px}
 
@@ -663,8 +715,10 @@ details.item>summary{flex-wrap:wrap}
 .logline{display:flex;flex-wrap:wrap;gap:2px 9px;padding:7px 14px}
 .logline>:last-child{flex:1 1 100%}
 .fsplit{grid-template-columns:1fr}
-.flowcard{padding:14px 10px 10px}
-.fgroup{padding:10px 8px 12px}
+.flowin{padding:12px 10px 10px}
+.fg{padding:10px 8px 10px}
+.fn{padding:10px 11px 11px;gap:10px}
+.fbox>summary .fopen,.fbox>summary .fclose{display:none}
 }
 `;
 
@@ -695,6 +749,11 @@ const SCRIPT = (seconds: number) => `
     try { return new Set(JSON.parse(localStorage.getItem(CLOSED) || "[]")); }
     catch (e) { return new Set(); }
   };
+  var OPENED = "automator:opened";
+  var openedSet = function () {
+    try { return new Set(JSON.parse(localStorage.getItem(OPENED) || "[]")); }
+    catch (e) { return new Set(); }
+  };
 
   var apply = function () {
     var box = document.getElementById("filter");
@@ -713,6 +772,12 @@ const SCRIPT = (seconds: number) => `
       group.open = needle !== "" ? true : !closed.has(group.dataset.group);
       var badge = group.querySelector("[data-count]");
       if (badge) badge.textContent = shown === rows.length ? rows.length : shown + " / " + rows.length;
+    });
+    // The opposite default to a folder: closed until opened, and the opening
+    // is what is remembered.
+    var opened = openedSet();
+    document.querySelectorAll("details[data-reveal]").forEach(function (d) {
+      d.open = opened.has(d.dataset.reveal);
     });
     var none = document.getElementById("no-matches");
     if (none) none.hidden = needle === "" || document.querySelector("[data-search]:not([hidden])") !== null;
@@ -748,6 +813,14 @@ const SCRIPT = (seconds: number) => `
   // what they had collapsed. A click on a summary is only ever the user, and
   // keyboard activation dispatches one too.
   document.addEventListener("click", function (e) {
+    var reveal = e.target.closest && e.target.closest("details[data-reveal] > summary");
+    if (reveal) {
+      var r = reveal.parentElement;
+      var opened = openedSet();
+      if (r.open) opened.delete(r.dataset.reveal); else opened.add(r.dataset.reveal);
+      try { localStorage.setItem(OPENED, JSON.stringify(Array.from(opened))); } catch (err) {}
+      return;
+    }
     var summary = e.target.closest && e.target.closest("details[data-group] > summary");
     if (!summary) return;
     var d = summary.parentElement;
@@ -1580,38 +1653,36 @@ function runsTable(
 /** What the html tag returns; a nested one may be a promise. */
 type Html = HtmlEscapedString | Promise<HtmlEscapedString>;
 
+const fsvg = (d: string, stroke = true) =>
+  raw(
+    stroke
+      ? `<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`
+      : `<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true">${d}</svg>`,
+  );
+
 const FICON = {
-  trigger: raw(
-    `<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9.5 1 3 9.5h4L6.5 15 13 6.5H9L9.5 1Z"/></svg>`,
-  ),
-  step: raw(
-    `<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" rx="2.5"/></svg>`,
-  ),
-  action: raw(
-    `<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M2.5 8h9M8 4.5 11.5 8 8 11.5"/></svg>`,
-  ),
-  run: raw(
-    `<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M6.5 3.5h6v6M12.5 3.5 6 10M3.5 6.5v6h6"/></svg>`,
-  ),
-  loop: raw(
-    `<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 8a5 5 0 0 1 8.5-3.6M13 8a5 5 0 0 1-8.5 3.6"/><path d="M11.5 1.5v3h-3M4.5 14.5v-3h3"/></svg>`,
-  ),
-  branch: raw(
-    `<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M8 2 14 8 8 14 2 8Z"/></svg>`,
-  ),
-  catch: raw(
-    `<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M8 2.5 14.5 13.5H1.5L8 2.5ZM8 7v3M8 12v.5"/></svg>`,
-  ),
-  end: raw(
-    `<svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor" aria-hidden="true"><circle cx="8" cy="8" r="4.5"/></svg>`,
-  ),
-  fail: raw(
-    `<svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>`,
-  ),
-  leaves: raw(
-    `<svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M13 3v4a3 3 0 0 1-3 3H3M6 6.5 3 10l3 3.5"/></svg>`,
-  ),
+  trigger: fsvg(`<path d="M9.5 1 3 9.5h4L6.5 15 13 6.5H9L9.5 1Z"/>`, false),
+  flow: fsvg(`<rect x="2" y="2" width="5" height="5" rx="1.2"/><rect x="9" y="9" width="5" height="5" rx="1.2"/><path d="M4.5 7v2.5a2 2 0 0 0 2 2H9"/>`),
+  call: fsvg(`<path d="M2.5 8h9M8 4.5 11.5 8 8 11.5"/>`),
+  run: fsvg(`<path d="M6.5 3.5h6v6M12.5 3.5 6 10M3.5 6.5v6h6"/>`),
+  loop: fsvg(`<path d="M3 8a5 5 0 0 1 8.5-3.6M13 8a5 5 0 0 1-8.5 3.6"/><path d="M11.5 1.5v3h-3M4.5 14.5v-3h3"/>`),
+  check: fsvg(`<path d="M8 2 14 8 8 14 2 8Z"/>`),
+  warn: fsvg(`<path d="M8 2.5 14.5 13.5H1.5L8 2.5ZM8 7v3M8 12v.5"/>`),
+  done: fsvg(`<path d="M3 8.5 6.5 12 13 4.5"/>`),
+  fail: fsvg(`<path d="M4 4l8 8M12 4l-8 8"/>`),
+  leave: fsvg(`<path d="M13 3v4a3 3 0 0 1-3 3H3M6 6.5 3 10l3 3.5"/>`),
+  part: fsvg(`<rect x="2" y="3" width="12" height="10" rx="2"/><path d="M2 7h12"/>`),
+  chev: fsvg(`<path d="M5 3l5 5-5 5"/>`),
 };
+
+/**
+ * Reading-order numbering for the nodes that do something. One counter for
+ * the whole graph, boxes included, so "step 4" on the page is the fourth
+ * thing that can happen and not the fourth thing in some box.
+ */
+interface FlowCounter {
+  n: number;
+}
 
 /**
  * A step's name with its holes marked: `lock {page.id}` came from a template
@@ -1623,109 +1694,191 @@ function flowLabel(label: string) {
   return parts.map((p) => (p.startsWith("{") ? html`<em>${p}</em>` : html`${p}`));
 }
 
-function flowUses(uses: FlowUse[], runs: string[]) {
+/** "lock {page.id}" → "Lock {page.id}". A title, not a string in the code. */
+const sentence = (s: string) => (s.length > 0 ? s[0]!.toUpperCase() + s.slice(1) : s);
+
+function flowChips(uses: FlowUse[], runs: string[]) {
   if (uses.length === 0 && runs.length === 0) return "";
-  return html`<span class="fsub">
-    ${uses.map(
-      (u, i) => html`${i > 0 ? html`<i> · </i>` : ""}${u.name}${u.target ? html` <i>${u.target}</i>` : ""}`,
-    )}
-    ${runs.map(
-      (name, i) =>
-        html`${i > 0 || uses.length > 0 ? html`<i> · </i>` : ""}runs <a href="/workflows/${name}">${name}</a>`,
-    )}
-  </span>`;
+  return html`<div class="fchips">
+    ${uses.map((u) => html`<span class="fchip">${u.name}${u.target ? html` <i>${u.target}</i>` : ""}</span>`)}
+    ${runs.map((name) => html`<a class="fchip run" href="/workflows/${name}">${FICON.run} runs ${name}</a>`)}
+  </div>`;
 }
 
-/** "via notify()" — the step lives in a helper, not in run() itself. */
-const flowVia = (helper: string | undefined) =>
-  helper ? html`<span class="fvia">in ${helper}()</span>` : "";
+/** The node itself: icon square, kind label, title, and whatever else. */
+function fnode(cls: string, icon: Html | string, kind: string, body: Html) {
+  return html`<div class="fn ${cls}">
+    <span class="fk">${icon}</span>
+    <div class="fbody"><span class="fkind">${kind}</span>${body}</div>
+  </div>`;
+}
 
-function flowNode(node: FlowNode): Html {
-  switch (node.kind) {
-    case "step":
-      return html`<div class="fnode step">
-        <span class="fk">${FICON.step}</span>
-        <div class="fbody"><b>${flowLabel(node.label)}</b>${flowUses(node.uses, node.runs)}${flowVia(node.helper)}</div>
-      </div>`;
-    case "action":
-      return html`<div class="fnode action">
-        <span class="fk">${FICON.action}</span>
-        <div class="fbody">
-          <b>${node.label}${node.uses[0]?.target ? html` <span class="muted">${node.uses[0].target}</span>` : ""}</b>
-          ${node.runs.length ? flowUses([], node.runs) : ""}${flowVia(node.helper)}
-        </div>
-      </div>`;
-    case "run":
-      return html`<div class="fnode run">
-        <span class="fk">${FICON.run}</span>
-        <div class="fbody">
-          <b>run <a href="/workflows/${node.workflow}">${node.workflow}</a></b>
-          <span class="fsub">waits for it, and inherits this run's slot</span>${flowVia(node.helper)}
-        </div>
-      </div>`;
-    case "loop":
-      return html`<div class="fgroup loop">
-        <div class="fglabel">${FICON.loop} ${node.label}</div>
-        ${flowNodes(node.body)}
-      </div>`;
-    case "catch":
-      return html`<div class="fgroup catch">
-        <div class="fglabel">${FICON.catch} ${node.label}</div>
-        ${flowNodes(node.body)}
-      </div>`;
-    case "branch": {
-      // `if (x) return …` — a gate, not a box. One row: the condition, and
-      // where the flow goes when it holds. A box around one pill was the
-      // tallest thing on the page and said the least.
-      const only = node.body[0];
-      if (node.else.length === 0 && node.body.length === 1 && only?.kind === "end") {
-        return html`<div class="fnode gate">
-          <span class="fk">${FICON.branch}</span>
-          <div class="fbody"><b>${node.label}</b>${flowEnd(only, true)}</div>
-        </div>`;
-      }
-      return html`<div class="fgroup branch">
-        <div class="fglabel">${FICON.branch} ${node.label}</div>
-        ${node.else.length > 0
-          ? html`<div class="fsplit">
-              <div><div class="fhead">yes</div>${flowNodes(node.body)}</div>
-              <div><div class="fhead">no</div>${flowNodes(node.else)}</div>
-            </div>`
-          : flowNodes(node.body)}
-      </div>`;
-    }
-    case "switch":
-      return html`<div class="fgroup branch">
-        <div class="fglabel">${FICON.branch} ${node.label}</div>
-        <div class="fcases">
-          ${node.cases.map((c) => html`<div><div class="fhead">${c.label}</div>${flowNodes(c.body)}</div>`)}
-        </div>
-      </div>`;
-    case "end":
-      return flowEnd(node, false);
-  }
+/** A box around nodes, with its own kind label and title. */
+function fgroup(cls: string, icon: Html, kind: string, title: Html, body: Html, foot?: Html) {
+  return html`<div class="fg ${cls}">
+    <div class="fglabel"><span class="fk">${icon}</span><span class="fkind">${kind}</span><b>${title}</b></div>
+    ${body}
+    ${foot ? html`<div class="fgfoot">${foot}</div>` : ""}
+  </div>`;
 }
 
 /**
  * Where a path stops. Inside a helper a `return` leaves the helper and the
  * run carries on after the call; only in run() itself is it the end of the
- * flow. `inline` is the gate form: the pill sits under its condition.
+ * flow. `after` is the gate form — the sentence under a check's condition —
+ * and the standalone form is a small node of its own.
  */
-function flowEnd(node: Extract<FlowNode, { kind: "end" }>, inline: boolean): Html {
-  const cls = inline ? "fend inline" : "fend";
-  if (node.helper && !node.throws) {
-    return html`<div class="${cls} leaves">
-      <span>${FICON.leaves}<span>skips the rest of ${node.helper}()</span></span>
-    </div>`;
+function flowEnd(node: Extract<FlowNode, { kind: "end" }>, after: boolean): Html {
+  const ret = node.label.startsWith("return")
+    ? node.label === "return"
+      ? html`stop here`
+      : html`stop here and return <code>${node.label.slice("return ".length)}</code>`
+    : node.label.startsWith("fail with ")
+      ? html`fail the run with that error`
+      : html`fail the run: ${flowLabel(node.label.replace(/^fail: /, ""))}`;
+  if (after) {
+    if (node.helper && !node.throws) {
+      return html`<p class="fthen">→ skip the rest of <code>${node.helper}()</code></p>`;
+    }
+    return html`<p class="fthen ${node.throws ? "bad" : ""}">→ ${ret}</p>`;
   }
-  return html`<div class="${cls} ${node.throws ? "throws" : ""}">
-    <span>${node.throws ? FICON.fail : FICON.end}<span title="${node.label}"
-      >${node.throws ? flowLabel(node.label) : node.label}</span></span>
-  </div>`;
+  if (node.helper && !node.throws) {
+    return fnode("k-leave", FICON.leave, "Stops early", html`<b>Skips the rest of <code>${node.helper}()</code></b>`);
+  }
+  if (node.throws) {
+    return fnode("k-fail", FICON.fail, "Fails", html`<b>${flowLabel(node.label.replace(/^fail: /, "").replace(/^fail with (\w+)$/, "with that error"))}</b>`);
+  }
+  return fnode("k-done",
+    FICON.done,
+    "Done",
+    node.label === "return"
+      ? html`<b>The run ends here</b>`
+      : html`<b>Ends, returning <code>${node.label.slice("return ".length)}</code></b>`,
+  );
 }
 
-function flowNodes(nodes: FlowNode[]): Html {
-  return html`<div class="flow">${nodes.map(flowNode)}</div>`;
+function flowNode(node: FlowNode, c: FlowCounter): Html {
+  switch (node.kind) {
+    case "step":
+      c.n++;
+      return fnode("k-step",
+        String(c.n),
+        `Step ${c.n}`,
+        html`<b>${flowLabel(sentence(node.label))}</b>
+          ${node.doc ? html`<p class="fdoc">${node.doc}</p>` : ""}
+          ${flowChips(node.uses, node.runs)}`,
+      );
+    case "action":
+      c.n++;
+      return fnode("k-step",
+        String(c.n),
+        `Step ${c.n} · a direct call`,
+        html`<b class="mono">${node.label}${node.uses[0]?.target ? html` <i>${node.uses[0].target}</i>` : ""}</b>
+          ${flowChips([], node.runs)}`,
+      );
+    case "run":
+      c.n++;
+      return fnode("k-run",
+        String(c.n),
+        `Step ${c.n} · another workflow`,
+        html`<b>Runs <a href="/workflows/${node.workflow}">${node.workflow}</a> and waits for it</b>`,
+      );
+    case "loop":
+      return fgroup("k-loop",
+        FICON.loop,
+        "Loop",
+        html`Repeat for ${node.label}`,
+        flowNodes(node.body, c),
+        html`…then the next one, until there are no more`,
+      );
+    case "catch":
+      return fgroup("k-catch", FICON.warn, "If that fails", html`instead of stopping the run`, flowNodes(node.body, c));
+    case "helper":
+      return fgroup("k-part",
+        FICON.part,
+        "Shared steps",
+        html`<code>${node.name}()</code>${node.doc ? html` <span class="fdoc">— ${node.doc}</span>` : ""}`,
+        flowNodes(node.body, c),
+      );
+    case "branch": {
+      const only = node.body[0];
+      // `if (x) return …` — a gate, not a box. One node: the condition and
+      // where the flow goes when it holds. A box around one pill was the
+      // tallest thing on the page and said the least.
+      if (node.else.length === 0 && node.body.length === 1 && only?.kind === "end") {
+        return fnode("k-check",
+          FICON.check,
+          "Check",
+          html`<b title="${node.code}">If ${node.label}</b>${flowEnd(only, true)}
+            <p class="fthen quiet">otherwise, carry on ↓</p>`,
+        );
+      }
+      return fgroup("k-check",
+        FICON.check,
+        "Check",
+        html`<span title="${node.code}">If ${node.label}</span>`,
+        node.else.length > 0
+          ? html`<div class="fsplit">
+              <div><div class="fhead">yes</div>${flowNodes(node.body, c)}</div>
+              <div><div class="fhead">no</div>${flowNodes(node.else, c)}</div>
+            </div>`
+          : flowNodes(node.body, c),
+        node.else.length > 0
+          ? undefined
+          : node.body[node.body.length - 1]?.kind === "end"
+            ? html`otherwise, carry on below`
+            : html`otherwise this box is skipped`,
+      );
+    }
+    case "switch":
+      return fgroup("k-check",
+        FICON.check,
+        "Check",
+        html`Depending on <code>${node.label.replace(/^switch /, "")}</code>`,
+        html`<div class="fcases">
+          ${node.cases.map((k) => html`<div><div class="fhead">${k.label}</div>${flowNodes(k.body, c)}</div>`)}
+        </div>`,
+      );
+    case "end":
+      return flowEnd(node, false);
+  }
+}
+
+function flowNodes(nodes: FlowNode[], c: FlowCounter): Html {
+  return html`<div class="flow">${nodes.map((n) => flowNode(n, c))}</div>`;
+}
+
+/** How many of each thing, for the closed summary line. */
+function flowCounts(nodes: FlowNode[], acc = { steps: 0, checks: 0, loops: 0 }) {
+  for (const n of nodes) {
+    switch (n.kind) {
+      case "step":
+      case "action":
+      case "run":
+        acc.steps++;
+        break;
+      case "branch":
+        acc.checks++;
+        flowCounts(n.body, acc);
+        flowCounts(n.else, acc);
+        break;
+      case "switch":
+        acc.checks++;
+        for (const k of n.cases) flowCounts(k.body, acc);
+        break;
+      case "loop":
+        acc.loops++;
+        flowCounts(n.body, acc);
+        break;
+      case "catch":
+      case "helper":
+        flowCounts(n.body, acc);
+        break;
+      case "end":
+        break;
+    }
+  }
+  return acc;
 }
 
 /**
@@ -1737,62 +1890,87 @@ function flowTrigger(wf: LoadedWorkflow, callers: string[]) {
   const t = wf.trigger;
   const title =
     t.kind === "cron"
-      ? html`on a schedule`
+      ? html`Starts on a schedule`
       : t.kind === "poll"
-        ? html`when the poll finds something`
+        ? html`Starts when the poll finds something new`
         : t.kind === "webhook"
-          ? html`when ${t.method ?? "POST"} <em>/hooks/${t.path}</em> arrives`
+          ? html`Starts when ${t.method ?? "POST"} <em>/hooks/${t.path}</em> arrives`
           : callers.length > 0
-            ? html`when another workflow runs it`
-            : html`by hand`;
+            ? html`Starts when another workflow runs it`
+            : html`Starts by hand`;
   const detail =
     t.kind === "cron" || t.kind === "poll"
-      ? html`${t.expression}${t.tz ? html` <i>${t.tz}</i>` : ""}`
+      ? html`<code>${t.expression}</code>${t.tz ? html` ${t.tz}` : ""}`
       : t.kind === "webhook"
-        ? html`${t.filter ? html`filtered <i>·</i> ` : ""}${t.respond === "sync" ? "answers when done" : "answers 202, then runs"}`
-        : html`Run now on this page`;
-  return html`<div class="fnode trigger">
-    <span class="fk">${FICON.trigger}</span>
-    <div class="fbody">
-      <b>${title}</b>
-      <span class="fsub">${detail}</span>
+        ? html`${t.filter ? html`deliveries are filtered first · ` : ""}${t.respond === "sync" ? "the caller waits for the result" : "the caller gets 202 straight away"}`
+        : html`the Run now button below`;
+  return fnode("k-trigger",
+    FICON.trigger,
+    "Trigger",
+    html`<b>${title}</b>
+      <p class="fdoc">${detail}</p>
       ${callers.length > 0
-        ? html`<span class="fsub">also run by
-            ${callers.map((c, i) => html`${i > 0 ? ", " : " "}<a href="/workflows/${c}">${c}</a>`)}</span>`
-        : ""}
-    </div>
-  </div>`;
+        ? html`<div class="fchips">
+            ${callers.map((name) => html`<a class="fchip run" href="/workflows/${name}">${FICON.run} also started by ${name}</a>`)}
+          </div>`
+        : ""}`,
+  );
 }
 
 /**
- * The Flow section of a workflow page. Read from the file, not from any run:
- * it is the shape of the code, and the note under it says so, because the
- * first question is going to be "why does this show a step that no run has".
+ * The Flow section of a workflow page: closed by default, opened by a click
+ * that the refresh script remembers per workflow. Read from the file, not
+ * from any run: it is the shape of the code, and the note under it says so,
+ * because the first question is going to be "why does this show a step that
+ * no run has".
  */
 function flowSection(wf: LoadedWorkflow, flow: Flow, callers: string[]) {
   const helpers = flow.files.filter((f) => f !== wf.file);
+  const counts = flowCounts(flow.nodes);
+  const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
+  const summary = flow.error
+    ? "could not be read from the code"
+    : [plural(counts.steps, "step"), counts.checks ? plural(counts.checks, "check") : "", counts.loops ? plural(counts.loops, "loop") : ""]
+        .filter(Boolean)
+        .join(" · ");
+  const c: FlowCounter = { n: 0 };
+
   return html`
-    <h2>Flow</h2>
-    <div class="card flowcard">
-      ${flow.error
-        ? html`<div class="flow">${flowTrigger(wf, callers)}</div>
-            <p class="fempty">Could not read the flow from the source — ${flow.error}.</p>`
-        : html`<div class="flow">${flowTrigger(wf, callers)}${flow.nodes.map(flowNode)}</div>`}
-      ${flow.onFailure && flow.onFailure.length > 0
-        ? html`<div class="fside">
-            <div class="fglabel">${FICON.catch} if the run fails</div>
-            ${flowNodes(flow.onFailure)}
-          </div>`
-        : ""}
-      <p class="fnote">
-        Read from <code>workflows/${wf.file}</code>${
-          helpers.length > 0
-            ? html` and ${helpers.map((f, i) => html`${i > 0 ? ", " : ""}<code>${f}</code>`)}`
-            : ""
-        }. This is every path the code can take, not what one run did — open a run below for that.
-        ${flow.notes.length > 0 ? html`Not followed: ${flow.notes.join("; ")}.` : ""}
-      </p>
-    </div>
+    <details class="fbox" data-reveal="flow:${wf.name}">
+      <summary>
+        <span class="fk">${FICON.flow}</span>
+        <span class="ftitle"><b>Flow</b> <span class="muted">— ${summary}, drawn from the code</span></span>
+        <span class="fopen">show</span><span class="fclose">hide</span>
+        ${FICON.chev}
+      </summary>
+      <div class="flowin">
+        <div class="flegend">
+          <span><i class="fk k-step">1</i> a step, in order</span>
+          <span><i class="fk k-check">${FICON.check}</i> a decision</span>
+          <span><i class="fk k-loop">${FICON.loop}</i> repeats</span>
+          <span><i class="fk k-done">${FICON.done}</i> where it ends</span>
+          <span><i class="fk k-fail">${FICON.fail}</i> where it fails</span>
+        </div>
+        ${flow.error
+          ? html`<div class="flow">${flowTrigger(wf, callers)}</div>
+              <p class="fempty">Could not read the flow from the source — ${flow.error}.</p>`
+          : html`<div class="flow">${flowTrigger(wf, callers)}${flow.nodes.map((n) => flowNode(n, c))}</div>`}
+        ${flow.onFailure && flow.onFailure.length > 0
+          ? html`<div class="fside">
+              ${fgroup("k-fail", FICON.warn, "If the run fails", html`this runs instead, after the last retry`, flowNodes(flow.onFailure, c))}
+            </div>`
+          : ""}
+        <p class="fnote">
+          Read from <code>workflows/${wf.file}</code>${
+            helpers.length > 0
+              ? html` and ${helpers.map((f, i) => html`${i > 0 ? ", " : ""}<code>${f}</code>`)}`
+              : ""
+          }. It shows every path the code can take, not what one run did — open a run below for that.
+          Hover a check to see the condition as written.
+          ${flow.notes.length > 0 ? html`Not followed: ${flow.notes.join("; ")}.` : ""}
+        </p>
+      </div>
+    </details>
   `;
 }
 

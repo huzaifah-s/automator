@@ -36,16 +36,26 @@ export interface FlowUse {
 }
 
 export type FlowNode =
-  /** A `ctx.step()`. */
-  | { kind: "step"; label: string; uses: FlowUse[]; runs: string[]; helper?: string }
+  /** A `ctx.step()`. `doc` is the first sentence of the comment above it. */
+  | { kind: "step"; label: string; doc?: string; uses: FlowUse[]; runs: string[] }
   /** A `ctx.<client>` call outside any step. */
-  | { kind: "action"; label: string; uses: FlowUse[]; runs: string[]; helper?: string }
+  | { kind: "action"; label: string; uses: FlowUse[]; runs: string[] }
   /** A `ctx.run()` outside any step — an edge to another workflow. */
-  | { kind: "run"; workflow: string; helper?: string }
-  | { kind: "branch"; label: string; body: FlowNode[]; else: FlowNode[] }
+  | { kind: "run"; workflow: string }
+  /**
+   * An `if`. `label` is the condition in words where the shape allowed it
+   * ("no stage", "pages is empty"); `code` is the condition as written.
+   */
+  | { kind: "branch"; label: string; code: string; body: FlowNode[]; else: FlowNode[] }
   | { kind: "switch"; label: string; cases: { label: string; body: FlowNode[] }[] }
+  /** A loop. `label` is "each page in pages" or "while …". */
   | { kind: "loop"; label: string; body: FlowNode[] }
   | { kind: "catch"; label: string; body: FlowNode[] }
+  /**
+   * A helper that was followed into and had steps of its own: its nodes,
+   * boxed under its name. `doc` is the first sentence of its comment.
+   */
+  | { kind: "helper"; name: string; doc?: string; body: FlowNode[] }
   /** A `return` (or `throw`). In a helper it leaves the helper, not the run. */
   | { kind: "end"; label: string; helper?: string; throws?: boolean };
 
@@ -118,6 +128,7 @@ function runsWorkflow(nodes: FlowNode[], name: string): boolean {
         return n.cases.some((c) => runsWorkflow(c.body, name));
       case "loop":
       case "catch":
+      case "helper":
         return runsWorkflow(n.body, name);
       case "end":
         return false;
@@ -440,7 +451,13 @@ function walkStatement(a: Analysis, scope: Scope, st: ts.Statement, out: FlowNod
     const body = walkInto(a, scope, st.thenStatement);
     const alt = st.elseStatement ? walkInto(a, scope, st.elseStatement) : [];
     if (body.length || alt.length) {
-      out.push({ kind: "branch", label: `if ${text(scope, st.expression)}`, body, else: alt });
+      out.push({
+        kind: "branch",
+        label: describe(scope, st.expression),
+        code: text(scope, st.expression),
+        body,
+        else: alt,
+      });
     }
     return;
   }
@@ -453,7 +470,7 @@ function walkStatement(a: Analysis, scope: Scope, st: ts.Statement, out: FlowNod
         ? text(scope, st.initializer.declarations[0]?.name ?? st.initializer)
         : text(scope, st.initializer);
       const over = text(scope, st.expression);
-      out.push({ kind: "loop", label: ts.isForOfStatement(st) ? `for each ${item} of ${over}` : `for each key in ${over}`, body });
+      out.push({ kind: "loop", label: ts.isForOfStatement(st) ? `each ${item} in ${over}` : `each key in ${over}`, body });
     }
     return;
   }
@@ -551,12 +568,13 @@ function visitExpression(a: Analysis, scope: Scope, node: ts.Node, out: FlowNode
       const name = node.arguments[0];
       const fn = node.arguments[1];
       const summary = fn ? summarise(a, scope, fn) : { uses: [], runs: [] };
+      const doc = docOf(scope, node);
       out.push({
         kind: "step",
         label: name ? labelOf(scope, name) : "step",
+        ...(doc ? { doc } : {}),
         uses: summary.uses,
         runs: summary.runs,
-        helper: scope.helper ?? undefined,
       });
       return;
     }
@@ -566,14 +584,14 @@ function visitExpression(a: Analysis, scope: Scope, node: ts.Node, out: FlowNode
     if (!ts.isIdentifier(callee)) visitExpression(a, scope, callee, out);
 
     if (path === "ctx.run") {
-      out.push({ kind: "run", workflow: literal(scope, node.arguments[0]) ?? "?", helper: scope.helper ?? undefined });
+      out.push({ kind: "run", workflow: literal(scope, node.arguments[0]) ?? "?" });
       return;
     }
 
     if (path && path.startsWith("ctx.")) {
       const use = useFor(scope, path, node);
       if (use) {
-        out.push({ kind: "action", label: use.name, uses: [use], runs: [], helper: scope.helper ?? undefined });
+        out.push({ kind: "action", label: use.name, uses: [use], runs: [] });
       }
       return;
     }
@@ -604,7 +622,9 @@ function followHelper(a: Analysis, scope: Scope, name: string, call: ts.CallExpr
   const aliases = aliasesForCall(scope, target.fn, call);
   if (aliases.size === 0) return; // not handed ctx or anything from it: not part of the flow
   const nodes = walkFunction(a, target.mod, target.fn, aliases, name, scope.depth + 1, scope.stack);
-  if (hasWork(nodes)) out.push(...nodes);
+  if (!hasWork(nodes)) return;
+  const doc = docOf({ ...scope, mod: target.mod }, target.fn);
+  out.push({ kind: "helper", name, ...(doc ? { doc } : {}), body: nodes });
 }
 
 /**
@@ -641,6 +661,7 @@ function hasWork(nodes: FlowNode[]): boolean {
         return n.cases.some((c) => hasWork(c.body));
       case "loop":
       case "catch":
+      case "helper":
         return hasWork(n.body);
       case "end":
         return false;
@@ -793,6 +814,108 @@ function hostOf(scope: Scope, node: ts.Expression, depth = 0): string | null {
   if (!head || !/^https?:\/\//.test(head)) return null;
   const m = head.match(/^https?:\/\/([^/?#]+)/);
   return m?.[1] ?? null;
+}
+
+/**
+ * A condition in words, for the shapes that have an obvious reading:
+ * `!stage` is "no stage", `pages.length === 0` is "pages is empty",
+ * `a && b` is "a and b". Anything else is the source, which is at least
+ * honest. The reader of the flow is not necessarily the person who wrote the
+ * code, and `!outcome.allOk` asks them to parse a bang.
+ */
+function describe(scope: Scope, expr: ts.Expression): string {
+  const d = (e: ts.Expression): string => describe(scope, e);
+  const plain = (e: ts.Expression) =>
+    ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e);
+
+  if (ts.isParenthesizedExpression(expr) || ts.isAsExpression(expr) || ts.isNonNullExpression(expr)) {
+    return d(expr.expression);
+  }
+
+  if (ts.isPrefixUnaryExpression(expr) && expr.operator === ts.SyntaxKind.ExclamationToken) {
+    const inner = expr.operand;
+    if (ts.isPrefixUnaryExpression(inner) && inner.operator === ts.SyntaxKind.ExclamationToken) {
+      return d(inner.operand);
+    }
+    if (plain(inner)) return `no ${text(scope, inner, 40)}`;
+    return `not ${d(inner)}`;
+  }
+
+  if (ts.isBinaryExpression(expr)) {
+    const op = expr.operatorToken.kind;
+    const K = ts.SyntaxKind;
+    const left = expr.left;
+    const right = expr.right;
+    const isLength = ts.isPropertyAccessExpression(left) && left.name.text === "length";
+    const zero = ts.isNumericLiteral(right) && right.text === "0";
+    if (isLength && zero && (op === K.EqualsEqualsEqualsToken || op === K.EqualsEqualsToken)) {
+      return `${text(scope, (left as ts.PropertyAccessExpression).expression, 40)} is empty`;
+    }
+    if (isLength && zero && (op === K.GreaterThanToken || op === K.ExclamationEqualsEqualsToken)) {
+      return `${text(scope, (left as ts.PropertyAccessExpression).expression, 40)} is not empty`;
+    }
+    const words: Partial<Record<ts.SyntaxKind, string>> = {
+      [K.EqualsEqualsEqualsToken]: "is",
+      [K.EqualsEqualsToken]: "is",
+      [K.ExclamationEqualsEqualsToken]: "is not",
+      [K.ExclamationEqualsToken]: "is not",
+      [K.AmpersandAmpersandToken]: "and",
+      [K.BarBarToken]: "or",
+      [K.GreaterThanToken]: ">",
+      [K.GreaterThanEqualsToken]: "≥",
+      [K.LessThanToken]: "<",
+      [K.LessThanEqualsToken]: "≤",
+      [K.InKeyword]: "in",
+    };
+    const word = words[op];
+    if (word) return `${d(left)} ${word} ${d(right)}`;
+  }
+
+  return text(scope, expr, 48);
+}
+
+/**
+ * The first sentence of the comment above a node — the `//` block or the
+ * `/** *\/` — which in this repository is usually the one line that says
+ * what the step is for. Found from the statement the node sits in, since a
+ * comment attaches to `const x = await ctx.step(…)`, not to the call.
+ */
+function docOf(scope: Scope, node: ts.Node): string | null {
+  let at: ts.Node = node;
+  while (at.parent && !ts.isSourceFile(at.parent) && !ts.isBlock(at.parent)) at = at.parent;
+  const source = scope.mod.sf.text;
+  const ranges = ts.getLeadingCommentRanges(source, at.getFullStart()) ?? [];
+  const last = ranges[ranges.length - 1];
+  if (!last) return null;
+  // Directly above the statement. A comment with a blank line between it and
+  // the code is about something else.
+  if (/\n[ \t]*\n/.test(source.slice(last.end, at.getStart(scope.mod.sf)))) return null;
+
+  // Each `//` line is its own range; the block is the trailing run of them.
+  let first = ranges.length - 1;
+  if (last.kind === ts.SyntaxKind.SingleLineCommentTrivia) {
+    while (first > 0) {
+      const prev = ranges[first - 1]!;
+      const cur = ranges[first]!;
+      if (prev.kind !== last.kind || /\n[ \t]*\n/.test(source.slice(prev.end, cur.pos))) break;
+      first--;
+    }
+  }
+  const body = ranges
+    .slice(first)
+    .map((r) => source.slice(r.pos, r.end))
+    .join("\n")
+    .split("\n")
+    .map((line) => line.replace(/^\s*(\/\*\*?|\*\/|\*|\/\/)\s?/, "").replace(/\s*\*\/\s*$/, "").trimEnd())
+    .join("\n")
+    .trim();
+  if (!body || /^[-=—_ ]{4,}/.test(body)) return null;
+  // The first paragraph, then its first sentence. A JSDoc `@tag` line is not a sentence.
+  const para = body.split(/\n\s*\n/)[0]!.split("\n").filter((l) => !l.startsWith("@")).join(" ").trim();
+  const sentence = para.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? para;
+  const clean = sentence.replace(/\s+/g, " ").replace(/[`*]/g, "");
+  if (clean.length < 8) return null;
+  return clean.length > 160 ? `${clean.slice(0, 159)}…` : clean;
 }
 
 function returnLabel(scope: Scope, expr: ts.Expression | undefined): string {

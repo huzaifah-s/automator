@@ -302,7 +302,15 @@ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hi
 .fchip{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:20px;
 font:12px var(--mono);color:var(--muted);background:var(--panel-2);border:1px solid var(--border-soft);
 max-width:100%;min-width:0;word-break:break-all}
+.fchip{font-family:var(--sans)}
 .fchip i{font-style:normal;color:var(--faint)}
+/* The gates folded into one node: one line per check. */
+.fgates{list-style:none;margin:7px 0 0;padding:0;display:flex;flex-direction:column;gap:5px}
+.fgates li{font-size:12.5px;line-height:1.45;padding-left:14px;text-indent:-14px;color:var(--fg)}
+.fgates li::before{content:"◇";color:var(--yellow);font-size:9px;display:inline-block;width:14px;text-indent:0}
+.fgates .farrow{color:var(--faint);margin:0 2px}
+.fgates .bad{color:var(--red)}
+.fgates code{font-family:var(--mono);font-size:11.5px;color:var(--accent)}
 .fchip.run{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 35%,var(--border));
 background:var(--accent-soft);font-family:var(--sans);font-weight:600}
 .fchip.run:hover{text-decoration:none;border-color:var(--accent)}
@@ -363,6 +371,18 @@ background:color-mix(in srgb,var(--accent) 4%,var(--sunk))}
 .fg.k-catch,.fg.k-fail{border-color:color-mix(in srgb,var(--red) 35%,var(--border));
 background:color-mix(in srgb,var(--red) 3%,var(--sunk))}
 .fg.k-part{border-style:dashed;background:transparent}
+/* A step with stages inside: the step's own line, then its inner column. */
+.fg.k-stepbox{background:var(--panel);
+box-shadow:0 1px 2px rgba(0,0,0,.18),0 6px 18px -12px rgba(0,0,0,.5)}
+.fg.k-stepbox>.fglabel{align-items:flex-start;gap:12px;flex-wrap:nowrap;margin-bottom:12px}
+.fg.k-stepbox>.fglabel .fk{background:var(--fg);border-color:var(--fg);color:var(--bg)}
+.fg.k-stepbox.ran-ok>.fglabel .fk{background:var(--green);border-color:var(--green);color:#fff}
+.fg.k-stepbox.ran-bad>.fglabel .fk{background:var(--red);border-color:var(--red);color:#fff}
+.fg.k-stepbox>.fglabel .fbody{min-width:0;flex:1}
+.fg.k-stepbox>.fglabel b{display:block;font-size:13.5px;flex:none}
+.fg.k-stepbox>.fglabel b em{font-style:normal;font-family:var(--mono);font-size:12px;font-weight:500;color:var(--accent)}
+.fg.k-stepbox>.fglabel .fdoc{display:-webkit-box}
+.fg.k-stepbox>.flow{padding:0 0 0 0;border-top:1px dashed var(--border-soft);padding-top:14px}
 .fsplit{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start}
 .fsplit>div{min-width:0}
 .fhead{text-align:center;font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;
@@ -1717,7 +1737,7 @@ function flowRan(nodes: FlowNode[], trace: Map<FlowNode, RunMark>): boolean {
   return nodes.some((n) => {
     switch (n.kind) {
       case "step":
-        return trace.has(n);
+        return trace.has(n) || (n.body ? flowRan(n.body, trace) : false);
       case "branch":
         return flowRan(n.body, trace) || flowRan(n.else, trace);
       case "switch":
@@ -1756,12 +1776,95 @@ function flowLabel(label: string) {
 /** "lock {page.id}" → "Lock {page.id}". A title, not a string in the code. */
 const sentence = (s: string) => (s.length > 0 ? s[0]!.toUpperCase() + s.slice(1) : s);
 
+/**
+ * What a node touches, as short sentences — "updates Notion", "messages
+ * Telegram" — rather than the call that does it, which is on hover. Two calls
+ * that say the same thing in words are one chip: `graph.facebook.com` and
+ * `rupload.facebook.com` are both "sends to Facebook / Instagram".
+ */
 function flowChips(uses: FlowUse[], runs: string[]) {
   if (uses.length === 0 && runs.length === 0) return "";
+  const seen = new Map<string, string[]>();
+  for (const u of uses) {
+    const key = `${u.verb} ${u.service}`;
+    const raw = `${u.name}${u.target ? ` ${u.target}` : ""}`;
+    const calls = seen.get(key);
+    if (calls) calls.push(raw);
+    else seen.set(key, [raw]);
+  }
   return html`<div class="fchips">
-    ${uses.map((u) => html`<span class="fchip">${u.name}${u.target ? html` <i>${u.target}</i>` : ""}</span>`)}
+    ${[...seen].map(([words, calls]) => {
+      const [verb, ...rest] = words.split(" ");
+      return html`<span class="fchip" title="${calls.join("\n")}"><i>${verb}</i> ${rest.join(" ")}</span>`;
+    })}
     ${runs.map((name) => html`<a class="fchip run" href="/workflows/${name}">${FICON.run} runs ${name}</a>`)}
   </div>`;
+}
+
+/** The services a list of nodes talks to, in first-use order, deduplicated. */
+function flowServices(nodes: FlowNode[], out: string[] = []): string[] {
+  const add = (uses: FlowUse[]) => {
+    for (const u of uses) if (!out.includes(u.service)) out.push(u.service);
+  };
+  for (const n of nodes) {
+    switch (n.kind) {
+      case "step":
+        add(n.uses);
+        if (n.body) flowServices(n.body, out);
+        break;
+      case "action":
+        add(n.uses);
+        break;
+      case "branch":
+        flowServices(n.body, out);
+        flowServices(n.else, out);
+        break;
+      case "switch":
+        for (const c of n.cases) flowServices(c.body, out);
+        break;
+      case "loop":
+      case "catch":
+      case "helper":
+        flowServices(n.body, out);
+        break;
+      case "run":
+      case "end":
+        break;
+    }
+  }
+  return out;
+}
+
+/** The step names in reading order, holes dropped: "lock {page.id}" is "Lock". */
+function flowStepNames(nodes: FlowNode[], out: string[] = []): string[] {
+  for (const n of nodes) {
+    switch (n.kind) {
+      case "step": {
+        const name = sentence(n.label.replace(/\{[^}]*\}/g, "").replace(/\s+/g, " ").trim());
+        if (name && !out.includes(name)) out.push(name);
+        break;
+      }
+      case "run":
+        out.push(`Run ${n.workflow}`);
+        break;
+      case "branch":
+        flowStepNames(n.body, out);
+        flowStepNames(n.else, out);
+        break;
+      case "switch":
+        for (const c of n.cases) flowStepNames(c.body, out);
+        break;
+      case "loop":
+      case "catch":
+      case "helper":
+        flowStepNames(n.body, out);
+        break;
+      case "action":
+      case "end":
+        break;
+    }
+  }
+  return out;
 }
 
 /** The node itself: icon square, kind label, title, and whatever else. */
@@ -1799,10 +1902,16 @@ function flowEnd(node: Extract<FlowNode, { kind: "end" }>, after: boolean): Html
     if (node.helper && !node.throws) {
       return html`<p class="fthen">→ skip the rest of <code>${node.helper}()</code></p>`;
     }
+    if (node.step && !node.throws) {
+      return html`<p class="fthen">→ this step is finished early</p>`;
+    }
     return html`<p class="fthen ${node.throws ? "bad" : ""}">→ ${ret}</p>`;
   }
   if (node.helper && !node.throws) {
     return fnode("k-leave", FICON.leave, "Stops early", html`<b>Skips the rest of <code>${node.helper}()</code></b>`);
+  }
+  if (node.step && !node.throws) {
+    return fnode("k-leave", FICON.leave, "Stops early", html`<b>The step is finished here</b>`);
   }
   if (node.throws) {
     return fnode("k-fail", FICON.fail, "Fails", html`<b>${flowLabel(node.label.replace(/^fail: /, "").replace(/^fail with (\w+)$/, "with that error"))}</b>`);
@@ -1828,26 +1937,34 @@ function flowNode(node: FlowNode, c: FlowCounter): Html {
   switch (node.kind) {
     case "step": {
       c.n++;
+      const n = c.n;
       const mark = c.trace?.get(node);
       const state = !c.trace ? "" : !mark ? " off" : mark.failed > 0 ? " ran-bad" : " ran-ok";
-      return fnode(
-        `k-step${state}`,
-        String(c.n),
-        `Step ${c.n}`,
-        html`<b>${flowLabel(sentence(node.label))}</b>
+      const head = html`<b>${flowLabel(sentence(node.label))}</b>
           ${c.trace ? flowMark(mark) : ""}
           ${node.doc ? html`<p class="fdoc">${node.doc}</p>` : ""}
-          ${flowChips(node.uses, node.runs)}`,
-      );
+          ${flowChips(node.uses, node.runs)}`;
+      if (!node.body) return fnode(`k-step${state}`, String(n), `Step ${n}`, head);
+      // A step with steps inside it is a box: the outer step's own line at
+      // the top, then what happens inside, in order. Numbered as one
+      // sequence, so the first thing inside step 2 is step 3.
+      return html`<div class="fg k-stepbox${state}${off}">
+        <div class="fglabel"><span class="fk">${n}</span><div class="fbody"><span class="fkind">Step ${n} · in stages</span>${head}</div></div>
+        ${flowNodes(node.body, c)}
+        <div class="fgfoot">…and step ${n} is done</div>
+      </div>`;
     }
-    case "action":
+    case "action": {
       c.n++;
+      const use = node.uses[0];
+      const raw = use ? `${use.name}${use.target ? ` ${use.target}` : ""}` : node.label;
       return fnode("k-step",
         String(c.n),
-        `Step ${c.n} · a direct call`,
-        html`<b class="mono">${node.label}${node.uses[0]?.target ? html` <i>${node.uses[0].target}</i>` : ""}</b>
+        `Step ${c.n} · a plain call`,
+        html`<b title="ctx.${raw} — outside any ctx.step(), so the run page does not record it">${use ? html`${sentence(use.verb)} ${use.service}` : node.label}</b>
           ${flowChips([], node.runs)}`,
       );
+    }
     case "run":
       c.n++;
       return fnode("k-run",
@@ -1882,13 +1999,14 @@ function flowNode(node: FlowNode, c: FlowCounter): Html {
           FICON.check,
           "Check",
           html`<b title="${node.code}">If ${node.label}</b>${flowEnd(only, true)}
+            ${node.doc ? html`<p class="fdoc">${node.doc}</p>` : ""}
             <p class="fthen quiet">otherwise, carry on ↓</p>`,
         );
       }
       return fgroup(`k-check${off}`,
         FICON.check,
         "Check",
-        html`<span title="${node.code}">If ${node.label}</span>`,
+        html`<span title="${node.code}">If ${node.label}</span>${node.doc ? html` <span class="fdoc">— ${node.doc}</span>` : ""}`,
         node.else.length > 0
           ? html`<div class="fsplit">
               <div><div class="fhead">yes</div>${flowNodes(node.body, c)}</div>
@@ -1925,6 +2043,9 @@ function flowCounts(nodes: FlowNode[], acc = { steps: 0, checks: 0, loops: 0 }) 
   for (const n of nodes) {
     switch (n.kind) {
       case "step":
+        acc.steps++;
+        if (n.body) flowCounts(n.body, acc);
+        break;
       case "action":
       case "run":
         acc.steps++;
@@ -1958,21 +2079,26 @@ function flowCounts(nodes: FlowNode[], acc = { steps: 0, checks: 0, loops: 0 }) 
  * whose flow calls it with `ctx.run()`, which is a way of being started that
  * the trigger line on the Definition table does not mention.
  */
-function flowTrigger(wf: LoadedWorkflow, callers: string[]) {
+function flowTrigger(wf: LoadedWorkflow, callers: string[], poll: Flow["poll"]) {
   const t = wf.trigger;
+  // "New what, from where" — the fetch's services, when the analyser saw them.
+  const asked = poll ? [...new Set(poll.uses.map((u) => u.service))] : [];
   const title =
     t.kind === "cron"
       ? html`Starts on a schedule`
       : t.kind === "poll"
-        ? html`Starts when the poll finds something new`
+        ? asked.length > 0
+          ? html`Starts when a poll of ${listOf(asked)} finds something new`
+          : html`Starts when the poll finds something new`
         : t.kind === "webhook"
           ? html`Starts when ${t.method ?? "POST"} <em>/hooks/${t.path}</em> arrives`
           : callers.length > 0
             ? html`Starts when another workflow runs it`
             : html`Starts by hand`;
+  const words = t.kind === "cron" || t.kind === "poll" ? cronWords(t.expression) : null;
   const detail =
     t.kind === "cron" || t.kind === "poll"
-      ? html`<code>${t.expression}</code>${t.tz ? html` ${t.tz}` : ""}`
+      ? html`${words ? html`${words} · ` : ""}<code>${t.expression}</code>${t.tz ? html` ${t.tz}` : ""}`
       : t.kind === "webhook"
         ? html`${t.filter ? html`deliveries are filtered first · ` : ""}${t.respond === "sync" ? "the caller waits for the result" : "the caller gets 202 straight away"}`
         : html`the Run now button below`;
@@ -1981,11 +2107,73 @@ function flowTrigger(wf: LoadedWorkflow, callers: string[]) {
     "Trigger",
     html`<b>${title}</b>
       <p class="fdoc">${detail}</p>
+      ${poll ? flowChips(poll.uses.map((u) => (u.name.startsWith("http.") ? { ...u, verb: "asks" } : u)), poll.runs) : ""}
       ${callers.length > 0
         ? html`<div class="fchips">
             ${callers.map((name) => html`<a class="fchip run" href="/workflows/${name}">${FICON.run} also started by ${name}</a>`)}
           </div>`
         : ""}`,
+  );
+}
+
+/**
+ * A cron expression in words, for the shapes a workflow here actually uses:
+ * every N minutes, every hour, a time of day, a time on a weekday. Anything
+ * else is null and the expression stands alone.
+ */
+function cronWords(expr: string): string | null {
+  const [min, hour, dom, mon, dow] = expr.trim().split(/\s+/);
+  if (!min || !hour || dom !== "*" || mon !== "*" || dow === undefined) return null;
+  const every = min.match(/^\*\/(\d+)$/);
+  if (every && hour === "*" && dow === "*") return `every ${every[1]} minutes`;
+  if (min === "*" && hour === "*" && dow === "*") return "every minute";
+  const hourly = hour.match(/^\*\/(\d+)$/);
+  if (/^\d+$/.test(min) && hourly && dow === "*") return `every ${hourly[1]} hours`;
+  if (/^\d+$/.test(min) && hour === "*" && dow === "*") return min === "0" ? "every hour" : `every hour at :${min.padStart(2, "0")}`;
+  if (!/^\d+$/.test(min) || !/^\d+(,\d+)*$/.test(hour)) return null;
+  const times = hour.split(",").map((h) => `${h}:${min.padStart(2, "0")}`);
+  const at = listOf(times);
+  const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  if (dow === "*") return `every day at ${at}`;
+  if (/^\d$/.test(dow)) return `every ${days[Number(dow) % 7]} at ${at}`;
+  if (dow === "1-5") return `weekdays at ${at}`;
+  return null;
+}
+
+/** "Notion", "Notion and Telegram", "Notion, Drive and Telegram". */
+function listOf(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? "";
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
+/** `if (x) return …` / `if (x) throw …` with nothing else: a gate, not a box. */
+function isGate(n: FlowNode): n is Extract<FlowNode, { kind: "branch" }> {
+  return n.kind === "branch" && n.else.length === 0 && n.body.length === 1 && n.body[0]?.kind === "end";
+}
+
+/**
+ * The gates at the very top of run(), folded into one node. Three "check →
+ * fail" boxes before the first step are preconditions — the credentials are
+ * wrong, there is nothing to do — and drawn one by one they were the tallest
+ * thing on the page and the least about the flow. One box, one line each,
+ * the condition as written and the comment above it on hover.
+ */
+function flowGates(gates: Extract<FlowNode, { kind: "branch" }>[]) {
+  return fnode("k-check",
+    FICON.check,
+    "Checked first",
+    html`<b>${gates.length} things must hold before anything runs</b>
+      <ul class="fgates">
+        ${gates.map((g) => {
+          const end = g.body[0] as Extract<FlowNode, { kind: "end" }>;
+          const then = end.throws
+            ? html`<span class="bad">fails: ${flowLabel(end.label.replace(/^fail: /, "").replace(/^fail with \w+$/, "with that error"))}</span>`
+            : end.label === "return"
+              ? html`stops here`
+              : html`stops, returning <code>${end.label.slice("return ".length)}</code>`;
+          return html`<li title="${g.code}${g.doc ? `\n\n${g.doc}` : ""}">If ${g.label} <span class="farrow">→</span> ${then}</li>`;
+        })}
+      </ul>`,
   );
 }
 
@@ -2006,15 +2194,24 @@ function flowSection(
   const trace = run?.marks ?? null;
   const helpers = flow.files.filter((f) => f !== wf.file);
   const counts = flowCounts(flow.nodes);
-  const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
+  // The closed line is the whole story in one breath: the steps by name and
+  // the services they touch. "4 steps · 5 checks" counted boxes; this says
+  // what the workflow does.
+  const names = flowStepNames(flow.nodes);
+  const chain = names.slice(0, 4).join(" → ") + (names.length > 4 ? ` → … (${names.length} steps)` : "");
+  const services = flowServices(flow.nodes, flow.poll ? flow.poll.uses.map((u) => u.service) : []);
   const summary = flow.error
     ? "could not be read from the code"
     : run
       ? `this run's path — ${run.marks.size + run.unplaced.length} of ${counts.steps} steps ran`
-      : [plural(counts.steps, "step"), counts.checks ? plural(counts.checks, "check") : "", counts.loops ? plural(counts.loops, "loop") : ""]
-          .filter(Boolean)
-          .join(" · ");
+      : [chain, services.length ? `talks to ${listOf(services)}` : ""].filter(Boolean).join(" · ");
   const c: FlowCounter = { n: 0, trace };
+  // Leading gates fold into one node; anything after the first non-gate is
+  // drawn as it comes, because by then it is part of the flow.
+  let lead = 0;
+  while (lead < flow.nodes.length && isGate(flow.nodes[lead]!)) lead++;
+  const gates = lead >= 2 ? (flow.nodes.slice(0, lead) as Extract<FlowNode, { kind: "branch" }>[]) : [];
+  const rest = gates.length ? flow.nodes.slice(lead) : flow.nodes;
 
   return html`
     <details class="fbox" data-reveal="flow:${wf.name}">
@@ -2034,9 +2231,9 @@ function flowSection(
           ${trace ? html`<span><i class="fk off">·</i> dimmed — this run did not go there</span>` : ""}
         </div>
         ${flow.error
-          ? html`<div class="flow">${flowTrigger(wf, callers)}</div>
+          ? html`<div class="flow">${flowTrigger(wf, callers, flow.poll)}</div>
               <p class="fempty">Could not read the flow from the source — ${flow.error}.</p>`
-          : html`<div class="flow">${flowTrigger(wf, callers)}${flow.nodes.map((n) => flowNode(n, c))}</div>`}
+          : html`<div class="flow">${flowTrigger(wf, callers, flow.poll)}${gates.length ? flowGates(gates) : ""}${rest.map((n) => flowNode(n, c))}</div>`}
         ${flow.onFailure && flow.onFailure.length > 0
           ? html`<div class="fside">
               ${fgroup("k-fail", FICON.warn, "If the run fails", html`this runs instead, after the last retry`, flowNodes(flow.onFailure, c))}
@@ -2060,7 +2257,7 @@ function flowSection(
               ? html`The graph is every path the code can take; this run's steps are matched onto it by name, so a name two branches share is credited to the first.`
               : html`It shows every path the code can take, not what one run did — open a run for that.`
           }
-          Hover a check to see the condition as written.
+          Hover a check to see the condition as written, and a chip to see the call.
           ${flow.notes.length > 0 ? html`Not followed: ${flow.notes.join("; ")}.` : ""}
         </p>
       </div>

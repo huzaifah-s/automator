@@ -1172,22 +1172,47 @@ still stored — resume depends on them.
 
 ### The flow — a workflow as a node graph
 
-Under the description on every workflow page is a **Flow** button. Open it
-and the workflow is drawn as a column of nodes, the way n8n would draw it:
-the trigger first, then each `ctx.step()` as a numbered node with the first
-sentence of its comment and what it calls underneath (`http.patch
-api.notion.com`, `telegram.send`), a `for` as a **Loop** box around the nodes
-it repeats, an `if` as a **Check** — a box when there is work inside it, a
-single row when all it does is stop (`If no stage → stop here and return
-{…}`) — and where the run ends or fails. Conditions are put into words where
-the shape allows (`!stage` is "no stage", `pages.length === 0` is "pages is
-empty"); hovering one shows it as written. A `ctx.run()` is a link to the
-workflow it starts, and the trigger node lists the workflows that start this
-one that way. It stays closed until you open it, and remembers that you did.
+Under the description on every workflow page is a **Flow** button. Closed,
+its one line is the whole story: the steps by name and the services they
+touch (`Lock → Cross-post → Record → Alert · talks to Notion, Google Drive,
+S3/R2 storage, Facebook / Instagram, Threads and Telegram`). Open it and the
+workflow is drawn as a column of nodes, the way n8n would draw it, for
+someone who has not read the code:
+
+- The **trigger** first, in words — `every 5 minutes`, and for a poll,
+  *what* it polls: `Starts when a poll of Notion finds something new`, read
+  from the trigger's `fetch()`.
+- The `if … throw` / `if … return` guards at the top of `run()` — wrong
+  credentials, nothing to do — folded into one **Checked first** node, one
+  line each, rather than three boxes before the first step.
+- Each `ctx.step()` as a numbered node with the first sentence of its comment
+  and what it does underneath, as short sentences rather than calls:
+  `updates Notion`, `downloads from Google Drive`, `messages Telegram`. The
+  call behind a chip (`http.patch api.notion.com`) is on hover.
+- A step whose callback has steps of its own — `ctx.step("cross-post", () =>
+  crossPost(ctx, …))` where `crossPost` publishes to each platform in a step —
+  is a box **in stages**: its own line at the top, then the steps inside it,
+  numbered in one sequence. The run page records those inner steps under
+  their own names, and the graph now agrees with it.
+- A `for` as a **Loop** box, an `if` as a **Check** — a box when there is
+  work inside it, a single row when all it does is stop — with the comment
+  above the `if` under its condition, and the condition itself put into
+  words where the shape allows (`!stage` is "no stage", `pages.length === 0`
+  is "pages is empty", `(error as AlertedError).alerted` is `error.alerted`).
+  A guard's failure message is shown whole (its first sentence), because
+  that sentence is usually the plainest statement of what the check is for.
+- Where the run ends or fails. A `ctx.run()` is a link to the workflow it
+  starts, and the trigger node lists the workflows that start this one that
+  way.
+
+It stays closed until you open it, and remembers that you did.
 
 A workflow built by a factory in a `_` file, or one whose steps live in a
 helper like `notify()`, draws the same way, with the helper's steps boxed
 under its name; the note under the graph says which files it was read from.
+A helper handed a URL constant — `publish(ctx.http, GRAPH_TH, …)` — keeps the
+service's name three helpers down, which is how the same `publish()` reads as
+Threads on one call and Facebook on the next.
 
 It is read from the **source**, not from any run. The runner parses the file
 with the TypeScript compiler and walks `run()`, so the graph is every path the
@@ -1205,7 +1230,9 @@ first.
 It is best effort, and it errs by leaving things out rather than inventing
 them: a step whose name is computed at runtime shows as `{expr}`, a helper the
 analyser cannot find is skipped, and a name it could not follow is listed in
-the note. `GET /api/workflows/<name>/flow` returns the same graph as JSON.
+the note. `GET /api/workflows/<name>/flow` returns the same graph as JSON —
+every use carries its `verb` and `service` alongside the raw call, and `poll`
+is what the trigger's `fetch()` touches.
 
 ### Pausing a workflow from the dashboard
 

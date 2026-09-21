@@ -33,20 +33,33 @@ export interface FlowUse {
   name: string;
   /** A hostname for http, a key for state. Only when it was a literal. */
   target?: string;
+  /**
+   * The same call in words, for a reader who does not know that
+   * `http.patch api.notion.com` is "updates Notion": `verb` is what it does
+   * and `service` is what it does it to. See `describeUse()`.
+   */
+  verb: string;
+  service: string;
 }
 
 export type FlowNode =
-  /** A `ctx.step()`. `doc` is the first sentence of the comment above it. */
-  | { kind: "step"; label: string; doc?: string; uses: FlowUse[]; runs: string[] }
+  /**
+   * A `ctx.step()`. `doc` is the first sentence of the comment above it.
+   * `body` is present when the step's callback has steps of its own — a
+   * step that calls a helper full of steps — and holds only those: the plain
+   * calls inside are already in `uses`.
+   */
+  | { kind: "step"; label: string; doc?: string; uses: FlowUse[]; runs: string[]; body?: FlowNode[] }
   /** A `ctx.<client>` call outside any step. */
   | { kind: "action"; label: string; uses: FlowUse[]; runs: string[] }
   /** A `ctx.run()` outside any step — an edge to another workflow. */
   | { kind: "run"; workflow: string }
   /**
    * An `if`. `label` is the condition in words where the shape allowed it
-   * ("no stage", "pages is empty"); `code` is the condition as written.
+   * ("no stage", "pages is empty"); `code` is the condition as written;
+   * `doc` is the first sentence of the comment above it, when there is one.
    */
-  | { kind: "branch"; label: string; code: string; body: FlowNode[]; else: FlowNode[] }
+  | { kind: "branch"; label: string; code: string; doc?: string; body: FlowNode[]; else: FlowNode[] }
   | { kind: "switch"; label: string; cases: { label: string; body: FlowNode[] }[] }
   /** A loop. `label` is "each page in pages" or "while …". */
   | { kind: "loop"; label: string; body: FlowNode[] }
@@ -56,11 +69,20 @@ export type FlowNode =
    * boxed under its name. `doc` is the first sentence of its comment.
    */
   | { kind: "helper"; name: string; doc?: string; body: FlowNode[] }
-  /** A `return` (or `throw`). In a helper it leaves the helper, not the run. */
-  | { kind: "end"; label: string; helper?: string; throws?: boolean };
+  /**
+   * A `return` (or `throw`). In a helper it leaves the helper, not the run;
+   * inside a step's callback it ends that step. `helper` names the innermost.
+   */
+  | { kind: "end"; label: string; helper?: string; step?: string; throws?: boolean };
 
 export interface Flow {
   nodes: FlowNode[];
+  /**
+   * What a poll trigger's `fetch()` touches — the query that decides whether
+   * a run happens at all, which is the first thing the workflow does and the
+   * one thing `run()` does not contain. Null for every other trigger.
+   */
+  poll: { uses: FlowUse[]; runs: string[] } | null;
   /** The `onFailure` hook, walked the same way. Null when there is none. */
   onFailure: FlowNode[] | null;
   /** Every file read, relative to the workflows directory. */
@@ -118,6 +140,7 @@ function runsWorkflow(nodes: FlowNode[], name: string): boolean {
   return nodes.some((n) => {
     switch (n.kind) {
       case "step":
+        return n.runs.includes(name) || (n.body ? runsWorkflow(n.body, name) : false);
       case "action":
         return n.runs.includes(name);
       case "run":
@@ -326,22 +349,30 @@ interface Scope {
   /** The function whose body is being walked. A closure defined inside it shares its aliases. */
   fn: FnLike;
   aliases: Map<string, string>;
+  /**
+   * Parameters that were handed a URL: `publish(ctx.http, GRAPH_TH, …)`
+   * binds `base` to graph.threads.net inside `publish`, so `${base}/${id}`
+   * three helpers down still says which service it is.
+   */
+  hosts: Map<string, string>;
   /** The helper being inlined, or null in the run body itself. */
   helper: string | null;
+  /** The step whose callback is being walked, or null outside one. */
+  step: string | null;
   depth: number;
   /** Functions on the inlining stack, so recursion stops. */
   stack: Set<ts.Node>;
 }
 
-const MAX_DEPTH = 5;
+const MAX_DEPTH = 8;
 const LABEL_MAX = 72;
 
 function derive(file: string, root: string): { flow: Flow; paths: string[] } {
   const a = new Analysis(root);
   const rel = (p: string) => p.slice(root.length + 1);
-  const finish = (flow: Omit<Flow, "files" | "notes">): { flow: Flow; paths: string[] } => {
+  const finish = (flow: Omit<Flow, "files" | "notes" | "poll"> & { poll?: Flow["poll"] }): { flow: Flow; paths: string[] } => {
     const paths = [...a.modules.keys()];
-    return { flow: { ...flow, files: paths.map(rel), notes: a.notes }, paths };
+    return { flow: { poll: null, ...flow, files: paths.map(rel), notes: a.notes }, paths };
   };
 
   let mod: Module | null;
@@ -370,7 +401,38 @@ function derive(file: string, root: string): { flow: Flow; paths: string[] } {
     ? walkFunction(a, def.mod, failure, aliasesFor(failure), null, 0, new Set())
     : null;
 
-  return finish({ nodes, onFailure });
+  return finish({ nodes, onFailure, poll: pollFetch(a, def.mod, def.obj) });
+}
+
+/**
+ * The `fetch()` inside `trigger: poll(expr, { fetch })`, summarised the way
+ * a step's callback is. It is not walked into nodes: what it decides is
+ * whether there is a run, and the graph starts at the trigger either way —
+ * but *what it asks* is the answer to "new what, from where?".
+ */
+function pollFetch(a: Analysis, mod: Module, def: ts.ObjectLiteralExpression): Flow["poll"] {
+  const trigger = property(def, "trigger");
+  if (!trigger || !ts.isPropertyAssignment(trigger)) return null;
+  let call: ts.Expression = trigger.initializer;
+  while (ts.isAsExpression(call) || ts.isParenthesizedExpression(call) || ts.isSatisfiesExpression(call)) {
+    call = call.expression;
+  }
+  if (!ts.isCallExpression(call)) return null;
+  const opts = call.arguments.find(ts.isObjectLiteralExpression);
+  if (!opts || !property(opts, "fetch")) return null;
+  const fetch = propertyFn(a, mod, opts, "fetch");
+  if (!fetch) return null;
+  const scope: Scope = {
+    mod,
+    fn: fetch,
+    aliases: aliasesFor(fetch),
+    hosts: new Map(),
+    helper: null,
+    step: null,
+    depth: 0,
+    stack: new Set([fetch]),
+  };
+  return summarise(a, scope, fetch);
 }
 
 /** `run(ctx)` → ctx is ctx; `run({ step, http })` → each name is a path. */
@@ -398,8 +460,10 @@ function walkFunction(
   helper: string | null,
   depth: number,
   stack: Set<ts.Node>,
+  step: string | null = null,
+  hosts: Map<string, string> = new Map(),
 ): FlowNode[] {
-  const scope: Scope = { mod, fn, aliases, helper, depth, stack: new Set(stack).add(fn) };
+  const scope: Scope = { mod, fn, aliases, hosts, helper, step, depth, stack: new Set(stack).add(fn) };
   const out: FlowNode[] = [];
   if (!fn.body) return out;
   if (ts.isBlock(fn.body)) {
@@ -419,8 +483,9 @@ function walkStatements(
 ) {
   statements.forEach((st, i) => {
     // A helper's own final `return` is the helper handing its value back, not
-    // a place the flow stops. The run body's final return is the output.
-    const tail = isBody && scope.helper !== null && i === statements.length - 1;
+    // a place the flow stops — and a step callback's is the step's result.
+    // The run body's final return is the output.
+    const tail = isBody && (scope.helper !== null || scope.step !== null) && i === statements.length - 1;
     if (tail && ts.isReturnStatement(st)) {
       visitExpression(a, scope, st, out);
       return;
@@ -451,10 +516,12 @@ function walkStatement(a: Analysis, scope: Scope, st: ts.Statement, out: FlowNod
     const body = walkInto(a, scope, st.thenStatement);
     const alt = st.elseStatement ? walkInto(a, scope, st.elseStatement) : [];
     if (body.length || alt.length) {
+      const doc = docOf(scope, st);
       out.push({
         kind: "branch",
         label: describe(scope, st.expression),
         code: text(scope, st.expression),
+        ...(doc ? { doc } : {}),
         body,
         else: alt,
       });
@@ -512,19 +579,28 @@ function walkStatement(a: Analysis, scope: Scope, st: ts.Statement, out: FlowNod
 
   if (ts.isReturnStatement(st)) {
     if (st.expression) visitExpression(a, scope, st.expression, out);
-    out.push({ kind: "end", label: returnLabel(scope, st.expression), helper: scope.helper ?? undefined });
+    out.push(leaving(scope, returnLabel(scope, st.expression), false));
     return;
   }
 
   if (ts.isThrowStatement(st)) {
     visitExpression(a, scope, st.expression, out);
-    out.push({ kind: "end", label: throwLabel(scope, st.expression), helper: scope.helper ?? undefined, throws: true });
+    out.push(leaving(scope, throwLabel(scope, st.expression), true));
     return;
   }
 
   // Everything else — an expression, a const, a labelled statement — is only
   // interesting for the calls inside it.
   visitExpression(a, scope, st, out);
+}
+
+/** An `end` node, saying what it leaves: the innermost helper, else the step, else the run. */
+function leaving(scope: Scope, label: string, throws: boolean): FlowNode {
+  const node: FlowNode = { kind: "end", label };
+  if (scope.helper !== null) node.helper = scope.helper;
+  else if (scope.step !== null) node.step = scope.step;
+  if (throws) node.throws = true;
+  return node;
 }
 
 function walkInto(a: Analysis, scope: Scope, st: ts.Statement): FlowNode[] {
@@ -567,14 +643,21 @@ function visitExpression(a: Analysis, scope: Scope, node: ts.Node, out: FlowNode
       // The name and the callback are what matter; the options are not.
       const name = node.arguments[0];
       const fn = node.arguments[1];
+      const label = name ? labelOf(scope, name) : "step";
       const summary = fn ? summarise(a, scope, fn) : { uses: [], runs: [] };
-      const doc = docOf(scope, node);
+      const inner = fn ? stepsInside(a, scope, fn, label) : null;
+      const doc = docOf(scope, node) ?? inner?.doc;
+      // What the step does *itself*: a call that belongs to one of the
+      // steps inside it is drawn there, and drawing it twice says nothing.
+      const within = inner ? usesInside(inner.body) : [];
+      const own = (u: FlowUse) => !within.some((w) => w.name === u.name && w.target === u.target);
       out.push({
         kind: "step",
-        label: name ? labelOf(scope, name) : "step",
+        label,
         ...(doc ? { doc } : {}),
-        uses: summary.uses,
+        uses: inner ? summary.uses.filter(own) : summary.uses,
         runs: summary.runs,
+        ...(inner ? { body: inner.body } : {}),
       });
       return;
     }
@@ -606,6 +689,106 @@ function visitExpression(a: Analysis, scope: Scope, node: ts.Node, out: FlowNode
 }
 
 /**
+ * The steps inside a step's callback — `ctx.step("cross-post", () =>
+ * crossPost(ctx, …))` where `crossPost` publishes to each platform in a step
+ * of its own. Those are real steps, recorded on the run page under their own
+ * names, and a graph that folds them into the outer step's pills disagrees
+ * with the run that shows them. Walked like a helper body, then cut down to
+ * the steps and the shape around them: a plain call in here is already one
+ * of the step's `uses`, and a check that guards nothing but plain calls is
+ * the step's own business. Null when there are no steps inside, which is the
+ * ordinary step.
+ */
+function stepsInside(
+  a: Analysis,
+  scope: Scope,
+  fn: ts.Node,
+  label: string,
+): { body: FlowNode[]; doc?: string } | null {
+  if (!ts.isArrowFunction(fn) && !ts.isFunctionExpression(fn)) return null;
+  if (scope.depth >= MAX_DEPTH) return null;
+  // A closure: it sees the caller's names, so it starts from them.
+  const nodes = walkFunction(a, scope.mod, fn, new Map(scope.aliases), null, scope.depth + 1, scope.stack, label, new Map(scope.hosts));
+  const body = stepsOnly(nodes);
+  if (body.length === 0) return null;
+  // `() => crossPost(ctx, …)` — the callback is the helper, and a box named
+  // after the helper inside a box named after the step says the same thing
+  // twice. The helper's comment becomes the step's, if the step has none.
+  const only = body[0];
+  if (body.length === 1 && only?.kind === "helper") {
+    return { body: only.body, ...(only.doc ? { doc: only.doc } : {}) };
+  }
+  return { body };
+}
+
+/** Every use of every step in a list, at any depth. */
+function usesInside(nodes: FlowNode[], out: FlowUse[] = []): FlowUse[] {
+  for (const n of nodes) {
+    switch (n.kind) {
+      case "step":
+        out.push(...n.uses);
+        if (n.body) usesInside(n.body, out);
+        break;
+      case "action":
+        out.push(...n.uses);
+        break;
+      case "branch":
+        usesInside(n.body, out);
+        usesInside(n.else, out);
+        break;
+      case "switch":
+        for (const c of n.cases) usesInside(c.body, out);
+        break;
+      case "loop":
+      case "catch":
+      case "helper":
+        usesInside(n.body, out);
+        break;
+      case "run":
+      case "end":
+        break;
+    }
+  }
+  return out;
+}
+
+/** The steps in a list and the boxes that hold them; nothing else. */
+function stepsOnly(nodes: FlowNode[]): FlowNode[] {
+  const out: FlowNode[] = [];
+  for (const n of nodes) {
+    switch (n.kind) {
+      case "step":
+      case "run":
+      case "end":
+        out.push(n);
+        break;
+      case "action":
+        break;
+      case "branch": {
+        const body = stepsOnly(n.body);
+        const alt = stepsOnly(n.else);
+        if (body.length || alt.length) out.push({ ...n, body, else: alt });
+        break;
+      }
+      case "switch": {
+        const cases = n.cases.map((c) => ({ ...c, body: stepsOnly(c.body) })).filter((c) => c.body.length);
+        if (cases.length) out.push({ ...n, cases });
+        break;
+      }
+      case "loop":
+      case "catch":
+      case "helper": {
+        const body = stepsOnly(n.body);
+        if (body.length) out.push({ ...n, body });
+        break;
+      }
+    }
+  }
+  // An `end` on its own is a return from a callback with no steps around it.
+  return out.some((n) => n.kind !== "end") ? out : [];
+}
+
+/**
  * Inlines a helper at its call site. Only what it produces survives: a helper
  * that turns out to be pure — a formatter with a `switch` of returns — is
  * dropped whole, because a branch made only of "returns from format()" says
@@ -621,7 +804,8 @@ function followHelper(a: Analysis, scope: Scope, name: string, call: ts.CallExpr
   }
   const aliases = aliasesForCall(scope, target.fn, call);
   if (aliases.size === 0) return; // not handed ctx or anything from it: not part of the flow
-  const nodes = walkFunction(a, target.mod, target.fn, aliases, name, scope.depth + 1, scope.stack);
+  const hosts = hostsForCall(scope, target.fn, call);
+  const nodes = walkFunction(a, target.mod, target.fn, aliases, name, scope.depth + 1, scope.stack, scope.step, hosts);
   if (!hasWork(nodes)) return;
   const doc = docOf({ ...scope, mod: target.mod }, target.fn);
   out.push({ kind: "helper", name, ...(doc ? { doc } : {}), body: nodes });
@@ -642,6 +826,18 @@ function aliasesForCall(scope: Scope, fn: FnLike, call: ts.CallExpression): Map<
     if (path) aliases.set(param.name.text, path);
   });
   return aliases;
+}
+
+/** Parameters bound to the hostname of the URL the caller passed in. */
+function hostsForCall(scope: Scope, fn: FnLike, call: ts.CallExpression): Map<string, string> {
+  const hosts = within(fn, scope.fn) ? new Map(scope.hosts) : new Map<string, string>();
+  fn.parameters.forEach((param, i) => {
+    const arg = call.arguments[i];
+    if (!arg || !ts.isIdentifier(param.name)) return;
+    const host = hostOf(scope, arg);
+    if (host) hosts.set(param.name.text, host);
+  });
+  return hosts;
 }
 
 function within(node: ts.Node, ancestor: ts.Node): boolean {
@@ -682,7 +878,12 @@ function summarise(a: Analysis, scope: Scope, fn: ts.Node): { uses: FlowUse[]; r
   return { uses, runs };
 }
 
-function collect(a: Analysis, scope: Scope, node: ts.Node, uses: FlowUse[], runs: string[], seen: Set<ts.Node>) {
+/**
+ * `seen` is keyed on the helper *and* the hosts it was handed: `publish(…,
+ * GRAPH_FB)` and `publish(…, GRAPH_TH)` are the same function and two
+ * different services, and walking it once would lose one of them.
+ */
+function collect(a: Analysis, scope: Scope, node: ts.Node, uses: FlowUse[], runs: string[], seen: Set<string>) {
   const visit = (n: ts.Node) => {
     if (ts.isCallExpression(n)) {
       const path = pathOf(scope, n.expression);
@@ -694,11 +895,13 @@ function collect(a: Analysis, scope: Scope, node: ts.Node, uses: FlowUse[], runs
         if (use && !uses.some((u) => u.name === use.name && u.target === use.target)) uses.push(use);
       } else if (ts.isIdentifier(n.expression)) {
         const target = a.fn(scope.mod, n.expression.text);
-        if (target && !seen.has(target.fn) && !scope.stack.has(target.fn) && seen.size < 24) {
+        if (target && !scope.stack.has(target.fn) && seen.size < 32) {
           const aliases = aliasesForCall(scope, target.fn, n);
-          if (aliases.size > 0 && target.fn.body) {
-            seen.add(target.fn);
-            const inner: Scope = { ...scope, mod: target.mod, fn: target.fn, aliases };
+          const hosts = hostsForCall(scope, target.fn, n);
+          const key = `${target.mod.path}:${target.fn.pos}:${[...hosts].join()}`;
+          if (aliases.size > 0 && target.fn.body && !seen.has(key)) {
+            seen.add(key);
+            const inner: Scope = { ...scope, mod: target.mod, fn: target.fn, aliases, hosts };
             collect(a, inner, target.fn.body, uses, runs, seen);
           }
         }
@@ -720,21 +923,143 @@ function useFor(scope: Scope, path: string, call: ts.CallExpression): FlowUse | 
   // `ctx.http` is also a function in its own right; a bare `ctx.http(...)`
   // and `ctx.http.get(...)` are both http.
   const name = parts.join(".");
-  const use: FlowUse = { name };
+  let target: string | undefined;
   const first = call.arguments[0];
   if (client === "http" && first) {
-    const host = hostOf(scope, first);
-    if (host) use.target = host;
+    target = hostOf(scope, first) ?? undefined;
   } else if (client === "state" && first) {
-    const key = literal(scope, first);
-    if (key) use.target = key;
+    target = literal(scope, first) ?? undefined;
   } else if (client === "table") {
     // The bare handle is not work; `table.insert` and friends are.
     if (parts.length === 1) return null;
-    const table = tableNameOf(scope, call);
-    if (table) use.target = table;
+    target = tableNameOf(scope, call) ?? undefined;
   }
-  return use;
+  const words = describeUse(name, target);
+  return { name, ...(target ? { target } : {}), ...words };
+}
+
+/* ---------------------------------------------------------------- in words */
+
+/** A hostname a workflow talks to, and what it is called on the box. */
+const SERVICES: [RegExp, string][] = [
+  [/(^|\.)notion\.(com|so)$/, "Notion"],
+  [/(^|\.)threads\.net$/, "Threads"],
+  [/(^|\.)facebook\.com$/, "Facebook / Instagram"],
+  [/(^|\.)instagram\.com$/, "Instagram"],
+  [/(^|\.)telegram\.org$/, "Telegram"],
+  [/(^|\.)slack\.com$/, "Slack"],
+  [/(^|\.)discord(app)?\.com$/, "Discord"],
+  [/^sheets\.googleapis\.com$/, "Google Sheets"],
+  [/(^|\.)googleapis\.com$/, "Google"],
+  [/(^|\.)google\.com$/, "Google"],
+  [/(^|\.)github\.com$/, "GitHub"],
+  [/(^|\.)monday\.com$/, "Monday.com"],
+  [/(^|\.)brevo\.com$/, "Brevo"],
+  [/(^|\.)openai\.com$/, "OpenAI"],
+  [/(^|\.)anthropic\.com$/, "Anthropic"],
+  [/(^|\.)whatsapp\.com$/, "WhatsApp"],
+  [/(^|\.)tiktok(apis)?\.com$/, "TikTok"],
+  [/(^|\.)stripe\.com$/, "Stripe"],
+  [/(^|\.)shopify\.com$/, "Shopify"],
+  [/(^|\.)airtable\.com$/, "Airtable"],
+  [/(^|\.)cloudflare\.com$/, "Cloudflare"],
+];
+
+/** What a `ctx.<client>` is, when the client itself names the service. */
+const CLIENTS: Record<string, string> = {
+  telegram: "Telegram",
+  slack: "Slack",
+  discord: "Discord",
+  whatsapp: "WhatsApp",
+  monday: "Monday.com",
+  email: "email",
+  sheets: "Google Sheets",
+  drive: "Google Drive",
+  s3: "S3/R2 storage",
+  sql: "the database",
+  ai: "the AI model",
+  scrape: "a web page",
+  state: "saved state",
+  table: "a data table",
+};
+
+/** What a method does, as the verb of a short sentence: "updates Notion". */
+const VERBS: Record<string, string> = {
+  "http.get": "reads",
+  "http.post": "sends to",
+  "http.put": "updates",
+  "http.patch": "updates",
+  "http.delete": "deletes from",
+  "http.paginate": "reads all of",
+  "http": "calls",
+  "telegram.send": "messages",
+  "telegram.reply": "replies on",
+  "telegram.sendPhoto": "sends a photo on",
+  "slack.send": "messages",
+  "slack.reply": "replies on",
+  "discord.send": "messages",
+  "whatsapp.text": "messages",
+  "whatsapp.template": "sends a template on",
+  "email.send": "sends",
+  "monday.item": "reads",
+  "monday.itemsByName": "searches",
+  "monday.fields": "reads",
+  "monday.assets": "reads files from",
+  "monday.createItem": "adds an item to",
+  "monday.setColumn": "updates",
+  "monday.query": "queries",
+  "ai.claude": "asks",
+  "ai.openai": "asks",
+  "drive.meta": "reads",
+  "sheets.read": "reads",
+  "sheets.append": "appends to",
+  "sheets.update": "updates",
+  "drive.download": "downloads from",
+  "drive.upload": "uploads to",
+  "s3.put": "uploads to",
+  "s3.get": "reads from",
+  "s3.delete": "deletes from",
+  "state.get": "reads",
+  "state.set": "writes",
+  "state.delete": "clears",
+  "table.insert": "adds a row to",
+  "table.update": "updates",
+  "table.delete": "deletes from",
+  "table.where": "reads",
+  "table.find": "reads",
+  "table.aggregate": "sums up",
+  "scrape.page": "scrapes",
+  "scrape.text": "scrapes",
+  "scrape.textAll": "scrapes",
+  "sql.query": "queries",
+};
+
+/**
+ * `http.patch` + `api.notion.com` → "updates" + "Notion". The verb comes
+ * from the method and the service from the host, or from the client when the
+ * client *is* the service (`telegram.send`). A host nobody has named is
+ * shown as itself, which is still better than nothing; an http call with no
+ * literal host at all is "a URL".
+ */
+export function describeUse(name: string, target?: string): { verb: string; service: string } {
+  const parts = name.split(".");
+  const client = parts[0] ?? "";
+  const method = parts[parts.length - 1];
+  const verb =
+    VERBS[name] ??
+    (parts.length > 2 ? VERBS[`${client}.${method}`] : undefined) ??
+    (client === "ai" ? "asks" : "uses");
+  let service: string;
+  if (client === "http") {
+    service = target ? (SERVICES.find(([re]) => re.test(target))?.[1] ?? target) : "a URL";
+  } else if (client === "table" && target) {
+    service = `the ${target} table`;
+  } else if (client === "state" && target) {
+    service = `saved state "${target}"`;
+  } else {
+    service = CLIENTS[client] ?? client;
+  }
+  return { verb, service };
 }
 
 /* ------------------------------------------------------------------- text */
@@ -800,6 +1125,8 @@ function hostOf(scope: Scope, node: ts.Expression, depth = 0): string | null {
     // `${BASE}/path` — the host is inside the first hole.
     if (head === "" && node.templateSpans[0]) return hostOf(scope, node.templateSpans[0].expression, depth + 1);
   } else if (ts.isIdentifier(node)) {
+    const bound = scope.hosts.get(node.text);
+    if (bound) return bound;
     const c = scope.mod.consts.get(node.text);
     return c ? hostOf(scope, c, depth + 1) : null;
   } else if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)) {
@@ -825,19 +1152,21 @@ function hostOf(scope: Scope, node: ts.Expression, depth = 0): string | null {
  */
 function describe(scope: Scope, expr: ts.Expression): string {
   const d = (e: ts.Expression): string => describe(scope, e);
-  const plain = (e: ts.Expression) =>
-    ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e);
 
   if (ts.isParenthesizedExpression(expr) || ts.isAsExpression(expr) || ts.isNonNullExpression(expr)) {
     return d(expr.expression);
   }
+
+  const ref = refText(expr);
+  if (ref !== null) return cut(ref, 40);
 
   if (ts.isPrefixUnaryExpression(expr) && expr.operator === ts.SyntaxKind.ExclamationToken) {
     const inner = expr.operand;
     if (ts.isPrefixUnaryExpression(inner) && inner.operator === ts.SyntaxKind.ExclamationToken) {
       return d(inner.operand);
     }
-    if (plain(inner)) return `no ${text(scope, inner, 40)}`;
+    const plain = refText(inner);
+    if (plain !== null) return `no ${cut(plain, 40)}`;
     return `not ${d(inner)}`;
   }
 
@@ -849,10 +1178,10 @@ function describe(scope: Scope, expr: ts.Expression): string {
     const isLength = ts.isPropertyAccessExpression(left) && left.name.text === "length";
     const zero = ts.isNumericLiteral(right) && right.text === "0";
     if (isLength && zero && (op === K.EqualsEqualsEqualsToken || op === K.EqualsEqualsToken)) {
-      return `${text(scope, (left as ts.PropertyAccessExpression).expression, 40)} is empty`;
+      return `${d((left as ts.PropertyAccessExpression).expression)} is empty`;
     }
     if (isLength && zero && (op === K.GreaterThanToken || op === K.ExclamationEqualsEqualsToken)) {
-      return `${text(scope, (left as ts.PropertyAccessExpression).expression, 40)} is not empty`;
+      return `${d((left as ts.PropertyAccessExpression).expression)} is not empty`;
     }
     const words: Partial<Record<ts.SyntaxKind, string>> = {
       [K.EqualsEqualsEqualsToken]: "is",
@@ -872,6 +1201,36 @@ function describe(scope: Scope, expr: ts.Expression): string {
   }
 
   return text(scope, expr, 48);
+}
+
+/**
+ * A name or a property chain, with the casts and bangs the type checker
+ * wanted taken out: `(error as AlertedError).alerted` is `error.alerted` to
+ * anyone reading a diagram. Null for anything that is not a plain reference.
+ */
+function refText(expr: ts.Expression): string | null {
+  if (ts.isIdentifier(expr)) return expr.text;
+  if (expr.kind === ts.SyntaxKind.ThisKeyword) return "this";
+  if (
+    ts.isParenthesizedExpression(expr) ||
+    ts.isAsExpression(expr) ||
+    ts.isNonNullExpression(expr) ||
+    ts.isSatisfiesExpression(expr) ||
+    ts.isTypeAssertionExpression(expr)
+  ) {
+    return refText(expr.expression);
+  }
+  if (ts.isPropertyAccessExpression(expr)) {
+    const base = refText(expr.expression);
+    return base === null ? null : `${base}.${expr.name.text}`;
+  }
+  if (ts.isElementAccessExpression(expr)) {
+    const base = refText(expr.expression);
+    const key = expr.argumentExpression;
+    const shown = ts.isStringLiteral(key) ? key.text : ts.isNumericLiteral(key) ? key.text : (refText(key) ?? "…");
+    return base === null ? null : `${base}[${shown}]`;
+  }
+  return null;
 }
 
 /**
@@ -934,7 +1293,9 @@ function throwLabel(scope: Scope, expr: ts.Expression): string {
   // `throw new Error("message")` → the message; anything else, the source.
   if (ts.isNewExpression(expr) && expr.arguments?.[0]) {
     const msg = stringish(scope, expr.arguments[0]);
-    if (msg !== null) return `fail: ${cut(msg)}`;
+    // The first sentence: a message here says what is wrong and then how to
+    // fix it, and the diagram wants the first half.
+    if (msg !== null) return `fail: ${cut(msg.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? msg, 140)}`;
   }
   // `throw err` — passing on a failure caught above.
   if (ts.isIdentifier(expr)) return `fail with ${expr.text}`;
@@ -1016,6 +1377,7 @@ export function traceRun(flow: Flow, steps: RunStep[], runId: string): RunTrace 
             if (mark.ms !== null) mark.ms = s.duration_ms === null ? null : mark.ms + s.duration_ms;
           });
           if (mark.count > 0) marks.set(n, mark);
+          if (n.body) visit(n.body);
           break;
         }
         case "branch":

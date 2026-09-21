@@ -288,7 +288,13 @@ it depends on that look like tidying targets: `typescript` is a runtime
 dependency now, not a dev one, because the Docker image installs with
 `--production`; and the cache in `flowFor` is keyed on the mtime of every file
 the derivation read, which is what makes an edit to a `_` helper re-draw a
-graph whose workflow hash did not move.
+graph whose workflow hash did not move. Two rules of its own: a step's
+callback *is* walked, for the steps inside it, but only those survive
+(`stepsOnly`) — the plain calls inside are the step's `uses` and drawing them
+as nodes too made every step a box; and a chip is words (`updates Notion`)
+with the call on hover, from the `SERVICES` / `VERBS` tables in `flow.ts` —
+a new integration client or a new host wants a line in each, or it shows as
+`uses <client>` and the bare hostname.
 
 **Nothing from a querystring may be interpolated into a view's SQL.** Values go
 through placeholders; a table's physical name goes through `ctx.from()`, which

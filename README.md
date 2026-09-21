@@ -1191,8 +1191,16 @@ under its name; the note under the graph says which files it was read from.
 
 It is read from the **source**, not from any run. The runner parses the file
 with the TypeScript compiler and walks `run()`, so the graph is every path the
-code can take — a run page shows the one path a run actually took. That is
-also why a step that no run has ever reached is still on it.
+code can take. That is also why a step that no run has ever reached is still
+on it.
+
+A **run page** has the same Flow with that run laid over it: a step the run
+went through is lit green with how long it took (`✓ ran ×3 · 1.2s` inside a
+loop), the step it failed on is red, and everything the run did not reach —
+whole boxes included — is dimmed. Recorded steps are matched to the graph by
+name, so a step named from a value (`{label}`) cannot be placed and is listed
+under the graph instead, and a name two branches share is credited to the
+first.
 
 It is best effort, and it errs by leaving things out rather than inventing
 them: a step whose name is computed at runtime shows as `{expr}`, a helper the

@@ -4,7 +4,7 @@ import { basicAuth } from "hono/basic-auth";
 import { HTTPException } from "hono/http-exception";
 import { logger as httpLogger } from "hono/logger";
 import { store } from "../core/db.ts";
-import { callersOf, flowFor } from "../core/flow.ts";
+import { callersOf, flowFor, traceRun } from "../core/flow.ts";
 import { log } from "../core/logger.ts";
 import { acceptDelivery, deliver } from "../core/inbox.ts";
 import { alertRejection } from "../core/alerts.ts";
@@ -774,13 +774,19 @@ export function createApp(registry: Registry): Hono {
   app.get("/runs/:id", (c) => {
     const run = store.getRun(c.req.param("id"));
     if (!run) return c.notFound();
+    const steps = store.stepsForKey(run.checkpoint_key ?? run.id);
+    // The graph is of the workflow as it is now; a run of an older version
+    // still lays over it as far as the names still match.
+    const wf = registry.get(run.workflow);
+    const flow = wf ? flowFor(wf, workflowsDir) : null;
     return c.html(
       runPage(
         run,
         store.logsForRun(run.id),
-        store.stepsForKey(run.checkpoint_key ?? run.id),
+        steps,
         store.callsForRun(run.id),
         store.childRuns(run.id),
+        wf && flow ? { wf, flow, trace: traceRun(flow, steps, run.id) } : null,
       ) as any,
     );
   });

@@ -3,7 +3,7 @@ import type { HtmlEscapedString } from "hono/utils/html";
 import type { ColumnDef, LoadedTable, Row } from "../core/tables.ts";
 import { formatDuration } from "../core/views.ts";
 import type { LoadedView, Panel } from "../core/views.ts";
-import type { Flow, FlowNode, FlowUse } from "../core/flow.ts";
+import type { Flow, FlowNode, FlowUse, RunMark, RunTrace } from "../core/flow.ts";
 import type { ViewLinkRecord } from "../core/types.ts";
 import { VIEW_CSS, renderControls, renderPanels } from "./view-render.ts";
 import type {
@@ -314,6 +314,19 @@ background:color-mix(in srgb,var(--green) 12%,var(--panel))}
 border-color:color-mix(in srgb,var(--red) 45%,var(--border));background:color-mix(in srgb,var(--red) 12%,var(--panel))}
 .fn.k-fail .fkind,.fg.k-fail>.fglabel .fkind,.fg.k-catch>.fglabel .fkind{color:var(--red)}
 .fn.k-fail b{color:var(--red)}
+/* One run over the graph: lit where it went, dim where it did not. */
+.fn.ran-ok .fk{background:var(--green);border-color:var(--green);color:#fff}
+.fn.ran-bad .fk{background:var(--red);border-color:var(--red);color:#fff}
+.fn.ran-bad{border-color:color-mix(in srgb,var(--red) 50%,var(--border))}
+.fn.off,.fg.off{opacity:.42}
+/* Only the outermost dimmed thing fades, or three nested boxes fade to nothing. */
+.off .off{opacity:1}
+.fk.off{color:var(--faint)}
+.fran{display:inline-block;margin-top:4px;font:600 11.5px var(--sans);padding:1px 8px;border-radius:20px;
+border:1px solid currentColor}
+.fran.ok{color:var(--green)}
+.fran.bad{color:var(--red)}
+.fran.off{color:var(--faint);font-weight:500}
 .fn.k-leave{border-style:dashed}
 .fn.k-leave b{color:var(--muted);font-weight:500}
 .fn.k-done,.fn.k-fail,.fn.k-leave{padding:9px 14px 10px;width:min(100%,400px)}
@@ -1682,6 +1695,39 @@ const FICON = {
  */
 interface FlowCounter {
   n: number;
+  /** One run laid over the graph, or null for the workflow page's plain graph. */
+  trace: Map<FlowNode, RunMark> | null;
+}
+
+/** Whether anything inside these nodes ran, for dimming a whole box at once. */
+function flowRan(nodes: FlowNode[], trace: Map<FlowNode, RunMark>): boolean {
+  return nodes.some((n) => {
+    switch (n.kind) {
+      case "step":
+        return trace.has(n);
+      case "branch":
+        return flowRan(n.body, trace) || flowRan(n.else, trace);
+      case "switch":
+        return n.cases.some((c) => flowRan(c.body, trace));
+      case "loop":
+      case "catch":
+      case "helper":
+        return flowRan(n.body, trace);
+      default:
+        return false;
+    }
+  });
+}
+
+/** The chip that says what this run did at a step. */
+function flowMark(mark: RunMark | undefined) {
+  if (!mark) return html`<span class="fran off">did not run</span>`;
+  const times = mark.count > 1 ? html` ×${mark.count}` : "";
+  const took = mark.ms !== null ? html` · ${formatDuration(mark.ms)}` : "";
+  const reused = mark.reused > 0 ? html` · ${mark.reused === mark.count ? "reused" : `${mark.reused} reused`}` : "";
+  return mark.failed > 0
+    ? html`<span class="fran bad">✗ failed${times}${took}</span>`
+    : html`<span class="fran ok">✓ ran${times}${took}${reused}</span>`;
 }
 
 /**
@@ -1758,16 +1804,29 @@ function flowEnd(node: Extract<FlowNode, { kind: "end" }>, after: boolean): Html
 }
 
 function flowNode(node: FlowNode, c: FlowCounter): Html {
+  // A box none of whose steps ran is dimmed whole, so the path the run took
+  // is the part of the page that is still lit.
+  const off =
+    c.trace &&
+    (node.kind === "branch" || node.kind === "switch" || node.kind === "loop" || node.kind === "catch" || node.kind === "helper") &&
+    !flowRan([node], c.trace)
+      ? " off"
+      : "";
   switch (node.kind) {
-    case "step":
+    case "step": {
       c.n++;
-      return fnode("k-step",
+      const mark = c.trace?.get(node);
+      const state = !c.trace ? "" : !mark ? " off" : mark.failed > 0 ? " ran-bad" : " ran-ok";
+      return fnode(
+        `k-step${state}`,
         String(c.n),
         `Step ${c.n}`,
         html`<b>${flowLabel(sentence(node.label))}</b>
+          ${c.trace ? flowMark(mark) : ""}
           ${node.doc ? html`<p class="fdoc">${node.doc}</p>` : ""}
           ${flowChips(node.uses, node.runs)}`,
       );
+    }
     case "action":
       c.n++;
       return fnode("k-step",
@@ -1784,7 +1843,7 @@ function flowNode(node: FlowNode, c: FlowCounter): Html {
         html`<b>Runs <a href="/workflows/${node.workflow}">${node.workflow}</a> and waits for it</b>`,
       );
     case "loop":
-      return fgroup("k-loop",
+      return fgroup(`k-loop${off}`,
         FICON.loop,
         "Loop",
         html`Repeat for ${node.label}`,
@@ -1792,9 +1851,9 @@ function flowNode(node: FlowNode, c: FlowCounter): Html {
         html`…then the next one, until there are no more`,
       );
     case "catch":
-      return fgroup("k-catch", FICON.warn, "If that fails", html`instead of stopping the run`, flowNodes(node.body, c));
+      return fgroup(`k-catch${off}`, FICON.warn, "If that fails", html`instead of stopping the run`, flowNodes(node.body, c));
     case "helper":
-      return fgroup("k-part",
+      return fgroup(`k-part${off}`,
         FICON.part,
         "Shared steps",
         html`<code>${node.name}()</code>${node.doc ? html` <span class="fdoc">— ${node.doc}</span>` : ""}`,
@@ -1813,7 +1872,7 @@ function flowNode(node: FlowNode, c: FlowCounter): Html {
             <p class="fthen quiet">otherwise, carry on ↓</p>`,
         );
       }
-      return fgroup("k-check",
+      return fgroup(`k-check${off}`,
         FICON.check,
         "Check",
         html`<span title="${node.code}">If ${node.label}</span>`,
@@ -1831,7 +1890,7 @@ function flowNode(node: FlowNode, c: FlowCounter): Html {
       );
     }
     case "switch":
-      return fgroup("k-check",
+      return fgroup(`k-check${off}`,
         FICON.check,
         "Check",
         html`Depending on <code>${node.label.replace(/^switch /, "")}</code>`,
@@ -1924,16 +1983,25 @@ function flowTrigger(wf: LoadedWorkflow, callers: string[]) {
  * because the first question is going to be "why does this show a step that
  * no run has".
  */
-function flowSection(wf: LoadedWorkflow, flow: Flow, callers: string[]) {
+function flowSection(
+  wf: LoadedWorkflow,
+  flow: Flow,
+  callers: string[],
+  /** On a run page: that run's steps laid over the graph. */
+  run: RunTrace | null = null,
+) {
+  const trace = run?.marks ?? null;
   const helpers = flow.files.filter((f) => f !== wf.file);
   const counts = flowCounts(flow.nodes);
   const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
   const summary = flow.error
     ? "could not be read from the code"
-    : [plural(counts.steps, "step"), counts.checks ? plural(counts.checks, "check") : "", counts.loops ? plural(counts.loops, "loop") : ""]
-        .filter(Boolean)
-        .join(" · ");
-  const c: FlowCounter = { n: 0 };
+    : run
+      ? `this run's path — ${run.marks.size + run.unplaced.length} of ${counts.steps} steps ran`
+      : [plural(counts.steps, "step"), counts.checks ? plural(counts.checks, "check") : "", counts.loops ? plural(counts.loops, "loop") : ""]
+          .filter(Boolean)
+          .join(" · ");
+  const c: FlowCounter = { n: 0, trace };
 
   return html`
     <details class="fbox" data-reveal="flow:${wf.name}">
@@ -1950,6 +2018,7 @@ function flowSection(wf: LoadedWorkflow, flow: Flow, callers: string[]) {
           <span><i class="fk k-loop">${FICON.loop}</i> repeats</span>
           <span><i class="fk k-done">${FICON.done}</i> where it ends</span>
           <span><i class="fk k-fail">${FICON.fail}</i> where it fails</span>
+          ${trace ? html`<span><i class="fk off">·</i> dimmed — this run did not go there</span>` : ""}
         </div>
         ${flow.error
           ? html`<div class="flow">${flowTrigger(wf, callers)}</div>
@@ -1960,12 +2029,24 @@ function flowSection(wf: LoadedWorkflow, flow: Flow, callers: string[]) {
               ${fgroup("k-fail", FICON.warn, "If the run fails", html`this runs instead, after the last retry`, flowNodes(flow.onFailure, c))}
             </div>`
           : ""}
+        ${run && run.unplaced.length > 0
+          ? html`<p class="fnote">
+              Also ran, but could not be placed on the graph because the step is named from a value:
+              ${run.unplaced.map(
+                (s, i) => html`${i > 0 ? ", " : " "}<span class="${s.status === "ok" ? "success" : "failed"}">${s.status === "ok" ? "✓" : "✗"}</span> <code>${s.name}</code>`,
+              )}.
+            </p>`
+          : ""}
         <p class="fnote">
           Read from <code>workflows/${wf.file}</code>${
             helpers.length > 0
               ? html` and ${helpers.map((f, i) => html`${i > 0 ? ", " : ""}<code>${f}</code>`)}`
               : ""
-          }. It shows every path the code can take, not what one run did — open a run below for that.
+          }. ${
+            trace
+              ? html`The graph is every path the code can take; this run's steps are matched onto it by name, so a name two branches share is credited to the first.`
+              : html`It shows every path the code can take, not what one run did — open a run for that.`
+          }
           Hover a check to see the condition as written.
           ${flow.notes.length > 0 ? html`Not followed: ${flow.notes.join("; ")}.` : ""}
         </p>
@@ -2267,6 +2348,8 @@ export function runPage(
   steps: StepRecord[],
   calls: CallRecord[],
   children: RunRecord[] = [],
+  /** The workflow's graph with this run's steps laid over it; null if the workflow is gone. */
+  flow: { wf: LoadedWorkflow; flow: Flow; trace: RunTrace } | null = null,
 ) {
   const crumb = html`<span class="crumb">
     <a href="/workflows/${run.workflow}">${run.workflow}</a> /
@@ -2352,6 +2435,8 @@ export function runPage(
       ${run.result && run.result !== "null"
         ? html`<h2>Result</h2><div class="card"><pre class="blob" style="border:none">${pretty(run.result)}</pre></div>`
         : ""}
+
+      ${flow && steps.length ? flowSection(flow.wf, flow.flow, [], flow.trace) : ""}
 
       ${steps.length
         ? html`<h2>Steps</h2>

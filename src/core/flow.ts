@@ -959,3 +959,93 @@ function stringish(scope: Scope, node: ts.Expression): string | null {
 function cut(s: string, max = 60): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
+
+/* ------------------------------------------------------------ one run's path */
+
+/** What one run did at one node of the graph. */
+export interface RunMark {
+  /** Recorded steps that matched this node — more than one inside a loop. */
+  count: number;
+  failed: number;
+  /** Steps reused from an earlier run's checkpoint rather than run again. */
+  reused: number;
+  /** Total time across the matches, when every match had a duration. */
+  ms: number | null;
+}
+
+export interface RunStep {
+  name: string;
+  status: "ok" | "failed";
+  duration_ms: number | null;
+  /** The run that actually executed it; differs from the run shown when reused. */
+  run_id: string;
+}
+
+/**
+ * Lays one run's recorded steps over the graph, by name. A step node named
+ * `lock {page.id}` matches every recorded `lock abc…`; one named `answer`
+ * matches `answer` exactly. Each recorded step is spent on the first node in
+ * reading order that matches it, so a name two branches share is credited
+ * to the first — a known imprecision, and the note under the graph says the
+ * match is by name. A node whose label is nothing but a hole (`{label}`)
+ * would match everything and so matches nothing.
+ */
+export interface RunTrace {
+  marks: Map<FlowNode, RunMark>;
+  /** Recorded steps no node claimed — a name the analyser could only see as `{label}`. */
+  unplaced: RunStep[];
+}
+
+export function traceRun(flow: Flow, steps: RunStep[], runId: string): RunTrace {
+  const marks = new Map<FlowNode, RunMark>();
+  const spent = new Set<number>();
+
+  const visit = (nodes: FlowNode[]) => {
+    for (const n of nodes) {
+      switch (n.kind) {
+        case "step": {
+          const test = matcher(n.label);
+          if (!test) break;
+          const mark: RunMark = { count: 0, failed: 0, reused: 0, ms: 0 };
+          steps.forEach((s, i) => {
+            if (spent.has(i) || !test(s.name)) return;
+            spent.add(i);
+            mark.count++;
+            if (s.status === "failed") mark.failed++;
+            if (s.run_id !== runId) mark.reused++;
+            if (mark.ms !== null) mark.ms = s.duration_ms === null ? null : mark.ms + s.duration_ms;
+          });
+          if (mark.count > 0) marks.set(n, mark);
+          break;
+        }
+        case "branch":
+          visit(n.body);
+          visit(n.else);
+          break;
+        case "switch":
+          for (const c of n.cases) visit(c.body);
+          break;
+        case "loop":
+        case "catch":
+        case "helper":
+          visit(n.body);
+          break;
+        case "action":
+        case "run":
+        case "end":
+          break;
+      }
+    }
+  };
+  visit(flow.nodes);
+  if (flow.onFailure) visit(flow.onFailure);
+  return { marks, unplaced: steps.filter((_, i) => !spent.has(i)) };
+}
+
+function matcher(label: string): ((name: string) => boolean) | null {
+  if (!label.includes("{")) return (name) => name === label;
+  const parts = label.split(/\{[^}]*\}/);
+  if (parts.every((p) => p.trim() === "")) return null;
+  const re = new RegExp(`^${parts.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[\\s\\S]+?")}$`);
+  return (name) => re.test(name);
+}

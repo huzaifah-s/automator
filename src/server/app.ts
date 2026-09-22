@@ -234,10 +234,20 @@ export function createApp(registry: Registry): Hono {
       } catch (err) {
         // The stream broke before the body arrived: the caller hung up, or a
         // proxy cut it. The message says which, and is safe to store — it is
-        // ours, not the body's.
+        // ours, not the body's. Bun's wording alone ("The connection was
+        // closed.") reads as if something here closed it, so the detail says
+        // what actually happened and what it costs: nothing was lost on this
+        // side, and a sender that got no answer retries — which is what makes
+        // a handful of these harmless and a steady stream of them a network
+        // problem in front of the runner.
         const why = err instanceof Error ? err.message : String(err);
         log.warn(`Body for ${wf.name} unreadable — ${why}`);
-        reject("unreadable body", why);
+        reject(
+          "unreadable body",
+          `${why} The sender (or a proxy between us) dropped the connection before ` +
+            "the whole request arrived, so there was nothing to run. Senders retry an " +
+            "unanswered delivery; this matters only if it keeps happening.",
+        );
         return c.json({ error: "Could not read request body" }, 400);
       }
     }

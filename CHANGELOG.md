@@ -6,6 +6,41 @@ Entries record the *reasoning*, not just the diff — `git log` already has the
 diff. If a change settled a question, say what was settled and what the losing
 option was, so nobody relitigates it from scratch.
 
+## 2026-09-23
+
+### Facebook error 324 is a failed fetch, not a failed post, and was being treated as fatal
+
+A row published to Instagram and Threads and failed on Facebook with
+`Missing or invalid image file [code 324/2069019]`. The image was fine: the
+same R2 URL had been fetched successfully by Instagram seventeen seconds
+earlier, and the identical Facebook call on the next five-minute tick
+published it in seven seconds. The failing attempt took **29.6 seconds** —
+Facebook's own fetch of the URL timing out, reported back as if we had handed
+it a broken file.
+
+The cost was not the retry itself; the poll re-offers a failed row and it went
+out five minutes later. The cost was the alert. A transient fetch failure sent
+a Telegram message that reads exactly like a content problem a human has to go
+and fix, and nothing in the message distinguishes the two.
+
+`POST /{page-id}/photos?url=…` carried `retries: 0`, and that rule was right in
+general: a photo call that dies after the request leaves may already be a live
+post, and this workflow's one unforgivable outcome is posting twice. **Code 324
+is the exception, and it is exact.** It is Facebook saying its fetcher came
+back with nothing usable — a statement about a request that never reached the
+publish, so repeating it cannot produce two posts. It is now retried up to
+three times, fifteen seconds apart, and only for that code; every other error
+keeps `retries: 0` untouched.
+
+The carousel path got the same treatment for a duller reason: those uploads are
+already retried, but by the http client, which only knows about 429s and 5xx.
+A failed image fetch arrives as an ordinary 400 and walked straight past it.
+
+The alternative was widening the http client's retry set to include 400s with
+particular Graph codes. Rejected — the client knows nothing about Meta, and
+teaching it would put "which 400s are safe to repeat" in the one place that
+cannot see whether the call it is repeating publishes anything.
+
 ## 2026-09-13
 
 ### `views/` and `tables/` were never typechecked, and the Slowest steps panel proved it

@@ -632,6 +632,16 @@ function explain(err: unknown, what: string): string {
   return `${what}: ${err instanceof Error ? err.message : String(err)}`;
 }
 
+/** Graph's numeric error code, or undefined for anything that is not one. */
+function metaCode(err: unknown): number | undefined {
+  if (!(err instanceof HttpError)) return undefined;
+  try {
+    return (JSON.parse(err.body) as MetaErrorBody).error?.code;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Sleeps, but gives up the moment the run is cancelled or times out. */
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -874,6 +884,53 @@ async function publishInstagram(
 /* ------------------------------------------------------------ facebook */
 
 /**
+ * "Missing or invalid image file" — Facebook fetched the URL we handed it and
+ * got back nothing it could use.
+ */
+const FB_IMAGE_FETCH_FAILED = 324;
+
+/** Attempts at a photo upload that failed with 324, the first one included. */
+const FB_FETCH_ATTEMPTS = 3;
+/** Long enough for a transient fetch failure to clear, short enough to matter. */
+const FB_FETCH_RETRY_MS = 15_000;
+
+/**
+ * Runs a `/photos` upload, retrying it only while Graph says code 324.
+ *
+ * 324 is the one Facebook failure on this call that is provably *not* a
+ * publish: it is Facebook reporting that its own fetch of the R2 URL came back
+ * empty or unreadable, so there is no post and no way a second call makes two.
+ * Every other error keeps the no-retry rule — a photo call that dies any other
+ * way may well have gone out.
+ *
+ * It is worth the retry because it is not hypothetical. A row whose image had
+ * just been fetched fine by Instagram, seconds earlier and from the same URL,
+ * failed here with 324 after 29 seconds — Facebook's fetch timing out, not a
+ * broken image — and the identical call on the next five-minute tick published
+ * it in seven. Indistinguishable from a genuinely bad file by the code alone,
+ * so it is distinguished by trying again.
+ */
+async function withPhotoFetchRetry<T>(
+  ctx: Ctx<DuePage[]>,
+  what: string,
+  attempt: () => Promise<T>,
+): Promise<T> {
+  for (let n = 1; ; n++) {
+    try {
+      return await attempt();
+    } catch (err) {
+      if (metaCode(err) !== FB_IMAGE_FETCH_FAILED || n >= FB_FETCH_ATTEMPTS) throw err;
+      ctx.log.warn(
+        `${what}: Facebook could not fetch the image [code ${FB_IMAGE_FETCH_FAILED}] — ` +
+          `attempt ${n} of ${FB_FETCH_ATTEMPTS}, retrying in ${FB_FETCH_RETRY_MS / 1000}s. ` +
+          "Nothing was published; this call only ever reaches Facebook's fetcher.",
+      );
+      await sleep(FB_FETCH_RETRY_MS, ctx.signal);
+    }
+  }
+}
+
+/**
  * A reel, a photo, or a multi-photo feed post.
  *
  * The multi-photo path is raw Graph on purpose and was in n8n too: there is no
@@ -893,10 +950,12 @@ async function publishFacebook(
 
   if (media.urls.length < CAROUSEL_MIN) {
     try {
-      const photo = await ctx.http.post<{ id?: string; post_id?: string }>(
-        `${GRAPH_FB}/${pageId}/photos`,
-        undefined,
-        { query: { url: media.urls[0], caption, access_token: token }, retries: 0 },
+      const photo = await withPhotoFetchRetry(ctx, "facebook photo", () =>
+        ctx.http.post<{ id?: string; post_id?: string }>(
+          `${GRAPH_FB}/${pageId}/photos`,
+          undefined,
+          { query: { url: media.urls[0], caption, access_token: token }, retries: 0 },
+        ),
       );
       const id = photo?.post_id ?? photo?.id;
       if (!id) throw new AmbiguousFailure("facebook photo: answered 200 with no id");
@@ -911,16 +970,21 @@ async function publishFacebook(
   }
 
   // Unpublished uploads are safe to retry — nothing is visible until the feed
-  // post below attaches them — so these keep the http client's default retries.
+  // post below attaches them — so these keep the http client's default retries,
+  // and add the 324 retry on top: the http client only knows about 429s and
+  // 5xx, and a failed image fetch comes back as an ordinary 400.
   const attached: { media_fbid: string }[] = [];
   for (const [index, url] of media.urls.entries()) {
+    const what = `facebook photo ${index + 1} of ${media.urls.length}`;
     let photo: { id?: string };
     try {
-      photo = await ctx.http.post<{ id?: string }>(`${GRAPH_FB}/${pageId}/photos`, undefined, {
-        query: { url, published: false, access_token: token },
-      });
+      photo = await withPhotoFetchRetry(ctx, what, () =>
+        ctx.http.post<{ id?: string }>(`${GRAPH_FB}/${pageId}/photos`, undefined, {
+          query: { url, published: false, access_token: token },
+        }),
+      );
     } catch (err) {
-      throw new Error(explain(err, `facebook photo ${index + 1} of ${media.urls.length}`));
+      throw new Error(explain(err, what));
     }
     if (!photo?.id) {
       throw new Error(`facebook photo ${index + 1}: uploaded but answered with no id`);

@@ -4,6 +4,7 @@ import type { ColumnDef, LoadedTable, Row } from "../core/tables.ts";
 import { formatDuration } from "../core/views.ts";
 import type { LoadedView, Panel } from "../core/views.ts";
 import type { Flow, FlowNode, FlowUse, RunMark, RunTrace } from "../core/flow.ts";
+import { framed, layoutFlow, type Layout, type Placed } from "./flow-layout.ts";
 import type { ViewLinkRecord } from "../core/types.ts";
 import { VIEW_CSS, renderControls, renderPanels } from "./view-render.ts";
 import type {
@@ -231,170 +232,129 @@ border:1px solid currentColor;white-space:nowrap;text-transform:lowercase}
 border:1px solid var(--border);color:var(--muted);white-space:nowrap}
 
 /* ---- flow ----
-   The n8n view: one column of nodes, top to bottom, read from the source.
-   Nothing is positioned by hand — a loop or a check is a box around the
-   nodes inside it, and a check with an else splits into two columns. The
-   edges are drawn by each node's ::before, which keeps the markup to a list
-   and means a box's edge lines up with its first child's for free.
-   Closed by default: it is the tallest thing on the page and the thing you
-   want least often, so it is a button that remembers being opened. */
-.fbox{background:var(--panel);border:1px solid var(--border);border-radius:10px;margin:14px 0 4px}
+   The n8n view: a canvas, left to right, read from the source. Nothing is
+   positioned by hand here — flow-layout.ts places every node and wire, and
+   this only says what a node looks like. Closed by default: it is a button
+   that remembers being opened. */
+.fbox{background:var(--panel);border:1px solid var(--border);border-radius:10px;margin:14px 0 4px;overflow:hidden}
 .fbox>summary{display:flex;align-items:center;gap:10px;padding:11px 14px;cursor:pointer;list-style:none;
 min-width:0}
 .fbox>summary::-webkit-details-marker{display:none}
 .fbox>summary:hover{background:var(--panel-2)}
-.fbox[open]>summary{border-bottom:1px solid var(--border-soft)}
 .fbox>summary .ftitle{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
 .fbox>summary .fopen,.fbox>summary .fclose{font-size:12px;color:var(--accent);font-weight:600}
 .fbox>summary .fclose,.fbox[open]>summary .fopen{display:none}
 .fbox[open]>summary .fclose{display:inline}
 .fbox>summary>svg:last-child{color:var(--faint);transition:transform .15s}
 .fbox[open]>summary>svg:last-child{transform:rotate(90deg)}
-/* A canvas: the dot grid is what says "diagram" before a single node is
-   read, and the column is held to the width of a node plus a box's padding
-   so a box hugs what is inside it instead of spanning the page. */
-.flowin{padding:16px 16px 12px;
-background-image:radial-gradient(color-mix(in srgb,var(--border) 80%,transparent) 1px,transparent 1.5px);
-background-size:18px 18px;background-position:9px 9px}
-.flowin>.flow,.flowin>.fside{max-width:640px;margin-left:auto;margin-right:auto}
-.flowin>.fside{margin-top:22px}
-.flegend{display:flex;flex-wrap:wrap;gap:6px 6px;margin:0 0 18px;font-size:12px;color:var(--muted)}
-.flegend span{padding:3px 9px 3px 4px;border-radius:20px;background:var(--panel);border:1px solid var(--border-soft)}
-.flegend span{display:inline-flex;align-items:center;gap:7px}
-.flegend .fk{width:20px;height:20px;font-size:11px}
-
-/* The column, and the arrows between siblings. */
-.flow{display:flex;flex-direction:column;align-items:stretch;width:100%}
-.flow>*+*{margin-top:22px;position:relative}
-.flow>*+*::before{content:"";position:absolute;left:50%;top:-22px;height:22px;
-border-left:2px solid var(--faint);margin-left:-1px;opacity:.7}
-.flow>*+*::after{content:"";position:absolute;left:50%;top:-7px;width:7px;height:7px;
-margin-left:-4.5px;border-right:2px solid var(--faint);border-bottom:2px solid var(--faint);
-transform:rotate(45deg);opacity:.7}
-
-/* One node. The square on the left is the number for a step and an icon for
-   everything else; the small label above the title says which kind it is,
-   in words, so nobody has to learn the icons. */
-.fn{display:flex;gap:12px;align-items:flex-start;padding:11px 14px 12px;
-background:var(--panel);border:1px solid var(--border);border-radius:10px;
-width:min(100%,480px);margin-left:auto;margin-right:auto;min-width:0;
-box-shadow:0 1px 2px rgba(0,0,0,.18),0 6px 18px -12px rgba(0,0,0,.5);
-transition:border-color .12s,transform .12s}
-.fn:hover{border-color:color-mix(in srgb,var(--accent) 45%,var(--border));transform:translateY(-1px)}
 .fk{flex:none;width:28px;height:28px;border-radius:8px;display:grid;place-items:center;
-background:var(--panel-2);border:1px solid var(--border);color:var(--muted);
-font:600 13px/1 var(--sans);font-variant-numeric:tabular-nums}
-.fn .fbody{min-width:0;flex:1}
-.fkind{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.07em;
-color:var(--faint);font-weight:600;margin:1px 0 2px}
-.fn b{display:block;font-weight:600;letter-spacing:-.01em;line-height:1.35;word-break:break-word;font-size:13.5px}
-.fn b.mono{font-family:var(--mono);font-weight:500;font-size:12.5px}
-.fn b i,.fn b em{font-style:normal}
-.fn b i{color:var(--muted)}
-.fn b em,.fn code,.fg code,.fthen code{font-family:var(--mono);font-size:12px;font-weight:500;color:var(--accent)}
-.fn b em{font-size:12px}
-.fdoc{margin:4px 0 0;font-size:12.5px;color:var(--muted);line-height:1.45;
-display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.fthen{margin:5px 0 0;font-size:12.5px;color:var(--fg);line-height:1.45}
-.fthen.bad{color:var(--red)}
-.fthen.quiet{color:var(--faint);font-size:12px;margin-top:2px}
-.fchips{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}
+background:var(--panel-2);border:1px solid var(--border);color:var(--muted)}
+
+/* The canvas. The dot grid is what says "diagram" before a node is read.
+   touch-action:none hands every finger on it to the script — one drags, two
+   pinch — so the page scrolls from outside it, which is why it is never
+   taller than most of the screen. */
+.fcanvas{position:relative;height:clamp(300px,62vh,620px);overflow:hidden;touch-action:none;cursor:grab;
+border-top:1px solid var(--border-soft);background-color:var(--sunk);user-select:none;-webkit-user-select:none;
+background-image:radial-gradient(color-mix(in srgb,var(--border) 90%,transparent) 1px,transparent 1.5px);
+background-size:20px 20px}
+.fcanvas.drag{cursor:grabbing}
+.fworld{position:absolute;left:0;top:0;transform-origin:0 0}
+.fwires{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}
+.fwires path{fill:none;stroke:var(--faint);stroke-width:2}
+.fwires path.error{stroke:var(--red);stroke-dasharray:6 5;opacity:.8}
+.fwires path.lit{stroke:var(--green)}
+.fwires .pin{fill:var(--sunk);stroke:var(--faint);stroke-width:1.6}
+.fwires text{font:500 10.5px var(--sans);fill:var(--muted)}
+.fwires text.error{fill:var(--red)}
+
+/* A node: an icon in a box, the name under it. --c is the service's colour. */
+.fnd{position:absolute;padding:0;margin:0;display:grid;place-items:center;cursor:pointer;
+background:var(--panel);border:1.5px solid var(--border);border-radius:12px;color:var(--fg);font:inherit;
+box-shadow:0 1px 2px rgba(0,0,0,.15),0 8px 20px -14px rgba(0,0,0,.55);transition:border-color .12s,box-shadow .12s}
+.fnd:hover{border-color:color-mix(in srgb,var(--accent) 60%,var(--border))}
+.fnd:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.fnd.sel{border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-soft)}
+.fnd .fic{color:var(--c,var(--muted));display:grid;place-items:center;pointer-events:none}
+.fnd.s-trigger{border-radius:32px 12px 12px 32px}
+.fnd.s-round{border-radius:50%}
+.fnd.s-round .fic svg{width:20px;height:20px}
+.fnd .flb{position:absolute;top:calc(100% + 7px);left:50%;transform:translateX(-50%);width:140px;
+text-align:center;line-height:1.25;pointer-events:none}
+.fnd .flb b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+font-size:12.5px;font-weight:600;word-break:break-word;color:var(--fg)}
+.fnd .flb b em{font-style:normal;font-family:var(--mono);font-size:11px;font-weight:500;color:var(--accent)}
+.fnd .flb small{display:block;font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;
+text-overflow:ellipsis;margin-top:2px}
+.fnd.k-trigger{border-color:color-mix(in srgb,var(--accent) 55%,var(--border));background:var(--accent-soft)}
+.fnd.k-err{border-color:color-mix(in srgb,var(--red) 55%,var(--border));background:color-mix(in srgb,var(--red) 10%,var(--panel))}
+.fnd.k-if{border-color:color-mix(in srgb,var(--yellow) 45%,var(--border))}
+.fnd.k-loop{border-color:color-mix(in srgb,var(--accent) 45%,var(--border))}
+.fnd.k-done{border-color:color-mix(in srgb,var(--green) 55%,var(--border))}
+.fnd.k-fail{border-color:color-mix(in srgb,var(--red) 55%,var(--border))}
+.fnd.k-fail .flb small{color:var(--red)}
+.fnd.k-skip{border-style:dashed}
+.fnd.off{opacity:.35}
+.fbadge{position:absolute;right:-8px;top:-8px;min-width:19px;height:19px;border-radius:10px;padding:0 5px;
+font:700 10.5px/19px var(--sans);color:#fff;pointer-events:none}
+.fbadge.ok{background:var(--green)}
+.fbadge.bad{background:var(--red)}
+
+/* A frame: n8n's sticky note, behind the nodes a helper or a step holds. */
+.ffr{position:absolute;border-radius:14px;pointer-events:none;
+border:1.5px dashed color-mix(in srgb,var(--accent) 40%,var(--border));
+background:color-mix(in srgb,var(--accent) 5%,transparent)}
+.ffr.k-step{border-color:var(--border);background:color-mix(in srgb,var(--fg) 3%,transparent)}
+.ffr>span{position:absolute;left:12px;top:8px;right:12px;font:600 11.5px var(--mono);color:var(--accent);
+white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ffr.k-step>span{color:var(--muted);font-family:var(--sans)}
+
+.fctl{position:absolute;right:10px;bottom:10px;display:flex;gap:4px}
+.fctl button{min-width:30px;height:30px;padding:0 9px;border-radius:8px;border:1px solid var(--border);
+background:var(--panel);color:var(--fg);font:600 13px var(--sans);cursor:pointer}
+.fctl button:hover{border-color:var(--accent);color:var(--accent)}
+
+/* What a click opens: a side panel, or a sheet from the bottom on a phone. */
+.fpanel{position:absolute;right:10px;top:10px;bottom:52px;width:min(340px,calc(100% - 20px));overflow:auto;
+background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:14px 16px 16px;
+box-shadow:0 12px 32px -12px rgba(0,0,0,.55);cursor:auto;touch-action:auto;user-select:text;-webkit-user-select:text}
+.fpanel[hidden]{display:none}
+.fpx{position:absolute;right:8px;top:8px;width:28px;height:28px;border-radius:7px;border:none;background:none;
+color:var(--muted);font-size:18px;cursor:pointer}
+.fpx:hover{background:var(--panel-2);color:var(--fg)}
+.fpk{margin:0 30px 3px 0;font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--faint);font-weight:600}
+.fpanel h4{margin:0 24px 6px 0;font-size:14px;line-height:1.35;font-weight:600;word-break:break-word}
+.fpanel h4 em,.fpanel code{font-style:normal;font-family:var(--mono);font-size:12px;font-weight:500;color:var(--accent)}
+.fpanel .fdoc{margin:6px 0 0;font-size:12.5px;color:var(--muted);line-height:1.5}
+.fcode{margin:8px 0 0;padding:8px 10px;background:var(--sunk);border:1px solid var(--border);border-radius:8px;
+font:11.5px/1.5 var(--mono);white-space:pre-wrap;word-break:break-word}
+.fchips{display:flex;flex-wrap:wrap;gap:5px;margin-top:9px}
 .fchip{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:20px;
-font:12px var(--mono);color:var(--muted);background:var(--panel-2);border:1px solid var(--border-soft);
+font:12px var(--sans);color:var(--muted);background:var(--panel-2);border:1px solid var(--border-soft);
 max-width:100%;min-width:0;word-break:break-all}
-.fchip{font-family:var(--sans)}
 .fchip i{font-style:normal;color:var(--faint)}
-/* The gates folded into one node: one line per check. */
-.fgates{list-style:none;margin:7px 0 0;padding:0;display:flex;flex-direction:column;gap:5px}
+.fchip.run{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 35%,var(--border));
+background:var(--accent-soft);font-weight:600}
+.fchip.run:hover{text-decoration:none;border-color:var(--accent)}
+.fchip svg{flex:none}
+.fgates{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}
 .fgates li{font-size:12.5px;line-height:1.45;padding-left:14px;text-indent:-14px;color:var(--fg)}
 .fgates li::before{content:"◇";color:var(--yellow);font-size:9px;display:inline-block;width:14px;text-indent:0}
 .fgates .farrow{color:var(--faint);margin:0 2px}
 .fgates .bad{color:var(--red)}
-.fgates code{font-family:var(--mono);font-size:11.5px;color:var(--accent)}
-.fchip.run{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 35%,var(--border));
-background:var(--accent-soft);font-family:var(--sans);font-weight:600}
-.fchip.run:hover{text-decoration:none;border-color:var(--accent)}
-.fchip svg{flex:none}
-
-/* Kinds, by the colour of the square. */
-.fn.k-trigger{border-color:color-mix(in srgb,var(--accent) 55%,var(--border));
-background:linear-gradient(135deg,var(--accent-soft),color-mix(in srgb,var(--accent-soft) 60%,var(--panel)))}
-.fn.k-trigger .fk,.fk.k-trigger{background:var(--accent);border-color:var(--accent);color:#fff}
-.fn.k-trigger .fkind{color:var(--accent)}
-.fn.k-step .fk,.fk.k-step{background:var(--fg);border-color:var(--fg);color:var(--bg)}
-.fn.k-run .fk{background:var(--accent-soft);border-color:color-mix(in srgb,var(--accent) 40%,var(--border));color:var(--accent)}
-.fn.k-check .fk,.fk.k-check,.fg.k-check>.fglabel .fk{color:var(--yellow);
-border-color:color-mix(in srgb,var(--yellow) 45%,var(--border));background:color-mix(in srgb,var(--yellow) 12%,var(--panel))}
-.fn.k-check .fkind{color:var(--yellow)}
-.fk.k-loop,.fg.k-loop>.fglabel .fk{color:var(--accent);
-border-color:color-mix(in srgb,var(--accent) 45%,var(--border));background:var(--accent-soft)}
-.fn.k-done .fk,.fk.k-done{color:var(--green);border-color:color-mix(in srgb,var(--green) 45%,var(--border));
-background:color-mix(in srgb,var(--green) 12%,var(--panel))}
-.fn.k-done .fkind{color:var(--green)}
-.fn.k-fail .fk,.fk.k-fail,.fg.k-fail>.fglabel .fk,.fg.k-catch>.fglabel .fk{color:var(--red);
-border-color:color-mix(in srgb,var(--red) 45%,var(--border));background:color-mix(in srgb,var(--red) 12%,var(--panel))}
-.fn.k-fail .fkind,.fg.k-fail>.fglabel .fkind,.fg.k-catch>.fglabel .fkind{color:var(--red)}
-.fn.k-fail b{color:var(--red)}
-/* One run over the graph: lit where it went, dim where it did not. */
-.fn.ran-ok .fk{background:var(--green);border-color:var(--green);color:#fff}
-.fn.ran-bad .fk{background:var(--red);border-color:var(--red);color:#fff}
-.fn.ran-bad{border-color:color-mix(in srgb,var(--red) 50%,var(--border))}
-.fn.off,.fg.off{opacity:.42}
-/* Only the outermost dimmed thing fades, or three nested boxes fade to nothing. */
-.off .off{opacity:1}
-.fk.off{color:var(--faint)}
 .fran{display:inline-block;margin-top:4px;font:600 11.5px var(--sans);padding:1px 8px;border-radius:20px;
 border:1px solid currentColor}
 .fran.ok{color:var(--green)}
 .fran.bad{color:var(--red)}
 .fran.off{color:var(--faint);font-weight:500}
-.fn.k-leave{border-style:dashed}
-.fn.k-leave b{color:var(--muted);font-weight:500}
-.fn.k-done,.fn.k-fail,.fn.k-leave{padding:9px 14px 10px;width:min(100%,400px)}
-.fn.k-done .fk,.fn.k-fail .fk,.fn.k-leave .fk{width:24px;height:24px;border-radius:50%}
-
-/* Boxes. A tint says which kind it is from across the room; the label row
-   inside repeats it in words. */
-.fg{border:1px solid var(--border);border-radius:12px;padding:12px 12px 12px;width:100%;
-background:color-mix(in srgb,var(--sunk) 88%,transparent)}
-.fg>.fglabel{display:flex;align-items:center;gap:9px;margin:0 0 14px;min-width:0;flex-wrap:wrap}
-.fg>.fglabel .fkind{margin:0;flex:none}
-.fg>.fglabel b{font-weight:600;font-size:13.5px;min-width:0;word-break:break-word;flex:1 1 200px}
-.fg>.fglabel .fdoc{display:inline;font-weight:400}
-.fg>.fgfoot{margin:12px 0 0;text-align:center;font-size:12px;color:var(--faint)}
-.fg.k-check{border-color:color-mix(in srgb,var(--yellow) 40%,var(--border));
-background:color-mix(in srgb,var(--yellow) 4%,var(--sunk))}
-.fg.k-check>.fglabel .fkind{color:var(--yellow)}
-.fg.k-loop{border-color:color-mix(in srgb,var(--accent) 40%,var(--border));
-background:color-mix(in srgb,var(--accent) 4%,var(--sunk))}
-.fg.k-loop>.fglabel .fkind{color:var(--accent)}
-.fg.k-catch,.fg.k-fail{border-color:color-mix(in srgb,var(--red) 35%,var(--border));
-background:color-mix(in srgb,var(--red) 3%,var(--sunk))}
-.fg.k-part{border-style:dashed;background:transparent}
-/* A step with stages inside: the step's own line, then its inner column. */
-.fg.k-stepbox{background:var(--panel);
-box-shadow:0 1px 2px rgba(0,0,0,.18),0 6px 18px -12px rgba(0,0,0,.5)}
-.fg.k-stepbox>.fglabel{align-items:flex-start;gap:12px;flex-wrap:nowrap;margin-bottom:12px}
-.fg.k-stepbox>.fglabel .fk{background:var(--fg);border-color:var(--fg);color:var(--bg)}
-.fg.k-stepbox.ran-ok>.fglabel .fk{background:var(--green);border-color:var(--green);color:#fff}
-.fg.k-stepbox.ran-bad>.fglabel .fk{background:var(--red);border-color:var(--red);color:#fff}
-.fg.k-stepbox>.fglabel .fbody{min-width:0;flex:1}
-.fg.k-stepbox>.fglabel b{display:block;font-size:13.5px;flex:none}
-.fg.k-stepbox>.fglabel b em{font-style:normal;font-family:var(--mono);font-size:12px;font-weight:500;color:var(--accent)}
-.fg.k-stepbox>.fglabel .fdoc{display:-webkit-box}
-.fg.k-stepbox>.flow{padding:0 0 0 0;border-top:1px dashed var(--border-soft);padding-top:14px}
-.fsplit{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start}
-.fsplit>div{min-width:0}
-.fhead{text-align:center;font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;
-color:var(--faint);font-weight:600;margin-bottom:8px}
-.fcases{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;align-items:start}
-.fcases>div{min-width:0}
-.fcases .fhead{font-family:var(--mono);text-transform:none;letter-spacing:0;font-size:11.5px;
-color:var(--muted);word-break:break-word}
-.fside{margin-top:22px}
-.fnote{margin:16px 0 0;font-size:12px;color:var(--faint);line-height:1.5}
+.flowfoot{padding:0 14px 12px;border-top:1px solid var(--border-soft)}
+.fnote{margin:10px 0 0;font-size:12px;color:var(--faint);line-height:1.5}
 .fnote code{font-family:var(--mono);font-size:11.5px}
-.fempty{padding:18px;text-align:center;color:var(--muted);font-size:13px}
+.fempty{padding:12px 0 0;margin:0;color:var(--muted);font-size:13px}
+@media (max-width:640px){
+.fpanel{left:8px;right:8px;top:auto;bottom:8px;width:auto;max-height:62%}
+.fctl{top:10px;bottom:auto}
+}
 
 /* ---- health strip ---- */
 .spark{display:flex;gap:2px;align-items:flex-end;height:16px}
@@ -760,10 +720,6 @@ details.item>summary{flex-wrap:wrap}
    stripe of punctuation. */
 .logline{display:flex;flex-wrap:wrap;gap:2px 9px;padding:7px 14px}
 .logline>:last-child{flex:1 1 100%}
-.fsplit{grid-template-columns:1fr}
-.flowin{padding:12px 10px 10px}
-.fg{padding:10px 8px 10px}
-.fn{padding:10px 11px 11px;gap:10px}
 .fbox>summary .fopen,.fbox>summary .fclose{display:none}
 }
 `;
@@ -893,8 +849,201 @@ const SCRIPT = (seconds: number) => `
     strip.scrollLeft = Math.max(0, Math.min(atMost, Math.max(atLeast, strip.scrollLeft)));
   };
 
+
+  // ---- the flow canvas ----
+  // Pan, zoom and the node panel. The view of each canvas — where it is
+  // scrolled to, how far zoomed, which node is open — lives here and not in
+  // the DOM, because the refresh swaps the DOM out from under it every few
+  // seconds; setupCanvases() puts it back on the replacement.
+  var VIEWS = {};
+  var gesture = null;
+
+  var world = function (c) { return c.querySelector(".fworld"); };
+  var show = function (c, v) {
+    VIEWS[c.dataset.canvas] = v;
+    world(c).style.transform = "translate(" + v.x + "px," + v.y + "px) scale(" + v.s + ")";
+  };
+  var clampScale = function (s) { return Math.max(0.15, Math.min(2.2, s)); };
+  // The whole flow on screen — unless that makes the names too small to
+  // read, which a long flow on a phone always does. Then the first view is
+  // at reading size and starts at the trigger, with the main line a third of
+  // the way down; the Fit button still fits everything.
+  var fitView = function (c, whole) {
+    var w = c.clientWidth, h = c.clientHeight;
+    if (!w || !h) return null;
+    var W = Number(c.dataset.w), H = Number(c.dataset.h), m = 16;
+    var s = Math.min((w - 2 * m) / W, (h - 2 * m) / H, 1);
+    var readable = w < 640 ? 0.8 : 0.9;
+    if (!whole && s < readable) {
+      s = readable;
+      var main = Number(c.dataset.main);
+      return { s: s, x: m, y: H * s <= h - 2 * m ? (h - H * s) / 2 : Math.min(m, h / 3 - main * s) };
+    }
+    s = clampScale(s);
+    return { s: s, x: (w - W * s) / 2, y: (h - H * s) / 2 };
+  };
+  var zoomAt = function (c, factor, px, py) {
+    var v = VIEWS[c.dataset.canvas];
+    if (!v) return;
+    var s = clampScale(v.s * factor);
+    var k = s / v.s;
+    show(c, { s: s, x: px - (px - v.x) * k, y: py - (py - v.y) * k, sel: v.sel });
+  };
+  var openNode = function (c, id) {
+    var det = c.querySelector('[data-det="' + id + '"]');
+    var panel = c.querySelector(".fpanel");
+    if (!det || !panel) return;
+    c.querySelectorAll(".fnd.sel").forEach(function (n) { n.classList.remove("sel"); });
+    var node = c.querySelector('.fnd[data-node="' + id + '"]');
+    if (node) node.classList.add("sel");
+    panel.querySelector(".fpbody").innerHTML = det.innerHTML;
+    panel.hidden = false;
+    var v = VIEWS[c.dataset.canvas];
+    if (v) v.sel = id;
+  };
+  var closeNode = function (c) {
+    var panel = c.querySelector(".fpanel");
+    if (panel) panel.hidden = true;
+    c.querySelectorAll(".fnd.sel").forEach(function (n) { n.classList.remove("sel"); });
+    var v = VIEWS[c.dataset.canvas];
+    if (v) v.sel = null;
+  };
+  var setupCanvases = function () {
+    document.querySelectorAll(".fcanvas").forEach(function (c) {
+      var v = VIEWS[c.dataset.canvas] || fitView(c, false);
+      if (!v) return; // inside a closed <details>: set up when it opens
+      show(c, v);
+      if (v.sel != null) openNode(c, v.sel);
+    });
+  };
+  // A <details> that opens shows a canvas that had no size to fit to.
+  document.addEventListener("toggle", function (e) {
+    if (e.target && e.target.open && e.target.querySelector) {
+      e.target.querySelectorAll(".fcanvas").forEach(function (c) {
+        var v = VIEWS[c.dataset.canvas] || fitView(c, false);
+        if (v) show(c, v);
+      });
+    }
+  }, true);
+
+  var local = function (c, e) {
+    var r = c.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  };
+  document.addEventListener("pointerdown", function (e) {
+    var c = e.target.closest && e.target.closest(".fcanvas");
+    if (!c || e.button > 0 || e.target.closest(".fpanel,.fctl")) return;
+    if (!VIEWS[c.dataset.canvas]) return;
+    if (!gesture || gesture.c !== c) gesture = { c: c, pts: {}, moved: false, node: null };
+    var p = local(c, e);
+    gesture.pts[e.pointerId] = p;
+    var ids = Object.keys(gesture.pts);
+    var node = e.target.closest(".fnd");
+    gesture.node = ids.length === 1 && node ? node.dataset.node : null;
+    gesture.start = p;
+    gesture.view = VIEWS[c.dataset.canvas];
+    if (ids.length === 2) {
+      var a = gesture.pts[ids[0]], b = gesture.pts[ids[1]];
+      gesture.dist = Math.hypot(a.x - b.x, a.y - b.y);
+      gesture.mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      gesture.moved = true;
+    }
+    try { c.setPointerCapture(e.pointerId); } catch (err) {}
+  });
+  document.addEventListener("pointermove", function (e) {
+    if (!gesture || !(e.pointerId in gesture.pts)) return;
+    var c = gesture.c;
+    var p = local(c, e);
+    gesture.pts[e.pointerId] = p;
+    var ids = Object.keys(gesture.pts);
+    var v0 = gesture.view;
+    if (ids.length >= 2) {
+      var a = gesture.pts[ids[0]], b = gesture.pts[ids[1]];
+      var dist = Math.hypot(a.x - b.x, a.y - b.y);
+      var mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      var s = clampScale(v0.s * dist / (gesture.dist || 1));
+      var k = s / v0.s;
+      show(c, { s: s, x: mid.x - (gesture.mid.x - v0.x) * k, y: mid.y - (gesture.mid.y - v0.y) * k, sel: v0.sel });
+      return;
+    }
+    var dx = p.x - gesture.start.x, dy = p.y - gesture.start.y;
+    if (!gesture.moved && Math.hypot(dx, dy) < 5) return;
+    gesture.moved = true;
+    c.classList.add("drag");
+    show(c, { s: v0.s, x: v0.x + dx, y: v0.y + dy, sel: VIEWS[c.dataset.canvas].sel });
+  });
+  var lift = function (e) {
+    if (!gesture || !(e.pointerId in gesture.pts)) return;
+    var c = gesture.c;
+    delete gesture.pts[e.pointerId];
+    var left = Object.keys(gesture.pts);
+    if (left.length === 0) {
+      // A press that did not move is a click. Handled here rather than by a
+      // click listener, because pointer capture sends the click to the canvas.
+      if (!gesture.moved && e.type === "pointerup") {
+        if (gesture.node != null) openNode(c, gesture.node);
+        else closeNode(c);
+      }
+      c.classList.remove("drag");
+      gesture = null;
+    } else {
+      // One finger of a pinch lifted: carry on as a drag from here.
+      gesture.start = gesture.pts[left[0]];
+      gesture.view = VIEWS[c.dataset.canvas];
+    }
+  };
+  document.addEventListener("pointerup", lift);
+  document.addEventListener("pointercancel", lift);
+  document.addEventListener("wheel", function (e) {
+    var c = e.target.closest && e.target.closest(".fcanvas");
+    if (!c || e.target.closest(".fpanel") || !VIEWS[c.dataset.canvas]) return;
+    e.preventDefault();
+    var p = local(c, e);
+    var dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+    zoomAt(c, Math.exp(-dy * (e.ctrlKey ? 0.01 : 0.0018)), p.x, p.y);
+  }, { passive: false });
+  // overflow:hidden still scrolls when the browser brings a focused node
+  // into view, and a scrolled canvas throws every coordinate here off. Undo
+  // that, and pan to the node instead, so tabbing through the nodes works.
+  document.addEventListener("scroll", function (e) {
+    var c = e.target;
+    if (!c.classList || !c.classList.contains("fcanvas")) return;
+    c.scrollLeft = 0;
+    c.scrollTop = 0;
+  }, true);
+  document.addEventListener("focusin", function (e) {
+    var node = e.target.closest && e.target.closest(".fnd");
+    var c = node && node.closest(".fcanvas");
+    var v = c && VIEWS[c.dataset.canvas];
+    if (!v || gesture) return;
+    var r = node.getBoundingClientRect(), cr = c.getBoundingClientRect(), m = 40;
+    var dx = r.left < cr.left + m ? cr.left + m - r.left : r.right > cr.right - m ? cr.right - m - r.right : 0;
+    var dy = r.top < cr.top + m ? cr.top + m - r.top : r.bottom > cr.bottom - m ? cr.bottom - m - r.bottom : 0;
+    if (dx || dy) show(c, { s: v.s, x: v.x + dx, y: v.y + dy, sel: v.sel });
+  });
+  document.addEventListener("click", function (e) {
+    var c = e.target.closest && e.target.closest(".fcanvas");
+    if (!c) return;
+    var z = e.target.closest("[data-fz]");
+    if (z) {
+      var v = z.dataset.fz;
+      if (v === "fit") {
+        var f = fitView(c, true);
+        if (f) show(c, { s: f.s, x: f.x, y: f.y, sel: (VIEWS[c.dataset.canvas] || {}).sel });
+      } else {
+        zoomAt(c, v === "in" ? 1.25 : 0.8, c.clientWidth / 2, c.clientHeight / 2);
+      }
+      return;
+    }
+    if (e.target.closest("[data-fclose]")) { closeNode(c); return; }
+    // The keyboard's click on a focused node: a mouse's went through pointerup.
+    var node = e.detail === 0 && e.target.closest(".fnd");
+    if (node) openNode(c, node.dataset.node);
+  });
+
   apply();
   showCurrentTab();
+  setupCanvases();
 
   var tick = async function () {
     var el = document.querySelector(".wrap");
@@ -909,6 +1058,8 @@ const SCRIPT = (seconds: number) => `
     // Same for a pause waiting on its reason: the swap would fold the box
     // back up and throw away what had been typed into it.
     if (document.querySelector(".pauser > .askpause:checked")) busy = true;
+    // And a finger or a mouse still down on the flow canvas.
+    if (gesture) busy = true;
     if (!document.hidden && !busy) {
       try {
         var res = await fetch(location.href, { credentials: "same-origin" });
@@ -925,6 +1076,7 @@ const SCRIPT = (seconds: number) => `
             var after = next.querySelector(".tabs");
             if (after) after.scrollLeft = left;
             apply();
+            setupCanvases();
           }
         }
       } catch (err) {}
@@ -1707,30 +1859,10 @@ const fsvg = (d: string, stroke = true) =>
   );
 
 const FICON = {
-  trigger: fsvg(`<path d="M9.5 1 3 9.5h4L6.5 15 13 6.5H9L9.5 1Z"/>`, false),
   flow: fsvg(`<rect x="2" y="2" width="5" height="5" rx="1.2"/><rect x="9" y="9" width="5" height="5" rx="1.2"/><path d="M4.5 7v2.5a2 2 0 0 0 2 2H9"/>`),
-  call: fsvg(`<path d="M2.5 8h9M8 4.5 11.5 8 8 11.5"/>`),
   run: fsvg(`<path d="M6.5 3.5h6v6M12.5 3.5 6 10M3.5 6.5v6h6"/>`),
-  loop: fsvg(`<path d="M3 8a5 5 0 0 1 8.5-3.6M13 8a5 5 0 0 1-8.5 3.6"/><path d="M11.5 1.5v3h-3M4.5 14.5v-3h3"/>`),
-  check: fsvg(`<path d="M8 2 14 8 8 14 2 8Z"/>`),
-  warn: fsvg(`<path d="M8 2.5 14.5 13.5H1.5L8 2.5ZM8 7v3M8 12v.5"/>`),
-  done: fsvg(`<path d="M3 8.5 6.5 12 13 4.5"/>`),
-  fail: fsvg(`<path d="M4 4l8 8M12 4l-8 8"/>`),
-  leave: fsvg(`<path d="M13 3v4a3 3 0 0 1-3 3H3M6 6.5 3 10l3 3.5"/>`),
-  part: fsvg(`<rect x="2" y="3" width="12" height="10" rx="2"/><path d="M2 7h12"/>`),
   chev: fsvg(`<path d="M5 3l5 5-5 5"/>`),
 };
-
-/**
- * Reading-order numbering for the nodes that do something. One counter for
- * the whole graph, boxes included, so "step 4" on the page is the fourth
- * thing that can happen and not the fourth thing in some box.
- */
-interface FlowCounter {
-  n: number;
-  /** One run laid over the graph, or null for the workflow page's plain graph. */
-  trace: Map<FlowNode, RunMark> | null;
-}
 
 /** Whether anything inside these nodes ran, for dimming a whole box at once. */
 function flowRan(nodes: FlowNode[], trace: Map<FlowNode, RunMark>): boolean {
@@ -1867,176 +1999,6 @@ function flowStepNames(nodes: FlowNode[], out: string[] = []): string[] {
   return out;
 }
 
-/** The node itself: icon square, kind label, title, and whatever else. */
-function fnode(cls: string, icon: Html | string, kind: string, body: Html) {
-  return html`<div class="fn ${cls}">
-    <span class="fk">${icon}</span>
-    <div class="fbody"><span class="fkind">${kind}</span>${body}</div>
-  </div>`;
-}
-
-/** A box around nodes, with its own kind label and title. */
-function fgroup(cls: string, icon: Html, kind: string, title: Html, body: Html, foot?: Html) {
-  return html`<div class="fg ${cls}">
-    <div class="fglabel"><span class="fk">${icon}</span><span class="fkind">${kind}</span><b>${title}</b></div>
-    ${body}
-    ${foot ? html`<div class="fgfoot">${foot}</div>` : ""}
-  </div>`;
-}
-
-/**
- * Where a path stops. Inside a helper a `return` leaves the helper and the
- * run carries on after the call; only in run() itself is it the end of the
- * flow. `after` is the gate form — the sentence under a check's condition —
- * and the standalone form is a small node of its own.
- */
-function flowEnd(node: Extract<FlowNode, { kind: "end" }>, after: boolean): Html {
-  const ret = node.label.startsWith("return")
-    ? node.label === "return"
-      ? html`stop here`
-      : html`stop here and return <code>${node.label.slice("return ".length)}</code>`
-    : node.label.startsWith("fail with ")
-      ? html`fail the run with that error`
-      : html`fail the run: ${flowLabel(node.label.replace(/^fail: /, ""))}`;
-  if (after) {
-    if (node.helper && !node.throws) {
-      return html`<p class="fthen">→ skip the rest of <code>${node.helper}()</code></p>`;
-    }
-    if (node.step && !node.throws) {
-      return html`<p class="fthen">→ this step is finished early</p>`;
-    }
-    return html`<p class="fthen ${node.throws ? "bad" : ""}">→ ${ret}</p>`;
-  }
-  if (node.helper && !node.throws) {
-    return fnode("k-leave", FICON.leave, "Stops early", html`<b>Skips the rest of <code>${node.helper}()</code></b>`);
-  }
-  if (node.step && !node.throws) {
-    return fnode("k-leave", FICON.leave, "Stops early", html`<b>The step is finished here</b>`);
-  }
-  if (node.throws) {
-    return fnode("k-fail", FICON.fail, "Fails", html`<b>${flowLabel(node.label.replace(/^fail: /, "").replace(/^fail with (\w+)$/, "with that error"))}</b>`);
-  }
-  return fnode("k-done",
-    FICON.done,
-    "Done",
-    node.label === "return"
-      ? html`<b>The run ends here</b>`
-      : html`<b>Ends, returning <code>${node.label.slice("return ".length)}</code></b>`,
-  );
-}
-
-function flowNode(node: FlowNode, c: FlowCounter): Html {
-  // A box none of whose steps ran is dimmed whole, so the path the run took
-  // is the part of the page that is still lit.
-  const off =
-    c.trace &&
-    (node.kind === "branch" || node.kind === "switch" || node.kind === "loop" || node.kind === "catch" || node.kind === "helper") &&
-    !flowRan([node], c.trace)
-      ? " off"
-      : "";
-  switch (node.kind) {
-    case "step": {
-      c.n++;
-      const n = c.n;
-      const mark = c.trace?.get(node);
-      const state = !c.trace ? "" : !mark ? " off" : mark.failed > 0 ? " ran-bad" : " ran-ok";
-      const head = html`<b>${flowLabel(sentence(node.label))}</b>
-          ${c.trace ? flowMark(mark) : ""}
-          ${node.doc ? html`<p class="fdoc">${node.doc}</p>` : ""}
-          ${flowChips(node.uses, node.runs)}`;
-      if (!node.body) return fnode(`k-step${state}`, String(n), `Step ${n}`, head);
-      // A step with steps inside it is a box: the outer step's own line at
-      // the top, then what happens inside, in order. Numbered as one
-      // sequence, so the first thing inside step 2 is step 3.
-      return html`<div class="fg k-stepbox${state}${off}">
-        <div class="fglabel"><span class="fk">${n}</span><div class="fbody"><span class="fkind">Step ${n} · in stages</span>${head}</div></div>
-        ${flowNodes(node.body, c)}
-        <div class="fgfoot">…and step ${n} is done</div>
-      </div>`;
-    }
-    case "action": {
-      c.n++;
-      const use = node.uses[0];
-      const raw = use ? `${use.name}${use.target ? ` ${use.target}` : ""}` : node.label;
-      return fnode("k-step",
-        String(c.n),
-        `Step ${c.n} · a plain call`,
-        html`<b title="ctx.${raw} — outside any ctx.step(), so the run page does not record it">${use ? html`${sentence(use.verb)} ${use.service}` : node.label}</b>
-          ${flowChips([], node.runs)}`,
-      );
-    }
-    case "run":
-      c.n++;
-      return fnode("k-run",
-        String(c.n),
-        `Step ${c.n} · another workflow`,
-        html`<b>Runs <a href="/workflows/${node.workflow}">${node.workflow}</a> and waits for it</b>`,
-      );
-    case "loop":
-      return fgroup(`k-loop${off}`,
-        FICON.loop,
-        "Loop",
-        html`Repeat for ${node.label}`,
-        flowNodes(node.body, c),
-        html`…then the next one, until there are no more`,
-      );
-    case "catch":
-      return fgroup(`k-catch${off}`, FICON.warn, "If that fails", html`instead of stopping the run`, flowNodes(node.body, c));
-    case "helper":
-      return fgroup(`k-part${off}`,
-        FICON.part,
-        "Shared steps",
-        html`<code>${node.name}()</code>${node.doc ? html` <span class="fdoc">— ${node.doc}</span>` : ""}`,
-        flowNodes(node.body, c),
-      );
-    case "branch": {
-      const only = node.body[0];
-      // `if (x) return …` — a gate, not a box. One node: the condition and
-      // where the flow goes when it holds. A box around one pill was the
-      // tallest thing on the page and said the least.
-      if (node.else.length === 0 && node.body.length === 1 && only?.kind === "end") {
-        return fnode("k-check",
-          FICON.check,
-          "Check",
-          html`<b title="${node.code}">If ${node.label}</b>${flowEnd(only, true)}
-            ${node.doc ? html`<p class="fdoc">${node.doc}</p>` : ""}
-            <p class="fthen quiet">otherwise, carry on ↓</p>`,
-        );
-      }
-      return fgroup(`k-check${off}`,
-        FICON.check,
-        "Check",
-        html`<span title="${node.code}">If ${node.label}</span>${node.doc ? html` <span class="fdoc">— ${node.doc}</span>` : ""}`,
-        node.else.length > 0
-          ? html`<div class="fsplit">
-              <div><div class="fhead">yes</div>${flowNodes(node.body, c)}</div>
-              <div><div class="fhead">no</div>${flowNodes(node.else, c)}</div>
-            </div>`
-          : flowNodes(node.body, c),
-        node.else.length > 0
-          ? undefined
-          : node.body[node.body.length - 1]?.kind === "end"
-            ? html`otherwise, carry on below`
-            : html`otherwise this box is skipped`,
-      );
-    }
-    case "switch":
-      return fgroup(`k-check${off}`,
-        FICON.check,
-        "Check",
-        html`Depending on <code>${node.label.replace(/^switch /, "")}</code>`,
-        html`<div class="fcases">
-          ${node.cases.map((k) => html`<div><div class="fhead">${k.label}</div>${flowNodes(k.body, c)}</div>`)}
-        </div>`,
-      );
-    case "end":
-      return flowEnd(node, false);
-  }
-}
-
-function flowNodes(nodes: FlowNode[], c: FlowCounter): Html {
-  return html`<div class="flow">${nodes.map((n) => flowNode(n, c))}</div>`;
-}
 
 /** How many of each thing, for the closed summary line. */
 function flowCounts(nodes: FlowNode[], acc = { steps: 0, checks: 0, loops: 0 }) {
@@ -2077,12 +2039,34 @@ function flowCounts(nodes: FlowNode[], acc = { steps: 0, checks: 0, loops: 0 }) 
 /**
  * How a run of this workflow begins — its own trigger, plus every workflow
  * whose flow calls it with `ctx.run()`, which is a way of being started that
- * the trigger line on the Definition table does not mention.
+ * the trigger line on the Definition table does not mention. The canvas node
+ * shows `name` and `sub`; clicking it shows `panel`.
  */
 function flowTrigger(wf: LoadedWorkflow, callers: string[], poll: Flow["poll"]) {
   const t = wf.trigger;
   // "New what, from where" — the fetch's services, when the analyser saw them.
   const asked = poll ? [...new Set(poll.uses.map((u) => u.service))] : [];
+  const words = t.kind === "cron" || t.kind === "poll" ? cronWords(t.expression) : null;
+  const name =
+    t.kind === "cron"
+      ? "Schedule"
+      : t.kind === "poll"
+        ? asked.length > 0 ? `Poll ${listOf(asked)}` : "Poll"
+        : t.kind === "webhook"
+          ? "Webhook"
+          : callers.length > 0
+            ? "Run by a workflow"
+            : "Manual";
+  const sub =
+    t.kind === "cron" || t.kind === "poll"
+      ? (words ?? t.expression)
+      : t.kind === "webhook"
+        ? `${t.method ?? "POST"} /hooks/${t.path}`
+        : callers.length > 0
+          ? callers.join(", ")
+          : "Run now button";
+  const icon =
+    t.kind === "cron" ? GLYPH.clock : t.kind === "poll" ? GLYPH.loop : t.kind === "webhook" ? GLYPH.bolt : callers.length > 0 ? GLYPH.workflow : GLYPH.play;
   const title =
     t.kind === "cron"
       ? html`Starts on a schedule`
@@ -2095,26 +2079,23 @@ function flowTrigger(wf: LoadedWorkflow, callers: string[], poll: Flow["poll"]) 
           : callers.length > 0
             ? html`Starts when another workflow runs it`
             : html`Starts by hand`;
-  const words = t.kind === "cron" || t.kind === "poll" ? cronWords(t.expression) : null;
   const detail =
     t.kind === "cron" || t.kind === "poll"
       ? html`${words ? html`${words} · ` : ""}<code>${t.expression}</code>${t.tz ? html` ${t.tz}` : ""}`
       : t.kind === "webhook"
         ? html`${t.filter ? html`deliveries are filtered first · ` : ""}${t.respond === "sync" ? "the caller waits for the result" : "the caller gets 202 straight away"}`
         : html`the Run now button below`;
-  return fnode("k-trigger",
-    FICON.trigger,
-    "Trigger",
-    html`<b>${title}</b>
-      <p class="fdoc">${detail}</p>
-      ${poll ? flowChips(poll.uses.map((u) => (u.name.startsWith("http.") ? { ...u, verb: "asks" } : u)), poll.runs) : ""}
-      ${callers.length > 0
-        ? html`<div class="fchips">
-            ${callers.map((name) => html`<a class="fchip run" href="/workflows/${name}">${FICON.run} also started by ${name}</a>`)}
-          </div>`
-        : ""}`,
-  );
+  const panel = html`<h4>${title}</h4>
+    <p class="fdoc">${detail}</p>
+    ${poll ? flowChips(poll.uses.map((u) => (u.name.startsWith("http.") ? { ...u, verb: "asks" } : u)), poll.runs) : ""}
+    ${callers.length > 0
+      ? html`<div class="fchips">
+          ${callers.map((c) => html`<a class="fchip run" href="/workflows/${c}">${FICON.run} also started by ${c}</a>`)}
+        </div>`
+      : ""}`;
+  return { name, sub, icon, panel };
 }
+
 
 /**
  * A cron expression in words, for the shapes a workflow here actually uses:
@@ -2146,35 +2127,344 @@ function listOf(items: string[]): string {
   return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
 }
 
-/** `if (x) return …` / `if (x) throw …` with nothing else: a gate, not a box. */
-function isGate(n: FlowNode): n is Extract<FlowNode, { kind: "branch" }> {
-  return n.kind === "branch" && n.else.length === 0 && n.body.length === 1 && n.body[0]?.kind === "end";
+/* ---- the canvas ----
+   Each node on it is an icon in a box with its name underneath, the way n8n
+   draws one: the icon is the service the node talks to, so a line of nodes
+   reads as "Notion → Telegram" before a single name is read. Everything
+   else about a node — its comment, the calls it makes, the condition as
+   written, what a run did there — is in the panel a click opens. */
+
+const glyph = (d: string) =>
+  raw(
+    `<svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`,
+  );
+const letter = (s: string, size = 16) =>
+  glyph(
+    `<text x="12" y="${12 + size * 0.36}" text-anchor="middle" font-size="${size}" font-weight="700" fill="currentColor" stroke="none" font-family="ui-sans-serif,system-ui,sans-serif">${s}</text>`,
+  );
+
+const GLYPH = {
+  globe: glyph(`<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.7 3.8 5.7 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-5.7-3.8-9S9.5 5.7 12 3Z"/>`),
+  plane: glyph(`<path d="M21 4 3 11l6 2.5M21 4l-3.5 16-8.5-6.5M21 4 9 13.5v5l3-3"/>`),
+  chat: glyph(`<path d="M4 20l1.3-4A8 8 0 1 1 8 18.7L4 20Z"/>`),
+  camera: glyph(`<rect x="3.5" y="3.5" width="17" height="17" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17" cy="7" r=".6" fill="currentColor"/>`),
+  at: glyph(`<circle cx="12" cy="12" r="3.5"/><path d="M15.5 12v1.5a2.5 2.5 0 0 0 5 0V12a8.5 8.5 0 1 0-3.3 6.7"/>`),
+  drive: glyph(`<path d="M9 4h6l6.5 11-3 5H5.5l-3-5L9 4Z"/><path d="M2.5 15h19M9 4l6.5 11M15 4 8.5 15"/>`),
+  grid: glyph(`<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 9h16M4 15h16M10 9v12"/>`),
+  mail: glyph(`<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 6 8.5 7 8.5-7"/>`),
+  sparkle: glyph(`<path d="M11 3c.6 4.6 2.4 6.4 7 7-4.6.6-6.4 2.4-7 7-.6-4.6-2.4-6.4-7-7 4.6-.6 6.4-2.4 7-7Z"/><path d="M19 14.5c.3 1.8.9 2.4 2.5 2.7-1.6.3-2.2.9-2.5 2.6-.3-1.7-.9-2.3-2.5-2.6 1.6-.3 2.2-.9 2.5-2.7Z"/>`),
+  db: glyph(`<ellipse cx="12" cy="6" rx="7" ry="2.8"/><path d="M5 6v12c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8V6M5 12c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8"/>`),
+  bucket: glyph(`<path d="M4 6.5 6 20h12l2-13.5"/><ellipse cx="12" cy="6.5" rx="8" ry="2.5"/>`),
+  hash: glyph(`<path d="M10 3 8 21M16 3l-2 18M4 9h16M4 15h16"/>`),
+  monday: glyph(`<path d="M4.5 17 8.5 8M10.5 17l4-9"/><circle cx="18.5" cy="15.5" r="1.8"/>`),
+  code: glyph(`<path d="M8 4c-2 0-3 1-3 3v2.5c0 1-.8 2.5-2 2.5 1.2 0 2 1.5 2 2.5V17c0 2 1 3 3 3M16 4c2 0 3 1 3 3v2.5c0 1 .8 2.5 2 2.5-1.2 0-2 1.5-2 2.5V17c0 2-1 3-3 3"/>`),
+  workflow: glyph(`<rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="13" width="7" height="7" rx="1.5"/><path d="M10 7.5h3.5a2 2 0 0 1 2 2V13"/>`),
+  split: glyph(`<path d="M3 12h5M8 12c3 0 3-6 7-6h5M8 12c3 0 3 6 7 6h5M17 3.5 20 6l-3 2.5M17 15.5l3 2.5-3 2.5"/>`),
+  switch: glyph(`<path d="M3 12h5M8 12c3 0 3-7 7-7h5M8 12h12M8 12c3 0 3 7 7 7h5"/>`),
+  funnel: glyph(`<path d="M3.5 5h17l-6.5 7.5V19l-4 1.5v-8L3.5 5Z"/>`),
+  loop: glyph(`<path d="M4 12a8 8 0 0 1 13.7-5.6M20 12a8 8 0 0 1-13.7 5.6"/><path d="M18 2.5v4h-4M6 21.5v-4h4"/>`),
+  clock: glyph(`<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/>`),
+  bolt: glyph(`<path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12L13 2Z"/>`),
+  play: glyph(`<path d="M7 4.5v15l12-7.5-12-7.5Z"/>`),
+  warn: glyph(`<path d="M12 3.5 21.5 20h-19L12 3.5ZM12 10v4.5M12 17.2v.3"/>`),
+  done: glyph(`<path d="M5 12.5 10 17.5 19 7"/>`),
+  fail: glyph(`<path d="M6 6l12 12M18 6 6 18"/>`),
+  skip: glyph(`<path d="M4 7h11a5 5 0 0 1 0 10H9M4 7l3.5-3.5M4 7l3.5 3.5"/>`),
+};
+
+/** A service's glyph and colour — the brand's colour where everybody knows it. */
+const SERVICE_ICONS: [RegExp, Html, string][] = [
+  [/^Notion$/, letter("N"), "var(--fg)"],
+  [/^Telegram$/, GLYPH.plane, "#2AABEE"],
+  [/^WhatsApp$/, GLYPH.chat, "#25D366"],
+  [/Instagram|Facebook/, GLYPH.camera, "#E1306C"],
+  [/^Threads$/, GLYPH.at, "var(--fg)"],
+  [/^Google Drive$/, GLYPH.drive, "#1FA463"],
+  [/^Google Sheets$/, GLYPH.grid, "#0F9D58"],
+  [/^Google$/, letter("G"), "#4285F4"],
+  [/^Monday\.com$/, GLYPH.monday, "#FF3D57"],
+  [/S3|Cloudflare/, GLYPH.bucket, "#F38020"],
+  [/^email$|^Brevo$/, GLYPH.mail, "#EA4335"],
+  [/AI model|^Anthropic$|^OpenAI$/, GLYPH.sparkle, "#D97757"],
+  [/database|saved state|table/, GLYPH.db, "#8B5CF6"],
+  [/^Slack$/, GLYPH.hash, "#E01E5A"],
+  [/^Discord$/, GLYPH.chat, "#5865F2"],
+  [/^GitHub$/, letter("GH", 11), "var(--fg)"],
+  [/^Stripe$/, letter("S"), "#635BFF"],
+  [/^Shopify$/, letter("S"), "#95BF47"],
+  [/^Airtable$/, GLYPH.grid, "#FCB400"],
+];
+
+function serviceIcon(service: string | undefined): { icon: Html; color: string } {
+  if (!service) return { icon: GLYPH.code, color: "var(--muted)" };
+  for (const [re, icon, color] of SERVICE_ICONS) if (re.test(service)) return { icon, color };
+  return { icon: GLYPH.globe, color: "var(--accent)" };
+}
+
+/** How one placed node looks: its box, the words under it, and its panel. */
+interface Face {
+  tone: string;
+  icon: Html;
+  color?: string;
+  name: Html | string;
+  sub?: string;
+  panel: Html;
+  /** Dimmed: a run is laid over the canvas and it did not go here. */
+  off: boolean;
+  /** Lit: a run went through here, for colouring the wire into it. */
+  lit: boolean;
+  badge?: Html;
+}
+
+const cutText = (s: string, max = 34) => (s.length > max ? `${s.slice(0, max - 1)}…` : s);
+
+/** "each page in pages" → "For each page in pages"; "while more" → "Repeat while more". */
+const loopName = (label: string) => (label.startsWith("each ") ? `For ${label}` : label.startsWith("while ") ? `Repeat ${label}` : "Repeat");
+
+/** What happens at an end, in words, for the panel and the gate list. */
+function endWords(end: Extract<FlowNode, { kind: "end" }>): Html {
+  if (end.throws) {
+    return html`<span class="bad">fails: ${flowLabel(end.label.replace(/^fail: /, "").replace(/^fail with \w+$/, "with that error"))}</span>`;
+  }
+  if (end.helper) return html`skips the rest of <code>${end.helper}()</code>`;
+  if (end.step) return html`finishes the step early`;
+  return end.label === "return" ? html`stops here` : html`stops, returning <code>${end.label.slice("return ".length)}</code>`;
+}
+
+function face(
+  p: Placed,
+  trace: Map<FlowNode, RunMark> | null,
+  trigger: ReturnType<typeof flowTrigger>,
+): Face {
+  const card = p.card;
+  const plain = { off: false, lit: false };
+  switch (card.kind) {
+    case "trigger":
+      return { ...plain, tone: "k-trigger", icon: trigger.icon, color: "var(--accent)", name: trigger.name, sub: trigger.sub, panel: html`<p class="fpk">Trigger</p>${trigger.panel}` };
+    case "error-trigger":
+      return {
+        ...plain,
+        tone: "k-err",
+        icon: GLYPH.warn,
+        color: "var(--red)",
+        name: "If the run fails",
+        sub: "after the last retry",
+        panel: html`<p class="fpk">Error trigger</p><h4>Runs when the run fails</h4>
+          <p class="fdoc">The <code>onFailure</code> hook: after the last retry has failed, this line runs instead of the run simply stopping.</p>`,
+      };
+    case "node": {
+      const n = card.node;
+      if (n.kind === "run") {
+        return {
+          ...plain,
+          tone: "k-run",
+          icon: GLYPH.workflow,
+          color: "var(--accent)",
+          name: n.workflow,
+          sub: "runs a workflow",
+          panel: html`<p class="fpk">Execute workflow</p><h4>Runs <a href="/workflows/${n.workflow}">${n.workflow}</a> and waits for it</h4>`,
+        };
+      }
+      const services = flowServices([n]);
+      const { icon, color } = n.runs.length > 0 && services.length === 0 ? { icon: GLYPH.workflow, color: "var(--accent)" } : serviceIcon(services[0]);
+      const sub = [...services, ...n.runs.map((r) => `runs ${r}`)].join(" · ") || "code";
+      if (n.kind === "action") {
+        const use = n.uses[0];
+        const call = use ? `${use.name}${use.target ? ` ${use.target}` : ""}` : n.label;
+        return {
+          ...plain,
+          tone: "k-step",
+          icon,
+          color,
+          name: use ? sentence(`${use.verb} ${use.service}`) : n.label,
+          sub: "plain call",
+          panel: html`<p class="fpk">Plain call</p><h4>${use ? sentence(`${use.verb} ${use.service}`) : n.label}</h4>
+            <p class="fdoc"><code>ctx.${call}</code> — outside any <code>ctx.step()</code>, so the run page does not record it.</p>
+            ${flowChips([], n.runs)}`,
+        };
+      }
+      const mark = trace?.get(n);
+      const ran = !!mark || (n.body ? flowRan(n.body, trace ?? new Map()) : false);
+      return {
+        tone: "k-step",
+        icon,
+        color,
+        name: html`${flowLabel(sentence(n.label))}`,
+        sub,
+        off: !!trace && !ran,
+        lit: !!trace && ran,
+        ...(mark ? { badge: html`<span class="fbadge ${mark.failed > 0 ? "bad" : "ok"}">${mark.failed > 0 ? "✗" : "✓"}${mark.count > 1 ? ` ${mark.count}` : ""}</span>` } : {}),
+        panel: html`<p class="fpk">Step${framed(n) ? " · with steps inside" : ""}</p>
+          <h4>${flowLabel(sentence(n.label))}</h4>
+          ${trace ? flowMark(mark) : ""}
+          ${n.doc ? html`<p class="fdoc">${n.doc}</p>` : ""}
+          ${flowChips(n.uses, n.runs)}
+          ${framed(n) ? html`<p class="fdoc">The steps it runs inside are in the frame to its right.</p>` : ""}`,
+      };
+    }
+    case "if": {
+      const n = card.node;
+      const ran = !!trace && flowRan([n], trace);
+      return {
+        tone: "k-if",
+        icon: GLYPH.split,
+        color: "var(--yellow)",
+        name: cutText(`If ${n.label}`, 48),
+        // Never dimmed: a check the run reached but whose sides hold no
+        // recorded step — a side that only stops — was still decided.
+        off: false,
+        lit: ran,
+        panel: html`<p class="fpk">IF</p><h4>If ${n.label}</h4>
+          ${n.doc ? html`<p class="fdoc">${n.doc}</p>` : ""}
+          <pre class="fcode">${n.code}</pre>
+          <p class="fdoc">When it holds the wire marked <b>true</b> is followed, otherwise <b>false</b>.${
+            n.body.length === 0 || n.else.length === 0 ? " The side with nothing on it goes straight on." : ""
+          }</p>`,
+      };
+    }
+    case "filter":
+      return {
+        ...plain,
+        tone: "k-if",
+        icon: GLYPH.funnel,
+        color: "var(--yellow)",
+        name: `${card.gates.length} checks`,
+        sub: "must all pass",
+        panel: html`<p class="fpk">Filter</p><h4>${card.gates.length} things must hold before going on</h4>
+          <ul class="fgates">
+            ${card.gates.map((g) => html`<li title="${g.code}${g.doc ? `\n\n${g.doc}` : ""}">If ${g.label} <span class="farrow">→</span> ${endWords(g.body[0] as Extract<FlowNode, { kind: "end" }>)}</li>`)}
+          </ul>`,
+      };
+    case "switch": {
+      const n = card.node;
+      const ran = !!trace && flowRan([n], trace);
+      const on = n.label.replace(/^switch /, "");
+      return {
+        tone: "k-if",
+        icon: GLYPH.switch,
+        color: "var(--yellow)",
+        name: cutText(`Switch on ${on}`, 48),
+        sub: `${n.cases.length} cases`,
+        // Never dimmed: a check the run reached but whose sides hold no
+        // recorded step — a side that only stops — was still decided.
+        off: false,
+        lit: ran,
+        panel: html`<p class="fpk">Switch</p><h4>Depending on <code>${on}</code></h4>
+          <ul class="fgates">${n.cases.map((k) => html`<li><code>${k.label}</code></li>`)}</ul>
+          ${n.cases.some((k) => k.label.split(", ").includes("otherwise")) ? "" : html`<p class="fdoc">Any other value goes straight on, along <b>other</b>.</p>`}`,
+      };
+    }
+    case "loop": {
+      const n = card.node;
+      const ran = !!trace && flowRan([n], trace);
+      return {
+        tone: "k-loop",
+        icon: GLYPH.loop,
+        color: "var(--accent)",
+        name: cutText(loopName(n.label), 48),
+        sub: "loop",
+        // Never dimmed: a check the run reached but whose sides hold no
+        // recorded step — a side that only stops — was still decided.
+        off: false,
+        lit: ran,
+        panel: html`<p class="fpk">Loop over items</p><h4>${loopName(n.label)}</h4>
+          <p class="fdoc">Runs the nodes along <b>loop</b> once each time round, then carries on along <b>done</b>.</p>`,
+      };
+    }
+    case "end": {
+      const n = card.node;
+      if (n.throws) {
+        const why = n.label.replace(/^fail: /, "").replace(/^fail with \w+$/, "with that error");
+        return {
+          ...plain,
+          tone: "k-fail",
+          icon: GLYPH.fail,
+          color: "var(--red)",
+          name: "Fail",
+          sub: cutText(why.replace(/[{}]/g, ""), 30),
+          panel: html`<p class="fpk">Fails the run</p><h4>${flowLabel(sentence(why))}</h4>`,
+        };
+      }
+      if (n.helper || n.step) {
+        return {
+          ...plain,
+          tone: "k-skip",
+          icon: GLYPH.skip,
+          color: "var(--muted)",
+          name: "Skip the rest",
+          sub: n.helper ? `of ${n.helper}()` : "of this step",
+          panel: html`<p class="fpk">Stops early</p>
+            <h4>${n.helper ? html`Skips the rest of <code>${n.helper}()</code>` : "Finishes the step early"}</h4>
+            <p class="fdoc">The flow carries on after the frame it is in.</p>`,
+        };
+      }
+      const value = n.label === "return" ? "" : n.label.slice("return ".length);
+      return {
+        ...plain,
+        tone: "k-done",
+        icon: GLYPH.done,
+        color: "var(--green)",
+        name: "Done",
+        ...(value ? { sub: cutText(value, 30) } : {}),
+        panel: html`<p class="fpk">End</p><h4>The run ends here</h4>
+          ${value ? html`<p class="fdoc">Returning <code>${value}</code> — shown on the run page.</p>` : ""}`,
+      };
+    }
+    case "done":
+      return { ...plain, tone: "k-done", icon: GLYPH.done, color: "var(--green)", name: "Done", panel: html`<p class="fpk">End</p><h4>The run ends here</h4>` };
+  }
 }
 
 /**
- * The gates at the very top of run(), folded into one node. Three "check →
- * fail" boxes before the first step are preconditions — the credentials are
- * wrong, there is nothing to do — and drawn one by one they were the tallest
- * thing on the page and the least about the flow. One box, one line each,
- * the condition as written and the comment above it on hover.
+ * The canvas: frames at the back, wires over them, nodes on top — plus the
+ * zoom buttons, the panel a click opens, and every node's panel content,
+ * hidden, for the script to show. The script pans and zooms `.fworld` with
+ * a transform, so everything in it is laid out at 1:1 in canvas pixels.
  */
-function flowGates(gates: Extract<FlowNode, { kind: "branch" }>[]) {
-  return fnode("k-check",
-    FICON.check,
-    "Checked first",
-    html`<b>${gates.length} things must hold before anything runs</b>
-      <ul class="fgates">
-        ${gates.map((g) => {
-          const end = g.body[0] as Extract<FlowNode, { kind: "end" }>;
-          const then = end.throws
-            ? html`<span class="bad">fails: ${flowLabel(end.label.replace(/^fail: /, "").replace(/^fail with \w+$/, "with that error"))}</span>`
-            : end.label === "return"
-              ? html`stops here`
-              : html`stops, returning <code>${end.label.slice("return ".length)}</code>`;
-          return html`<li title="${g.code}${g.doc ? `\n\n${g.doc}` : ""}">If ${g.label} <span class="farrow">→</span> ${then}</li>`;
+function flowCanvas(key: string, layout: Layout, faces: Map<number, Face>, traced: boolean) {
+  const { minX, minY, width, height } = layout;
+  const px = (n: number) => Math.round(n * 10) / 10;
+  const lit = (id: number | undefined) => id !== undefined && faces.get(id)?.lit === true;
+  return html`<div class="fcanvas" data-canvas="${key}" data-w="${px(width)}" data-h="${px(height)}" data-main="${px(layout.mainY - minY)}">
+    <div class="fworld" style="width:${px(width)}px;height:${px(height)}px">
+      ${layout.frames.map(
+        (f) => html`<div class="ffr k-${f.kind}" style="left:${px(f.x - minX)}px;top:${px(f.y - minY)}px;width:${px(f.w)}px;height:${px(f.h)}px"${f.doc ? html` title="${f.doc}"` : ""}><span>${f.label}</span></div>`,
+      )}
+      <svg class="fwires" width="${px(width)}" height="${px(height)}" viewBox="${px(minX)} ${px(minY)} ${px(width)} ${px(height)}" aria-hidden="true">
+        ${layout.wires.map((w) => html`<path d="${w.d}" class="${w.tone}${traced && lit(w.to) ? " lit" : ""}"/>`)}
+        ${layout.wires.map((w) => (w.label ? html`<text class="${w.tone}" x="${w.label.x}" y="${w.label.y}">${w.label.text}</text>` : ""))}
+        ${layout.nodes.map((p) => {
+          const inPin = p.shape === "trigger" ? "" : html`<circle class="pin" cx="${p.x}" cy="${p.y}" r="4"/>`;
+          const outs = p.outs.map(
+            (o) => html`<circle class="pin" cx="${p.x + p.w}" cy="${p.y + o.dy}" r="4"/>${
+              o.label ? html`<text x="${p.x + p.w + 7}" y="${p.y + o.dy - 5}">${o.label}</text>` : ""
+            }`,
+          );
+          return html`${inPin}${outs}`;
         })}
-      </ul>`,
-  );
+      </svg>
+      ${layout.nodes.map((p) => {
+        const f = faces.get(p.id)!;
+        return html`<button type="button" class="fnd ${f.tone} s-${p.shape}${f.off ? " off" : ""}" data-node="${p.id}"
+          style="left:${px(p.x - minX)}px;top:${px(p.y - p.h / 2 - minY)}px;width:${p.w}px;height:${p.h}px${f.color ? `;--c:${f.color}` : ""}">
+          <span class="fic">${f.icon}</span>${f.badge ?? ""}
+          <span class="flb"><b>${f.name}</b>${f.sub ? html`<small>${f.sub}</small>` : ""}</span>
+        </button>`;
+      })}
+    </div>
+    <div class="fctl">
+      <button type="button" data-fz="in" title="Zoom in" aria-label="Zoom in">+</button>
+      <button type="button" data-fz="out" title="Zoom out" aria-label="Zoom out">−</button>
+      <button type="button" data-fz="fit" title="Fit the whole flow on screen">Fit</button>
+    </div>
+    <aside class="fpanel" hidden>
+      <button type="button" class="fpx" data-fclose aria-label="Close">×</button>
+      <div class="fpbody"></div>
+    </aside>
+    <div hidden>
+      ${layout.nodes.map((p) => html`<div data-det="${p.id}">${faces.get(p.id)!.panel}</div>`)}
+    </div>
+  </div>`;
 }
 
 /**
@@ -2205,13 +2495,9 @@ function flowSection(
     : run
       ? `this run's path — ${run.marks.size + run.unplaced.length} of ${counts.steps} steps ran`
       : [chain, services.length ? `talks to ${listOf(services)}` : ""].filter(Boolean).join(" · ");
-  const c: FlowCounter = { n: 0, trace };
-  // Leading gates fold into one node; anything after the first non-gate is
-  // drawn as it comes, because by then it is part of the flow.
-  let lead = 0;
-  while (lead < flow.nodes.length && isGate(flow.nodes[lead]!)) lead++;
-  const gates = lead >= 2 ? (flow.nodes.slice(0, lead) as Extract<FlowNode, { kind: "branch" }>[]) : [];
-  const rest = gates.length ? flow.nodes.slice(lead) : flow.nodes;
+  const layout = layoutFlow(flow.error ? [] : flow.nodes, flow.error ? null : flow.onFailure);
+  const trigger = flowTrigger(wf, callers, flow.poll);
+  const faces = new Map(layout.nodes.map((p) => [p.id, face(p, trace, trigger)] as const));
 
   return html`
     <details class="fbox" data-reveal="flow:${wf.name}">
@@ -2221,49 +2507,35 @@ function flowSection(
         <span class="fopen">show</span><span class="fclose">hide</span>
         ${FICON.chev}
       </summary>
-      <div class="flowin">
-        <div class="flegend">
-          <span><i class="fk k-step">1</i> a step, in order</span>
-          <span><i class="fk k-check">${FICON.check}</i> a decision</span>
-          <span><i class="fk k-loop">${FICON.loop}</i> repeats</span>
-          <span><i class="fk k-done">${FICON.done}</i> where it ends</span>
-          <span><i class="fk k-fail">${FICON.fail}</i> where it fails</span>
-          ${trace ? html`<span><i class="fk off">·</i> dimmed — this run did not go there</span>` : ""}
-        </div>
-        ${flow.error
-          ? html`<div class="flow">${flowTrigger(wf, callers, flow.poll)}</div>
-              <p class="fempty">Could not read the flow from the source — ${flow.error}.</p>`
-          : html`<div class="flow">${flowTrigger(wf, callers, flow.poll)}${gates.length ? flowGates(gates) : ""}${rest.map((n) => flowNode(n, c))}</div>`}
-        ${flow.onFailure && flow.onFailure.length > 0
-          ? html`<div class="fside">
-              ${fgroup("k-fail", FICON.warn, "If the run fails", html`this runs instead, after the last retry`, flowNodes(flow.onFailure, c))}
-            </div>`
-          : ""}
+      ${flowCanvas(`flow:${wf.name}${run ? ":run" : ""}`, layout, faces, trace !== null)}
+      <div class="flowfoot">
+        ${flow.error ? html`<p class="fempty">Could not read the flow from the source — ${flow.error}.</p>` : ""}
         ${run && run.unplaced.length > 0
           ? html`<p class="fnote">
-              Also ran, but could not be placed on the graph because the step is named from a value:
+              Also ran, but could not be placed on the canvas because the step is named from a value:
               ${run.unplaced.map(
                 (s, i) => html`${i > 0 ? ", " : " "}<span class="${s.status === "ok" ? "success" : "failed"}">${s.status === "ok" ? "✓" : "✗"}</span> <code>${s.name}</code>`,
               )}.
             </p>`
           : ""}
         <p class="fnote">
+          Drag to move, scroll or pinch to zoom, click a node for what it does.
           Read from <code>workflows/${wf.file}</code>${
             helpers.length > 0
               ? html` and ${helpers.map((f, i) => html`${i > 0 ? ", " : ""}<code>${f}</code>`)}`
               : ""
           }. ${
             trace
-              ? html`The graph is every path the code can take; this run's steps are matched onto it by name, so a name two branches share is credited to the first.`
+              ? html`The canvas is every path the code can take; this run's steps are matched onto it by name, so a name two branches share is credited to the first.`
               : html`It shows every path the code can take, not what one run did — open a run for that.`
           }
-          Hover a check to see the condition as written, and a chip to see the call.
           ${flow.notes.length > 0 ? html`Not followed: ${flow.notes.join("; ")}.` : ""}
         </p>
       </div>
     </details>
   `;
 }
+
 
 export function workflowPage(
   wf: LoadedWorkflow,

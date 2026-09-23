@@ -8,6 +8,50 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-23
 
+### The Flow is an n8n canvas now, left to right, instead of a column of boxes
+
+The Flow section drew a workflow top to bottom, with a loop, a check and a
+helper each as a box around the nodes inside it. It was accurate and hard to
+read: a helper called inside a step inside a loop was three boxes deep, and
+following one path meant reading down through boxes that belonged to other
+paths. The ask was "like n8n, but simpler" — n8n's canvas is the thing the
+reader already knows how to read.
+
+So the same tree from `flow.ts` is now laid out by `src/server/flow-layout.ts`
+as a canvas: each node an icon in a box with its name under it, wires between
+them, IF / Switch / Filter / Loop nodes with labelled outputs, pan and zoom,
+and a click opening a panel with what the old column printed inline. Nothing
+in the analysis changed; `flow.ts` and the JSON endpoint are untouched.
+
+What was settled, and what lost:
+
+- **Helpers are flattened onto the main line, with a frame behind them.**
+  n8n has no nesting at all — reusable logic is a sub-workflow you open
+  separately. Considered: a helper as one node you click into (n8n's Execute
+  Workflow), and plain flattening with no trace of the helper. Chosen:
+  flattened, with a labelled frame (n8n's sticky note), because the steps
+  should be seen on the line and the reader should still know where in the
+  code they live.
+- **A guard clause lets the rest of the code carry on from the IF node.**
+  Laid out plainly, the line waited for the longest side of every check, and
+  one big `if (…) { …; return }` in `whatsapp-relay` left a wire 2,000px
+  long with nothing on it. The rest of the list is now the check's other side
+  and the side that stops is packed in underneath against what is above it.
+  The cost is that the code after a guard is drawn as *inside* the IF's false
+  side, which it semantically is.
+- **Details moved behind a click.** The column showed each step's comment and
+  chips inline; the canvas shows an icon, a name and one line, and the rest is
+  in the panel. That is what makes it scannable, and it is the trade.
+- **Step numbers are gone.** A left-to-right canvas with wires already says
+  the order; numbering a branching graph in reading order was only meaningful
+  in a single column.
+- **Any run of two or more stopping guards is one Filter node**, not only the
+  ones at the very top of `run()` — they are the same shape wherever they are.
+- **On a run page, only steps dim.** Dimming a whole box the run did not enter
+  was right for boxes; an IF node the run reached but whose sides hold no
+  recorded step (a side that only returns) was still decided, and dimming it
+  said the opposite.
+
 ### Facebook error 324 is a failed fetch, not a failed post, and was being treated as fatal
 
 A row published to Instagram and Threads and failed on Facebook with

@@ -35,6 +35,8 @@ src/cli/           secrets — the write side of the store, run before the loade
 src/integrations/  index (barrel + lazy ctx clients) · http · messaging
                    ai · email · sql · sheets · scrape · oauth
 src/server/        app (webhooks + REST + dashboard routes) · views (HTML)
+                   flow-layout (places the flow's nodes and wires on the
+                   workflow page's n8n-style canvas — geometry only)
                    view-render (panels and charts — note the name collision:
                    `src/server/views.ts` is the dashboard's HTML, while
                    `src/core/views.ts` is the Views *feature*)
@@ -295,6 +297,21 @@ as nodes too made every step a box; and a chip is words (`updates Notion`)
 with the call on hover, from the `SERVICES` / `VERBS` tables in `flow.ts` —
 a new integration client or a new host wants a line in each, or it shows as
 `uses <client>` and the bare hostname.
+
+**The canvas is drawn from the tree, and only the drawing changes shape.**
+`src/server/flow-layout.ts` turns `flow.ts`'s tree into positioned nodes and
+wires, left to right. It never adds or drops a node — every `FlowNode` becomes
+exactly one node, or a frame, or a wire — and the analysis stays a tree; do not
+move layout concerns into `flow.ts`. Two things in it look like bugs and are
+not. A guard clause (`if (x) { …; return }`) takes the *rest of the list* as
+its other side, so the code after it continues from the IF node instead of
+waiting for the guard's side to end — that is what keeps one large guard from
+leaving an empty wire across the canvas. And every block's open ends sit on
+its right edge (`extend()`), so the wires `seq` draws between blocks only
+ever cross the gap between them and never run through a node; a block that
+returns an end short of its edge will draw a wire through whatever is next
+to it. A new icon is a line in `SERVICE_ICONS` in `views.ts`, keyed on the
+service name `flow.ts` produces.
 
 **Nothing from a querystring may be interpolated into a view's SQL.** Values go
 through placeholders; a table's physical name goes through `ctx.from()`, which

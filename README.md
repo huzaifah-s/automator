@@ -1176,56 +1176,67 @@ Under the description on every workflow page is a **Flow** button. Closed,
 its one line is the whole story: the steps by name and the services they
 touch (`Lock → Cross-post → Record → Alert · talks to Notion, Google Drive,
 S3/R2 storage, Facebook / Instagram, Threads and Telegram`). Open it and the
-workflow is drawn as a column of nodes, the way n8n would draw it, for
-someone who has not read the code:
+workflow is drawn the way n8n draws one: a canvas of nodes, left to right,
+joined by wires.
 
-- The **trigger** first, in words — `every 5 minutes`, and for a poll,
-  *what* it polls: `Starts when a poll of Notion finds something new`, read
-  from the trigger's `fetch()`.
-- The `if … throw` / `if … return` guards at the top of `run()` — wrong
-  credentials, nothing to do — folded into one **Checked first** node, one
-  line each, rather than three boxes before the first step.
-- Each `ctx.step()` as a numbered node with the first sentence of its comment
-  and what it does underneath, as short sentences rather than calls:
-  `updates Notion`, `downloads from Google Drive`, `messages Telegram`. The
-  call behind a chip (`http.patch api.notion.com`) is on hover.
-- A step whose callback has steps of its own — `ctx.step("cross-post", () =>
-  crossPost(ctx, …))` where `crossPost` publishes to each platform in a step —
-  is a box **in stages**: its own line at the top, then the steps inside it,
-  numbered in one sequence. The run page records those inner steps under
-  their own names, and the graph now agrees with it.
-- A `for` as a **Loop** box, an `if` as a **Check** — a box when there is
-  work inside it, a single row when all it does is stop — with the comment
-  above the `if` under its condition, and the condition itself put into
-  words where the shape allows (`!stage` is "no stage", `pages.length === 0`
-  is "pages is empty", `(error as AlertedError).alerted` is `error.alerted`).
-  A guard's failure message is shown whole (its first sentence), because
-  that sentence is usually the plainest statement of what the check is for.
-- Where the run ends or fails. A `ctx.run()` is a link to the workflow it
-  starts, and the trigger node lists the workflows that start this one that
-  way.
+- Each node is an **icon in a box with its name under it**. The icon is the
+  service the node talks to — Notion, Telegram, WhatsApp, Monday.com, the
+  AI model, a URL — so a line of nodes reads as "Notion → Telegram" before a
+  single name is read. `{ }` is a step that only runs code.
+- **Click a node** for everything else: the first sentence of the comment
+  above it, what it does in words (`updates Notion`, `messages Telegram`,
+  with the call behind each on hover), the condition as written for a check.
+  On a phone the panel is a sheet from the bottom.
+- The **trigger** is first, in words — `every 5 minutes`, and for a poll,
+  *what* it polls (`Poll Notion`), read from the trigger's `fetch()`.
+- An `if` is an **IF** node with a `true` and a `false` output. The side that
+  carries on stays on the main line; a side that stops — `if (!page) {
+  answer(); return }`, the guard clause — dips below it to its own **Done**
+  or **Fail**, and the rest of the code carries on straight from the IF. A
+  `switch` is a **Switch** node with one output per case.
+- Two or more `if … throw` / `if … return` guards in a row — wrong
+  credentials, nothing to do — are one **Filter** node (`3 checks`), with
+  each check listed in its panel.
+- A `for` is a **Loop** node: `loop` runs down into the nodes it repeats,
+  a wire goes from their end back round to it, and `done` carries on.
+- A `try … catch` is a red **on error** wire forking off to what the catch
+  does.
+- A helper function with steps of its own — `notify()` — has its nodes drawn
+  **on the main line**, the same as any others, with a labelled frame behind
+  them (`notify()`), the way you would put a sticky note behind a group of
+  nodes in n8n. A `return` inside it is a **Skip the rest** node whose wire
+  leaves the frame. A step whose callback has steps of its own —
+  `ctx.step("cross-post", () => crossPost(ctx, …))` — is its node, then its
+  inner steps in a frame labelled `inside "cross-post"`. Nothing is a box
+  inside a box.
+- A `ctx.run()` on its own is an **Execute workflow** node whose panel links
+  to the workflow it starts (inside a step, the step's node says `runs …`), and the `onFailure` hook is a second line under the
+  first, started by an **If the run fails** node.
 
-It stays closed until you open it, and remembers that you did.
+Drag to move around, scroll or pinch to zoom, and **Fit** shows the whole
+flow at once. A long flow opens at reading size at its trigger rather than
+fitted too small to read. The canvas keeps its place and the open panel
+through the page's background refresh. It stays closed until you open it,
+and remembers that you did.
 
-A workflow built by a factory in a `_` file, or one whose steps live in a
-helper like `notify()`, draws the same way, with the helper's steps boxed
-under its name; the note under the graph says which files it was read from.
-A helper handed a URL constant — `publish(ctx.http, GRAPH_TH, …)` — keeps the
-service's name three helpers down, which is how the same `publish()` reads as
-Threads on one call and Facebook on the next.
+A workflow built by a factory in a `_` file draws the same way; the note
+under the canvas says which files it was read from. A helper handed a URL
+constant — `publish(ctx.http, GRAPH_TH, …)` — keeps the service's name three
+helpers down, which is how the same `publish()` reads as Threads on one call
+and Facebook on the next.
 
 It is read from the **source**, not from any run. The runner parses the file
-with the TypeScript compiler and walks `run()`, so the graph is every path the
-code can take. That is also why a step that no run has ever reached is still
-on it.
+with the TypeScript compiler and walks `run()`, so the canvas is every path
+the code can take. That is also why a step that no run has ever reached is
+still on it.
 
-A **run page** has the same Flow with that run laid over it: a step the run
-went through is lit green with how long it took (`✓ ran ×3 · 1.2s` inside a
-loop), the step it failed on is red, and everything the run did not reach —
-whole boxes included — is dimmed. Recorded steps are matched to the graph by
-name, so a step named from a value (`{label}`) cannot be placed and is listed
-under the graph instead, and a name two branches share is credited to the
-first.
+A **run page** has the same canvas with that run laid over it: a step the
+run went through has a green tick (with a count inside a loop), the step it
+failed on a red cross, the wires into them are green, and the steps the run
+did not reach are dimmed; the panel says how long a step took. Recorded
+steps are matched to the canvas by name, so a step named from a value
+(`{label}`) cannot be placed and is listed under the canvas instead, and a
+name two branches share is credited to the first.
 
 It is best effort, and it errs by leaving things out rather than inventing
 them: a step whose name is computed at runtime shows as `{expr}`, a helper the

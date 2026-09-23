@@ -313,6 +313,17 @@ returns an end short of its edge will draw a wire through whatever is next
 to it. A new icon is a line in `SERVICE_ICONS` in `views.ts`, keyed on the
 service name `flow.ts` produces.
 
+**A run's path on the canvas is inferred, and it must under-claim.** Only
+steps are recorded; `runPath()` in `flow-layout.ts` works out the IFs, loops
+and ends between them from the wires, which is why every wire carries both
+its ends (`Edge`, resolved when the canvas is done — a wire drawn in pieces
+through a frame or a lane is still one connection). Its rule is the flow
+view's rule: when the record cannot settle it — two ends both reachable,
+both sides of a loop's check taken on different turns — leave it unticked,
+never guess. `placeRun()` exists because `traceRun()` in `flow.ts` credits a
+repeated step name to the first node in reading order; on the canvas the
+wires and the recording order decide it instead.
+
 **Nothing from a querystring may be interpolated into a view's SQL.** Values go
 through placeholders; a table's physical name goes through `ctx.from()`, which
 resolves it against the loaded registry. `resolveControls` caps and validates

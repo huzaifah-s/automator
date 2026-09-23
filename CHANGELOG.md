@@ -8,6 +8,29 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-23
 
+### A run's path on the canvas no longer breaks at every IF
+
+On a run page only the steps a run recorded were ticked, and a wire was green
+only when it ran into one of them. Nothing but a `ctx.step()` is recorded, so
+the green line broke at every IF, frame edge and Done, and a run that stopped
+early — `order-created` returning at "If no stage" after one step — lit one
+node and looked broken. It also sometimes lit the wrong line: the same step
+name on two nodes (`remember what we sent`, from `remember()` called in two
+places) was credited to the first in reading order, whichever line the run
+took.
+
+Now every wire knows both of its ends, and the path is worked out from them
+(`runPath()`): a node between the trigger and a step that ran, on a route that
+passes no step that did not, is on the path; after the last record, the one
+end still reachable is too. Out of an IF only the side taken is green. Steps
+are placed in the order they ran, so a repeated name goes to the node the
+wires lead to from the previous step (`placeRun()`).
+
+The rule is to under-claim. Where the record cannot settle it — both sides of
+a check only return, or a check inside a loop went both ways on different
+turns — the node stays unticked rather than guessed. Run pages with no
+recorded step now show the canvas too, with only the trigger ticked.
+
 ### The Flow is an n8n canvas now, left to right, instead of a column of boxes
 
 The Flow section drew a workflow top to bottom, with a loop, a check and a

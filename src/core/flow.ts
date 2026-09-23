@@ -1355,6 +1355,13 @@ export interface RunTrace {
   marks: Map<FlowNode, RunMark>;
   /** Recorded steps no node claimed — a name the analyser could only see as `{label}`. */
   unplaced: RunStep[];
+  /**
+   * What the marks were made from, in the order the steps were recorded, for
+   * the canvas: it can tell apart two nodes with the same name by which one
+   * the wires lead to from the step before — see placeRun() in flow-layout.
+   */
+  steps: RunStep[];
+  runId: string;
 }
 
 export function traceRun(flow: Flow, steps: RunStep[], runId: string): RunTrace {
@@ -1401,10 +1408,10 @@ export function traceRun(flow: Flow, steps: RunStep[], runId: string): RunTrace 
   };
   visit(flow.nodes);
   if (flow.onFailure) visit(flow.onFailure);
-  return { marks, unplaced: steps.filter((_, i) => !spent.has(i)) };
+  return { marks, unplaced: steps.filter((_, i) => !spent.has(i)), steps, runId };
 }
 
-function matcher(label: string): ((name: string) => boolean) | null {
+export function matcher(label: string): ((name: string) => boolean) | null {
   if (!label.includes("{")) return (name) => name === label;
   const parts = label.split(/\{[^}]*\}/);
   if (parts.every((p) => p.trim() === "")) return null;

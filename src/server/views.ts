@@ -4,7 +4,7 @@ import type { ColumnDef, LoadedTable, Row } from "../core/tables.ts";
 import { formatDuration } from "../core/views.ts";
 import type { LoadedView, Panel } from "../core/views.ts";
 import type { Flow, FlowNode, FlowUse, RunMark, RunTrace } from "../core/flow.ts";
-import { framed, layoutFlow, type Layout, type Placed } from "./flow-layout.ts";
+import { framed, layoutFlow, placeRun, runPath, type Layout, type Placed, type Wire } from "./flow-layout.ts";
 import type { ViewLinkRecord } from "../core/types.ts";
 import { VIEW_CSS, renderControls, renderPanels } from "./view-render.ts";
 import type {
@@ -1864,26 +1864,6 @@ const FICON = {
   chev: fsvg(`<path d="M5 3l5 5-5 5"/>`),
 };
 
-/** Whether anything inside these nodes ran, for dimming a whole box at once. */
-function flowRan(nodes: FlowNode[], trace: Map<FlowNode, RunMark>): boolean {
-  return nodes.some((n) => {
-    switch (n.kind) {
-      case "step":
-        return trace.has(n) || (n.body ? flowRan(n.body, trace) : false);
-      case "branch":
-        return flowRan(n.body, trace) || flowRan(n.else, trace);
-      case "switch":
-        return n.cases.some((c) => flowRan(c.body, trace));
-      case "loop":
-      case "catch":
-      case "helper":
-        return flowRan(n.body, trace);
-      default:
-        return false;
-    }
-  });
-}
-
 /** The chip that says what this run did at a step. */
 function flowMark(mark: RunMark | undefined) {
   if (!mark) return html`<span class="fran off">did not run</span>`;
@@ -2209,10 +2189,6 @@ interface Face {
   name: Html | string;
   sub?: string;
   panel: Html;
-  /** Dimmed: a run is laid over the canvas and it did not go here. */
-  off: boolean;
-  /** Lit: a run went through here, for colouring the wire into it. */
-  lit: boolean;
   badge?: Html;
 }
 
@@ -2233,17 +2209,16 @@ function endWords(end: Extract<FlowNode, { kind: "end" }>): Html {
 
 function face(
   p: Placed,
-  trace: Map<FlowNode, RunMark> | null,
+  /** What one run did at each node, or null on the workflow page. */
+  marks: Map<number, RunMark> | null,
   trigger: ReturnType<typeof flowTrigger>,
 ): Face {
   const card = p.card;
-  const plain = { off: false, lit: false };
   switch (card.kind) {
     case "trigger":
-      return { ...plain, tone: "k-trigger", icon: trigger.icon, color: "var(--accent)", name: trigger.name, sub: trigger.sub, panel: html`<p class="fpk">Trigger</p>${trigger.panel}` };
+      return { tone: "k-trigger", icon: trigger.icon, color: "var(--accent)", name: trigger.name, sub: trigger.sub, panel: html`<p class="fpk">Trigger</p>${trigger.panel}` };
     case "error-trigger":
       return {
-        ...plain,
         tone: "k-err",
         icon: GLYPH.warn,
         color: "var(--red)",
@@ -2256,8 +2231,7 @@ function face(
       const n = card.node;
       if (n.kind === "run") {
         return {
-          ...plain,
-          tone: "k-run",
+            tone: "k-run",
           icon: GLYPH.workflow,
           color: "var(--accent)",
           name: n.workflow,
@@ -2272,8 +2246,7 @@ function face(
         const use = n.uses[0];
         const call = use ? `${use.name}${use.target ? ` ${use.target}` : ""}` : n.label;
         return {
-          ...plain,
-          tone: "k-step",
+            tone: "k-step",
           icon,
           color,
           name: use ? sentence(`${use.verb} ${use.service}`) : n.label,
@@ -2283,20 +2256,17 @@ function face(
             ${flowChips([], n.runs)}`,
         };
       }
-      const mark = trace?.get(n);
-      const ran = !!mark || (n.body ? flowRan(n.body, trace ?? new Map()) : false);
+      const mark = marks?.get(p.id);
       return {
         tone: "k-step",
         icon,
         color,
         name: html`${flowLabel(sentence(n.label))}`,
         sub,
-        off: !!trace && !ran,
-        lit: !!trace && ran,
         ...(mark ? { badge: html`<span class="fbadge ${mark.failed > 0 ? "bad" : "ok"}">${mark.failed > 0 ? "✗" : "✓"}${mark.count > 1 ? ` ${mark.count}` : ""}</span>` } : {}),
         panel: html`<p class="fpk">Step${framed(n) ? " · with steps inside" : ""}</p>
           <h4>${flowLabel(sentence(n.label))}</h4>
-          ${trace ? flowMark(mark) : ""}
+          ${marks ? flowMark(mark) : ""}
           ${n.doc ? html`<p class="fdoc">${n.doc}</p>` : ""}
           ${flowChips(n.uses, n.runs)}
           ${framed(n) ? html`<p class="fdoc">The steps it runs inside are in the frame to its right.</p>` : ""}`,
@@ -2304,16 +2274,11 @@ function face(
     }
     case "if": {
       const n = card.node;
-      const ran = !!trace && flowRan([n], trace);
       return {
         tone: "k-if",
         icon: GLYPH.split,
         color: "var(--yellow)",
         name: cutText(`If ${n.label}`, 48),
-        // Never dimmed: a check the run reached but whose sides hold no
-        // recorded step — a side that only stops — was still decided.
-        off: false,
-        lit: ran,
         panel: html`<p class="fpk">IF</p><h4>If ${n.label}</h4>
           ${n.doc ? html`<p class="fdoc">${n.doc}</p>` : ""}
           <pre class="fcode">${n.code}</pre>
@@ -2324,7 +2289,6 @@ function face(
     }
     case "filter":
       return {
-        ...plain,
         tone: "k-if",
         icon: GLYPH.funnel,
         color: "var(--yellow)",
@@ -2337,7 +2301,6 @@ function face(
       };
     case "switch": {
       const n = card.node;
-      const ran = !!trace && flowRan([n], trace);
       const on = n.label.replace(/^switch /, "");
       return {
         tone: "k-if",
@@ -2345,10 +2308,6 @@ function face(
         color: "var(--yellow)",
         name: cutText(`Switch on ${on}`, 48),
         sub: `${n.cases.length} cases`,
-        // Never dimmed: a check the run reached but whose sides hold no
-        // recorded step — a side that only stops — was still decided.
-        off: false,
-        lit: ran,
         panel: html`<p class="fpk">Switch</p><h4>Depending on <code>${on}</code></h4>
           <ul class="fgates">${n.cases.map((k) => html`<li><code>${k.label}</code></li>`)}</ul>
           ${n.cases.some((k) => k.label.split(", ").includes("otherwise")) ? "" : html`<p class="fdoc">Any other value goes straight on, along <b>other</b>.</p>`}`,
@@ -2356,17 +2315,12 @@ function face(
     }
     case "loop": {
       const n = card.node;
-      const ran = !!trace && flowRan([n], trace);
       return {
         tone: "k-loop",
         icon: GLYPH.loop,
         color: "var(--accent)",
         name: cutText(loopName(n.label), 48),
         sub: "loop",
-        // Never dimmed: a check the run reached but whose sides hold no
-        // recorded step — a side that only stops — was still decided.
-        off: false,
-        lit: ran,
         panel: html`<p class="fpk">Loop over items</p><h4>${loopName(n.label)}</h4>
           <p class="fdoc">Runs the nodes along <b>loop</b> once each time round, then carries on along <b>done</b>.</p>`,
       };
@@ -2376,8 +2330,7 @@ function face(
       if (n.throws) {
         const why = n.label.replace(/^fail: /, "").replace(/^fail with \w+$/, "with that error");
         return {
-          ...plain,
-          tone: "k-fail",
+            tone: "k-fail",
           icon: GLYPH.fail,
           color: "var(--red)",
           name: "Fail",
@@ -2387,8 +2340,7 @@ function face(
       }
       if (n.helper || n.step) {
         return {
-          ...plain,
-          tone: "k-skip",
+            tone: "k-skip",
           icon: GLYPH.skip,
           color: "var(--muted)",
           name: "Skip the rest",
@@ -2400,7 +2352,6 @@ function face(
       }
       const value = n.label === "return" ? "" : n.label.slice("return ".length);
       return {
-        ...plain,
         tone: "k-done",
         icon: GLYPH.done,
         color: "var(--green)",
@@ -2411,7 +2362,7 @@ function face(
       };
     }
     case "done":
-      return { ...plain, tone: "k-done", icon: GLYPH.done, color: "var(--green)", name: "Done", panel: html`<p class="fpk">End</p><h4>The run ends here</h4>` };
+      return { tone: "k-done", icon: GLYPH.done, color: "var(--green)", name: "Done", panel: html`<p class="fpk">End</p><h4>The run ends here</h4>` };
   }
 }
 
@@ -2421,17 +2372,22 @@ function face(
  * hidden, for the script to show. The script pans and zooms `.fworld` with
  * a transform, so everything in it is laid out at 1:1 in canvas pixels.
  */
-function flowCanvas(key: string, layout: Layout, faces: Map<number, Face>, traced: boolean) {
+function flowCanvas(
+  key: string,
+  layout: Layout,
+  faces: Map<number, Face>,
+  /** One run's path over the canvas, or null on the workflow page. */
+  path: { nodes: Set<number>; wires: Set<Wire>; dim: Set<number> } | null,
+) {
   const { minX, minY, width, height } = layout;
   const px = (n: number) => Math.round(n * 10) / 10;
-  const lit = (id: number | undefined) => id !== undefined && faces.get(id)?.lit === true;
   return html`<div class="fcanvas" data-canvas="${key}" data-w="${px(width)}" data-h="${px(height)}" data-main="${px(layout.mainY - minY)}">
     <div class="fworld" style="width:${px(width)}px;height:${px(height)}px">
       ${layout.frames.map(
         (f) => html`<div class="ffr k-${f.kind}" style="left:${px(f.x - minX)}px;top:${px(f.y - minY)}px;width:${px(f.w)}px;height:${px(f.h)}px"${f.doc ? html` title="${f.doc}"` : ""}><span>${f.label}</span></div>`,
       )}
       <svg class="fwires" width="${px(width)}" height="${px(height)}" viewBox="${px(minX)} ${px(minY)} ${px(width)} ${px(height)}" aria-hidden="true">
-        ${layout.wires.map((w) => html`<path d="${w.d}" class="${w.tone}${traced && lit(w.to) ? " lit" : ""}"/>`)}
+        ${layout.wires.map((w) => html`<path d="${w.d}" class="${w.tone}${path?.wires.has(w) ? " lit" : ""}"/>`)}
         ${layout.wires.map((w) => (w.label ? html`<text class="${w.tone}" x="${w.label.x}" y="${w.label.y}">${w.label.text}</text>` : ""))}
         ${layout.nodes.map((p) => {
           const inPin = p.shape === "trigger" ? "" : html`<circle class="pin" cx="${p.x}" cy="${p.y}" r="4"/>`;
@@ -2445,7 +2401,7 @@ function flowCanvas(key: string, layout: Layout, faces: Map<number, Face>, trace
       </svg>
       ${layout.nodes.map((p) => {
         const f = faces.get(p.id)!;
-        return html`<button type="button" class="fnd ${f.tone} s-${p.shape}${f.off ? " off" : ""}" data-node="${p.id}"
+        return html`<button type="button" class="fnd ${f.tone} s-${p.shape}${path?.dim.has(p.id) ? " off" : ""}" data-node="${p.id}"
           style="left:${px(p.x - minX)}px;top:${px(p.y - p.h / 2 - minY)}px;width:${p.w}px;height:${p.h}px${f.color ? `;--c:${f.color}` : ""}">
           <span class="fic">${f.icon}</span>${f.badge ?? ""}
           <span class="flb"><b>${f.name}</b>${f.sub ? html`<small>${f.sub}</small>` : ""}</span>
@@ -2478,8 +2434,9 @@ function flowSection(
   wf: LoadedWorkflow,
   flow: Flow,
   callers: string[],
-  /** On a run page: that run's steps laid over the graph. */
+  /** On a run page: that run's steps laid over the graph, and how it ended. */
   run: RunTrace | null = null,
+  status: RunStatus | null = null,
 ) {
   const trace = run?.marks ?? null;
   const helpers = flow.files.filter((f) => f !== wf.file);
@@ -2497,7 +2454,26 @@ function flowSection(
       : [chain, services.length ? `talks to ${listOf(services)}` : ""].filter(Boolean).join(" · ");
   const layout = layoutFlow(flow.error ? [] : flow.nodes, flow.error ? null : flow.onFailure);
   const trigger = flowTrigger(wf, callers, flow.poll);
-  const faces = new Map(layout.nodes.map((p) => [p.id, face(p, trace, trigger)] as const));
+  const marks = run ? placeRun(layout, run.steps, run.runId) : null;
+  const faces = new Map(layout.nodes.map((p) => [p.id, face(p, marks, trigger)] as const));
+  // A run over the canvas: the steps it recorded, then everything between
+  // and after them that it must have gone through — see runPath().
+  let path: { nodes: Set<number>; wires: Set<Wire>; dim: Set<number> } | null = null;
+  if (marks) {
+    const ran = new Map([...marks].map(([id, m]) => [id, m.failed > 0] as const));
+    const steps = layout.nodes.filter((p) => p.card.kind === "node" && p.card.node.kind === "step").map((p) => p.id);
+    const found = runPath(layout, ran, status ?? "running");
+    // Only a step is dimmed: it would have been recorded had the run been
+    // there. Anything else off the path may simply not be provable.
+    path = { ...found, dim: new Set(steps.filter((id) => !ran.has(id))) };
+    for (const id of found.nodes) {
+      const f = faces.get(id)!;
+      if (f.badge) continue;
+      const fail = layout.nodes.find((n) => n.id === id)?.card;
+      const bad = fail?.kind === "end" && fail.node.throws === true;
+      f.badge = html`<span class="fbadge ${bad ? "bad" : "ok"}">${bad ? "✗" : "✓"}</span>`;
+    }
+  }
 
   return html`
     <details class="fbox" data-reveal="flow:${wf.name}">
@@ -2507,7 +2483,7 @@ function flowSection(
         <span class="fopen">show</span><span class="fclose">hide</span>
         ${FICON.chev}
       </summary>
-      ${flowCanvas(`flow:${wf.name}${run ? ":run" : ""}`, layout, faces, trace !== null)}
+      ${flowCanvas(`flow:${wf.name}${run ? ":run" : ""}`, layout, faces, path)}
       <div class="flowfoot">
         ${flow.error ? html`<p class="fempty">Could not read the flow from the source — ${flow.error}.</p>` : ""}
         ${run && run.unplaced.length > 0
@@ -2526,7 +2502,7 @@ function flowSection(
               : ""
           }. ${
             trace
-              ? html`The canvas is every path the code can take; this run's steps are matched onto it by name, so a name two branches share is credited to the first.`
+              ? html`The canvas is every path the code can take. This run's steps are matched onto it by name, in the order they ran; the checks, loops and ends between them are worked out from the wires, and one the record cannot settle stays unticked.`
               : html`It shows every path the code can take, not what one run did — open a run for that.`
           }
           ${flow.notes.length > 0 ? html`Not followed: ${flow.notes.join("; ")}.` : ""}
@@ -2918,7 +2894,7 @@ export function runPage(
         ? html`<h2>Result</h2><div class="card"><pre class="blob" style="border:none">${pretty(run.result)}</pre></div>`
         : ""}
 
-      ${flow && steps.length ? flowSection(flow.wf, flow.flow, [], flow.trace) : ""}
+      ${flow ? flowSection(flow.wf, flow.flow, [], flow.trace, run.status) : ""}
 
       ${steps.length
         ? html`<h2>Steps</h2>

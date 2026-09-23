@@ -1230,13 +1230,22 @@ with the TypeScript compiler and walks `run()`, so the canvas is every path
 the code can take. That is also why a step that no run has ever reached is
 still on it.
 
-A **run page** has the same canvas with that run laid over it: a step the
-run went through has a green tick (with a count inside a loop), the step it
-failed on a red cross, the wires into them are green, and the steps the run
-did not reach are dimmed; the panel says how long a step took. Recorded
-steps are matched to the canvas by name, so a step named from a value
-(`{label}`) cannot be placed and is listed under the canvas instead, and a
-name two branches share is credited to the first.
+A **run page** has the same canvas with that run laid over it, the way n8n
+shows an execution: every node the run went through has a green tick — the
+trigger, the IF and Filter nodes it passed, the Done it ended on — the step
+it failed on has a red cross, the wires along its path are green, and the
+steps it did not reach are dimmed; the panel says how long a step took.
+
+Only a `ctx.step()` is recorded, so the rest is worked out from the wires: an
+IF whose `false` side leads to a step that ran went `false`, and after the
+last recorded step the run ended on the one Done (or Fail) it could still
+reach without passing a step that did not run. Where two ends are both
+possible — both sides of a check only return — the record cannot say which,
+and neither is ticked. Steps are matched to the canvas by name, in the order
+they ran, so the same step name in two places (`remember()` called from two
+lines) is credited to the one the wires lead to from the step before. A step
+named from a value (`{label}`) cannot be placed and is listed under the
+canvas instead.
 
 It is best effort, and it errs by leaving things out rather than inventing
 them: a step whose name is computed at runtime shows as `{expr}`, a helper the

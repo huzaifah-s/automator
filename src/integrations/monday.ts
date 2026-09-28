@@ -408,6 +408,10 @@ function readFields(item: MondayItem): MondayFields {
  * the route before a run exists. A payload that fails this schema is a real
  * event in a shape we did not expect, and should say so.
  */
+const statusValue = z.object({
+  label: z.object({ index: z.number().nullish(), text: z.string().nullish() }).nullish(),
+});
+
 export const mondayEvent = z.object({
   event: z.object({
     /** "create_pulse", "update_column_value", … */
@@ -419,13 +423,13 @@ export const mondayEvent = z.object({
     /** Present on a column change, absent on a create. */
     columnId: z.string().optional(),
     columnTitle: z.string().optional(),
-    /** For a status column: `{ label: { index, text } }`. */
-    value: z
-      .object({ label: z.object({ index: z.number().optional(), text: z.string().optional() }).nullish() })
-      .nullish(),
-    previousValue: z
-      .object({ label: z.object({ index: z.number().optional(), text: z.string().optional() }).nullish() })
-      .nullish(),
+    /**
+     * For a status column: `{ label: { index, text } }`. `text` is null when
+     * the label chosen has no name — the blank default a status is cleared
+     * back to — so null has to pass, or clearing a status is a 422.
+     */
+    value: statusValue.nullish(),
+    previousValue: statusValue.nullish(),
   }),
 });
 

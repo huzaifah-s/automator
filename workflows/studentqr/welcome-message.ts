@@ -26,7 +26,8 @@ const payload = z
   .object({
     /** The new contact's WhatsApp number. Meta calls this a wa_id. */
     phone_number_id: z.union([z.string(), z.number()]),
-    name: z.string().optional(),
+    /** Null from a form whose name box was left empty — treated as no name. */
+    name: z.string().nullish(),
   })
   .refine((v) => /\d/.test(String(v.phone_number_id)), {
     message: "must contain a phone number",

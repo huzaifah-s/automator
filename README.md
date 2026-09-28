@@ -497,6 +497,68 @@ The reason is workflow-authored text in a primary key, so it is redacted,
 capped at 80 characters, and the distinct reasons per workflow are bounded at
 20 — write reasons as constants, not built out of the payload.
 
+## Quiet webhooks
+
+Rejected and ignored deliveries are a sender calling and being turned away, or
+calling with nothing to say. This is the case where it stops calling at all —
+and it is the one failure with nothing behind it. No run fails, nothing is
+rejected, and the workflow page shows a last run a few days old, which is also
+what a slow week looks like.
+
+It is not hypothetical. Notion switched off the Contents subscription on
+2026-09-24 after counting deliveries as failed that never reached us, and the
+first anyone knew was four days later. A webhook trigger can say how long is
+too long:
+
+```ts
+trigger: webhook("the-mantra/notion-contents", {
+  verify: notionSignature(() => secrets.NOTION_WEBHOOK_TOKEN),
+  quietAfterMs: 2 * 24 * 60 * 60 * 1000,   // two days with nothing is not a slow week
+}),
+```
+
+Past that, the workflow's alert channel gets one message, and one more when a
+delivery arrives again — so whoever re-enabled the subscription is told it
+worked:
+
+```
+🔇 the-mantra-notion-contents-update-notification: nothing has arrived at
+/hooks/the-mantra/notion-contents for 2d 1h
+The last delivery that got through was at 2026-09-24T09:12:40.000Z. …
+
+🔊 the-mantra-notion-contents-update-notification: /hooks/the-mantra/notion-contents
+is receiving deliveries again, after 4d 2h of quiet
+```
+
+The MCP `overview` lists quiet routes in a section of their own.
+
+**What counts as hearing from the sender** is a delivery that got past every
+check at the door — authentication, parsing, the schema. A run counts, and so
+do a duplicate and a delivery the `filter` ignored: each proves the sender is
+calling. A **rejection does not**, because a stranger probing a public URL must
+not be what keeps this quiet. When a route has been rejecting deliveries while
+it was quiet, the alert says so: that is a sender still calling and failing a
+check here — a rotated signing secret, a changed payload — which is a
+different fix from a subscription that was switched off.
+
+**Pick the number from the route's history, weekends included.** The trend
+tool on the MCP endpoint shows runs per day. Set it well above the longest gap
+in normal use: a route that is legitimately silent from Friday evening to
+Monday morning wants three days, not two. It must be at least an hour, since
+the check runs every fifteen minutes; a value that is not a number of
+milliseconds stops the boot rather than loading and never firing.
+
+Three details:
+
+- **The first check after adding it measures from the last delivery already on
+  record**, not from the deploy, so a route that was dead before the option
+  existed is reported on the first pass rather than a full window later.
+- **A paused workflow is never quiet.** Nobody should be calling it, and its
+  clock is held at the present while it is off, so resuming it after a week is
+  not greeted with "nothing for a week".
+- **One alert per stretch of quiet**, recorded in the database rather than the
+  alert throttle, so neither the next check nor a restart sends it twice.
+
 ## Calling one workflow from another
 
 `ctx.run(name, input)` runs another workflow and returns its result. The child
@@ -1902,6 +1964,7 @@ dashboard.
 | Boot | A workflow file would not load, a credential is unconnected, a webhook subscription failed to register. |
 | A delivery was rejected | A webhook arrived with a bad secret or a failed signature — see [Rejected deliveries](#rejected-deliveries). |
 | A delivery was ignored | A webhook arrived, passed every check, and the workflow's own `filter` found no work behind it — see [Deliveries with nothing behind them](#deliveries-with-nothing-behind-them). |
+| A webhook went quiet | A route with `quietAfterMs` heard nothing for that long, and again when deliveries resume — see [Quiet webhooks](#quiet-webhooks). |
 
 Set one env var:
 

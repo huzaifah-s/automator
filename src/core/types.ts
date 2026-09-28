@@ -158,6 +158,23 @@ export type Trigger =
        */
       dedupe?: WebhookDedupe;
       /**
+       * How long this route may go without a delivery before somebody is told.
+       * See README "Quiet webhooks".
+       *
+       * A provider that stops calling produces no failed run, no rejection and
+       * no error anywhere — the workflow simply looks idle, which is what
+       * healthy also looks like. Notion switched a subscription off this way
+       * and it went unnoticed for four days.
+       *
+       * "A delivery" is one that got past every check at the door: a run, a
+       * duplicate, or one the filter ignored all count, and a rejection does
+       * not — a stranger probing the URL must not be what keeps this quiet.
+       * At least an hour, because the check runs every fifteen minutes; set it
+       * well above the longest gap the route has in normal use, weekends
+       * included.
+       */
+      quietAfterMs?: number;
+      /**
        * Overrides the global WEBHOOK_SECRET for this route. `false` opts the
        * route out of the secret check altogether — for a URL a person clicks,
        * where a shared secret cannot travel in the link and the workflow
@@ -563,6 +580,20 @@ export interface IgnoredRecord {
  * overwritten every tick — see the `polls` table in db.ts for why the tick
  * history is not kept.
  */
+/** When a webhook route last heard from its sender. See the `heard` table. */
+export interface HeardRecord {
+  workflow: string;
+  /** The last delivery through the door. Null when none has been seen. */
+  heard_at: number | null;
+  /**
+   * Where the quiet clock starts when that is later than `heard_at`: when the
+   * route was first watched, or last seen paused. Null when heard_at is enough.
+   */
+  since: number | null;
+  /** When this stretch of quiet was reported. Cleared by the next delivery. */
+  alerted_at: number | null;
+}
+
 export interface PollRecord {
   workflow: string;
   /** When the tick started fetching, not when it finished. */

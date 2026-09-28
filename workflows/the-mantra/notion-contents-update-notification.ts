@@ -332,6 +332,12 @@ export default defineWorkflow<Payload>({
       key: (e) => ("id" in e ? e.id : undefined),
       windowMs: 25 * 60 * 60 * 1000,
     },
+    // Notion switched this subscription off on 2026-09-24 and nothing here
+    // noticed for four days: no run failed, nothing was rejected, the route
+    // just went idle. The fortnight before had at least two deliveries every
+    // day, weekends included, so two days with none is the subscription and
+    // not a slow week.
+    quietAfterMs: 2 * 24 * 60 * 60 * 1000,
   }),
   // A status change must not be dropped because another one is in flight, and
   // a busy editing session produces several within a second.

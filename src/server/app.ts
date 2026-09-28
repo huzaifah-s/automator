@@ -7,6 +7,7 @@ import { store } from "../core/db.ts";
 import { callersOf, flowFor, traceRun } from "../core/flow.ts";
 import { log } from "../core/logger.ts";
 import { acceptDelivery, deliver } from "../core/inbox.ts";
+import { noteDelivery } from "../core/quiet.ts";
 import { alertRejection } from "../core/alerts.ts";
 import { queuedCount, runningCount, runWorkflow } from "../core/runner.ts";
 import { timingSafeEqual } from "../core/verify.ts";
@@ -365,6 +366,10 @@ export function createApp(registry: Registry): Hono {
     // A no-op — matching no rows — for any workflow with nothing outstanding,
     // which is nearly all of them nearly all of the time.
     store.resolveRejections(wf.name);
+    // The same moment is the proof that the sender is still calling, which is
+    // what the quiet-webhook check measures. Before the filter, because an
+    // ignored delivery proves it just as well.
+    noteDelivery(wf);
 
     /*
      * The last gate, and the only one that is about the payload rather than

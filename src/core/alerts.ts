@@ -327,6 +327,67 @@ export function alertRejection(
 }
 
 /**
+ * A webhook route with `quietAfterMs` that has heard nothing for longer than
+ * that. Sent once per stretch of quiet — `src/core/quiet.ts` records that it
+ * went out, and the next delivery clears it — so the key only has to tell two
+ * stretches apart, which is what the time the quiet started does.
+ */
+export function alertQuiet(
+  wf: AlertTarget,
+  path: string,
+  quietSince: number,
+  heardAt: number | null,
+  limitMs: number,
+  rejectedSince: number,
+): Promise<void> {
+  const last = heardAt === null
+    ? "Nothing has arrived since it started being watched."
+    : `The last delivery that got through was at ${new Date(heardAt).toISOString()}.`;
+  // The two readings need different fixes, and saying "nothing was rejected"
+  // when something was sends the reader to the provider for a problem in the
+  // route's own secret or schema.
+  const why = rejectedSince > 0
+    ? `${rejectedSince === 1 ? "1 delivery was" : `${rejectedSince} deliveries were`} ` +
+      "turned away at the door in that time, so the " +
+      "sender may still be calling and failing a check here — a rotated signing " +
+      "secret or a changed payload. See the rejection alert and the workflow page."
+    : "Nothing failed and nothing was rejected — the sender has simply stopped calling. " +
+      "The usual causes are a subscription the provider switched off after failed " +
+      "deliveries, a webhook URL changed or deleted on the provider's side, or a " +
+      "lapsed registration.";
+  return send(wf, {
+    key: `quiet|${wf.name}|${quietSince}`,
+    icon: "🔇",
+    title: `nothing has arrived at /hooks/${path} for ${spell(Date.now() - quietSince)}`,
+    workflow: wf.name,
+    detail:
+      `${last} It is set to expect one at least every ${spell(limitMs)} (quietAfterMs). ` +
+      `${why} This is sent once; the next delivery says so.`,
+  });
+}
+
+/** The first delivery after a reported quiet: whatever stopped it has stopped. */
+export function alertHeardAgain(wf: AlertTarget, path: string, quietForMs: number): void {
+  void send(wf, {
+    key: `heard|${wf.name}|${Date.now()}`,
+    icon: "🔊",
+    title: `/hooks/${path} is receiving deliveries again, after ${spell(quietForMs)} of quiet`,
+    workflow: wf.name,
+  });
+}
+
+/** "3d 4h", "5h 12m", "40m" — two units at most, because this is read on a phone. */
+function spell(ms: number): string {
+  const minutes = Math.max(0, Math.round(ms / 60_000));
+  const days = Math.floor(minutes / 1_440);
+  const hours = Math.floor((minutes % 1_440) / 60);
+  if (days > 0) return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+  const rest = minutes % 60;
+  if (hours > 0) return rest > 0 ? `${hours}h ${rest}m` : `${hours}h`;
+  return `${minutes}m`;
+}
+
+/**
  * A run that was still going when the process stopped, found at the next boot.
  *
  * **The one failure that reaches nothing else.** Every other way a run ends

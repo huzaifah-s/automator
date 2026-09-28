@@ -56,6 +56,7 @@ import { isTruncated } from "../core/capture.ts";
 import { log } from "../core/logger.ts";
 import { queuedCount, runningCount, runWorkflow } from "../core/runner.ts";
 import { allPauses, isEnabled, isPaused, pause, resume } from "../core/pause.ts";
+import { quietRoutes } from "../core/quiet.ts";
 import { nextRunFor, scheduleWorkflow, unscheduleWorkflow } from "../core/scheduler.ts";
 import { identify, mayUseEndpoint, mcpEnabled, noteUse, type McpIdentity } from "../core/mcp-tokens.ts";
 import { listCredentials, testCredential, credentialRef } from "../core/credentials.ts";
@@ -320,7 +321,7 @@ function buildTools(registry: Registry): Tool[] {
       scope: "read",
       description:
         "Start here. Counts, in-flight work, run totals, and everything failing, rejecting, " +
-        "blocked or paused.",
+        "gone quiet, blocked or paused.",
       inputSchema: {
         type: "object",
         properties: { hours: HOURS },
@@ -336,6 +337,7 @@ function buildTools(registry: Registry): Tool[] {
         const total = Object.values(counts).reduce((a, b) => a + b, 0);
         const failures = groupFailures(since);
         const rejections = store.rejectionTotals();
+        const quiet = quietRoutes(registry);
 
         const out: string[] = [];
         // "armed" rather than "active", because `blocked` is a subset of it
@@ -377,6 +379,22 @@ function buildTools(registry: Registry): Tool[] {
           out.push(table([...rejections].map(([name, r]) => [`${r.count}x`, name, ago(r.last_at)])));
         }
 
+        // Its own section because it is the one problem with no error behind
+        // it: nothing failed and nothing was rejected, the sender stopped.
+        if (quiet.length > 0) {
+          out.push("\nQUIET WEBHOOKS (no delivery for longer than the route's quietAfterMs)");
+          out.push(
+            table(
+              quiet.map((q) => [
+                q.workflow.name,
+                `/hooks/${q.path}`,
+                `last heard ${q.heardAt === null ? "never" : ago(q.heardAt)}`,
+                `limit ${Math.round(q.limitMs / 3_600_000)}h`,
+              ]),
+            ),
+          );
+        }
+
         if (blocked.size > 0) {
           out.push("\nBLOCKED (a declared credential is not connected)");
           out.push(table([...blocked].map(([name, refs]) => [name, refs.join(", ")])));
@@ -387,8 +405,13 @@ function buildTools(registry: Registry): Tool[] {
           out.push(table([...paused].map(([name, p]) => [name, ago(p.paused_at), p.note ?? ""])));
         }
 
-        if (failures.length === 0 && rejections.size === 0 && blocked.size === 0) {
-          out.push("\nNothing failing, rejecting or blocked in this window.");
+        if (
+          failures.length === 0 &&
+          rejections.size === 0 &&
+          quiet.length === 0 &&
+          blocked.size === 0
+        ) {
+          out.push("\nNothing failing, rejecting, quiet or blocked in this window.");
         }
         return out.join("\n");
       },

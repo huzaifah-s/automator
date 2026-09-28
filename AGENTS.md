@@ -29,6 +29,7 @@ There is no test suite. Verify by running the thing (see **Verifying** below).
 src/core/          define · loader · runner · scheduler · poll · db · secrets
                    secret-store · credentials · providers · crypto · redact
                    capture · state · tables · pause · logger · alerts · types
+                   quiet (alerts when a webhook's sender stops calling)
                    flow (the workflow page's node graph, read from source
                    with the TypeScript compiler — the one runtime use of it)
 src/cli/           secrets — the write side of the store, run before the loader
@@ -112,7 +113,7 @@ Every workflow is connected to the alert channel unless it says otherwise:
 `alerts: false` opts out, `alerts: { channel: "telegram:pblsh" }` routes its
 problems somewhere else. See README "Alerts".
 
-Triggers: `cron(expr, { tz })`, `webhook(path, { method, schema, filter, dedupe, respond, secret, verify })`,
+Triggers: `cron(expr, { tz })`, `webhook(path, { method, schema, filter, dedupe, quietAfterMs, respond, secret, verify })`,
 `poll(expr, { fetch, id })`, `manual()`. On `ctx`: `http` `slack` `telegram` `discord` `ai` `email` `sql`
 `sheets` `scrape`, plus `log` `step` `run` `state` `signal` `input` `attempt` `runId`.
 Multi-page GETs go through `ctx.http.paginate(url)` rather than a hand-rolled
@@ -237,6 +238,21 @@ wrongly-dropped delivery costs the work *and* leaves a counter claiming it was
 deliberate. Reasons are constants, not strings built from the payload — they
 are a primary key column, capped at 80 characters and bounded at 20 per
 workflow, so an interpolated id silently evicts the real reasons.
+
+**A quiet webhook is measured from the door, and a rejection never resets the
+clock.** `noteDelivery` in `src/core/quiet.ts` is called from the one line in
+`app.ts` where every door check has passed — next to `resolveRejections`, and
+*before* the filter, because an ignored delivery proves the sender is calling
+just as well as a run does. Moving it after the filter makes a route whose
+deliveries are all receipts look dead; moving it before authentication lets
+anybody who can reach a public URL keep the alarm quiet. Two things in there
+look like tidying targets. The "already reported" mark lives in the `heard`
+table and not in the alert throttle, because the throttle forgets after two
+hours and a stretch of quiet lasts days — relying on it sends the same alert
+every fifteen minutes once it lapses. And a paused route's clock is *held*
+(`restartHeard`), not skipped, or resuming it is greeted with an alert about
+the week it was deliberately off. `quietRoutes` only reads; the bookkeeping is
+in `checkQuiet`, so the MCP overview can call it without writing.
 
 **A data table's rows are not redacted *and* are displayed — the one place in
 this codebase where both are true, so never put a credential in one.**

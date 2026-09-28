@@ -3,6 +3,7 @@ import { createLogger, log } from "./logger.ts";
 import { runWorkflow } from "./runner.ts";
 import { pollOnce } from "./poll.ts";
 import { store } from "./db.ts";
+import { checkQuiet } from "./quiet.ts";
 import type { Registry } from "./loader.ts";
 import type { LoadedWorkflow } from "./types.ts";
 
@@ -15,6 +16,12 @@ import type { LoadedWorkflow } from "./types.ts";
 const jobs = new Map<string, Cron>();
 /** The nightly prune. Not a workflow, and never unscheduled by a pause. */
 let maintenance: Cron | undefined;
+/**
+ * The quiet-webhook check (src/core/quiet.ts). Fifteen minutes because the
+ * shortest limit a workflow may ask for is an hour, so an alert is never more
+ * than a quarter late; the check itself is one small read per watched route.
+ */
+let quietCheck: Cron | undefined;
 
 /** Days of run history kept when `RUN_RETENTION_DAYS` says nothing usable. */
 const DEFAULT_RETENTION_DAYS = 14;
@@ -36,6 +43,12 @@ export function startScheduler(registry: Registry): void {
     const stale = store.pruneExpiredState();
     if (stale > 0) log.info(`Pruned ${stale} expired state key(s)`);
   });
+
+  // Reads the registry on every pass rather than a list taken now, so a
+  // reload that adds or changes quietAfterMs is watched from the next one.
+  quietCheck = new Cron("*/15 * * * *", { name: "@quiet", protect: true }, () =>
+    checkQuiet(registry),
+  );
 }
 
 /**
@@ -217,4 +230,6 @@ export function stopScheduler(): void {
   jobs.clear();
   maintenance?.stop();
   maintenance = undefined;
+  quietCheck?.stop();
+  quietCheck = undefined;
 }

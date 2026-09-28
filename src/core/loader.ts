@@ -112,6 +112,20 @@ export async function loadWorkflows(
         continue;
       }
 
+      // Checked every fifteen minutes, so anything shorter than an hour would
+      // be answered late by up to a quarter of what it asked for. A number
+      // that is not one — a string of "2d" from somebody guessing at the unit
+      // — would compare false against everything and never alert, which is
+      // the one failure this option exists to report.
+      const quiet = def.trigger.quietAfterMs;
+      if (quiet !== undefined && !(Number.isFinite(quiet) && quiet >= 3_600_000)) {
+        errors.push(
+          `${rel}: webhook quietAfterMs must be a number of milliseconds, at least an hour ` +
+            `(3_600_000) — got ${typeof quiet === "string" ? JSON.stringify(quiet) : String(quiet)}`,
+        );
+        continue;
+      }
+
       const key = `${def.trigger.method ?? "POST"} /${def.trigger.path}`;
       const owner = seenHooks.get(key);
       if (owner) {

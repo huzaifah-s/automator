@@ -5,6 +5,7 @@ import { redact } from "./redact.ts";
 import type {
   CallRecord,
   CredentialRow,
+  HeardRecord,
   IgnoredRecord,
   InboxRecord,
   McpTokenRecord,
@@ -247,6 +248,23 @@ db.exec(`
     items    INTEGER,
     fresh    INTEGER,
     error    TEXT
+  ) WITHOUT ROWID;
+
+  -- When each webhook route last heard from its sender: the last delivery that
+  -- got past every check at the door. What makes "the provider stopped
+  -- calling" visible, which nothing else here can see — no run fails, nothing
+  -- is rejected, and the route just looks idle. Notion switched a subscription
+  -- off like that and it went four days unnoticed. See src/core/quiet.ts.
+  --
+  -- A table of its own rather than derived from runs and the ignored counts,
+  -- because neither sees a duplicate, run history is pruned, and a sync hook's
+  -- run is not stamped at the door. One row per workflow, overwritten, like
+  -- polls: the history is in the runs table, and this answers one question.
+  CREATE TABLE IF NOT EXISTS heard (
+    workflow   TEXT    PRIMARY KEY,
+    heard_at   INTEGER,
+    since      INTEGER,
+    alerted_at INTEGER
   ) WITHOUT ROWID;
 
   -- Durable key/value state — the one table here that deliberately outlives
@@ -897,6 +915,18 @@ const stmts = {
   ),
   lastPoll: db.prepare(`SELECT * FROM polls WHERE workflow = ?`),
   lastPolls: db.prepare(`SELECT * FROM polls`),
+  getHeard: db.prepare(`SELECT * FROM heard WHERE workflow = ?`),
+  allHeard: db.prepare(`SELECT * FROM heard`),
+  // A delivery ends any stretch of quiet, so it clears the alert with it.
+  stampHeard: db.prepare(
+    `INSERT INTO heard (workflow, heard_at) VALUES (?, ?)
+     ON CONFLICT(workflow) DO UPDATE SET heard_at = excluded.heard_at, alerted_at = NULL`,
+  ),
+  startHeard: db.prepare(
+    `INSERT OR IGNORE INTO heard (workflow, heard_at, since) VALUES (?, ?, ?)`,
+  ),
+  restartHeard: db.prepare(`UPDATE heard SET since = ?, alerted_at = NULL WHERE workflow = ?`),
+  markQuietAlerted: db.prepare(`UPDATE heard SET alerted_at = ? WHERE workflow = ?`),
   // Narrowed to rows that are not already settled, so the overwhelmingly
   // common case — a healthy hook with nothing to resolve — matches no rows and
   // writes nothing. This runs on every accepted delivery.
@@ -1477,6 +1507,46 @@ export const store = {
 
   lastPolls(): Map<string, PollRecord> {
     const rows = stmts.lastPolls.all() as PollRecord[];
+    return new Map(rows.map((r) => [r.workflow, r]));
+  },
+
+  /* ------------------------------------------------------------- heard */
+
+  /**
+   * Stamps a delivery through the door and returns the row as it was before,
+   * so the caller can tell a delivery that ends a reported quiet. Read then
+   * write with nothing awaited between them — bun:sqlite is synchronous — so
+   * two deliveries arriving together cannot both claim to be the one that
+   * ended it. On every webhook delivery, so it stays two statements.
+   */
+  stampHeard(workflow: string): HeardRecord | null {
+    const before = (stmts.getHeard.get(workflow) as HeardRecord | null) ?? null;
+    stmts.stampHeard.run(workflow, Date.now());
+    return before;
+  },
+
+  /**
+   * Starts watching a route the quiet check has not seen before. `heardAt` is
+   * the best evidence already on disk; `since` is where the clock starts when
+   * there is none. A no-op for a row that exists.
+   */
+  startHeard(workflow: string, heardAt: number | null, since: number): void {
+    stmts.startHeard.run(workflow, heardAt, since);
+  },
+
+  /** Moves the start of the quiet clock to `at` — for a route seen paused. */
+  restartHeard(workflow: string, at: number): void {
+    stmts.restartHeard.run(at, workflow);
+  },
+
+  markQuietAlerted(workflow: string, at: number): void {
+    stmts.markQuietAlerted.run(at, workflow);
+  },
+
+  getHeard: (workflow: string) => (stmts.getHeard.get(workflow) as HeardRecord | null) ?? null,
+
+  allHeard(): Map<string, HeardRecord> {
+    const rows = stmts.allHeard.all() as HeardRecord[];
     return new Map(rows.map((r) => [r.workflow, r]));
   },
 

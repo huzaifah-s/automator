@@ -8,6 +8,56 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-29
 
+### A webhook whose sender stops calling is reported
+
+Notion switched the Contents subscription off on 09-24 and nothing here
+noticed for four days. No run failed and nothing was rejected; the route just
+went idle, and idle is what a healthy route looks like on a slow week. The
+MCP `trend` tool could see the drop, but only for someone who thought to ask.
+
+`webhook()` now takes `quietAfterMs`. Past it, the workflow's alert channel is
+told once, and told again when a delivery arrives. The Notion route has two
+days: the fortnight before had at least two deliveries every day, weekends
+included. The MCP `overview` lists quiet routes too.
+
+Settled along the way:
+
+- **Heard means through the door, before the filter.** A duplicate and an
+  ignored delivery count, because they prove the sender is calling. A
+  rejection does not. Otherwise anyone probing a public URL could keep the
+  alarm quiet. When deliveries were rejected during the quiet, the alert says
+  so, because a sender failing a check here needs a different fix from a
+  subscription that was switched off.
+- **A table of its own (`heard`)**, one row per workflow, rather than derived
+  from runs and ignored counts. Runs miss duplicates, run history is pruned,
+  and a derived answer has nowhere to record that an alert already went out.
+  The alert throttle was the other candidate for that record and was refused:
+  it forgets after two hours, and a quiet lasts days.
+- **Opt-in per route, with no default.** A route that is legitimately silent
+  for a week, like a monthly report hook, would alert every week under any
+  default short enough to be useful. The author knows the traffic; the runner
+  does not.
+- **Every fifteen minutes, with at least an hour allowed.** A string such as
+  `"2d"` or a number under an hour stops the boot. A value that compares
+  false against everything would load and never fire, and that is the silence
+  this exists to end.
+- **First sight measures from the last delivery on record**, so a route that
+  was already dead when the option was added is reported on the first pass. A
+  paused route's clock is held at the present rather than skipped, so resuming
+  it does not raise an alert about the week it was deliberately off.
+
+Verified against a scratch database with a local alert receiver:
+- An ignored delivery stamps the clock, and a rejected one does not.
+- A two-hour quiet on a one-hour limit alerts once, and the next check stays
+  silent.
+- The alert names the rejections in its window.
+- A delivery clears the quiet and sends the "receiving again" message.
+- Pausing holds the clock, and resuming does not alert.
+- First sight after deploy alerts at once when the last run is older than the
+  limit, and watches from now when there is no history.
+- `60_000`, `"2d"` and `NaN` each stop the boot.
+- The MCP overview lists the route.
+
 ### Instagram's fetch timeout is retried, for the same reason Facebook's 324 is
 
 Two of the three failed runs in the thirty days to 09-28 were the same thing

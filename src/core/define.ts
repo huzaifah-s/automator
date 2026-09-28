@@ -62,6 +62,8 @@ export function webhook<T = unknown>(
     filter?: WebhookFilter<T>;
     /** Recognises a retry by the provider's event id — see WebhookDedupe in types.ts. */
     dedupe?: WebhookDedupe<T>;
+    /** Alerts when no delivery has arrived for this long — see types.ts. */
+    quietAfterMs?: number;
     /** `false` opts out of the secret check — see types.ts. */
     secret?: string | false;
     /** Authenticates from the raw request instead of a shared secret. */

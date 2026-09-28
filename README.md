@@ -396,6 +396,25 @@ compares the bare URL, so **rotating `WEBHOOK_SECRET` does not re-register
 anything** and Monday keeps sending the old one until you clear the
 subscription from the workflow's state and restart.
 
+## Sample payloads
+
+Every webhook keeps the payload shapes it has to accept next to it, in
+`workflows/<folder>/__fixtures__/<file>/*.json`, and `bun run test` runs each
+one through the route's schema and filter:
+
+```
+✓ studentqr/issue-solved › status-cleared-to-blank-label
+✓ studentqr/welcome-message › name-null
+✓ studentqr/whatsapp-relay › delivered-receipt
+```
+
+It exists because the two bugs fixed on 2026-09-28 were both the same thing: a
+real delivery in a shape the schema turned away. When a
+[rejection](#rejected-deliveries) turns out to be a shape that should have run,
+the fix adds it as a sample, so the next edit to that schema cannot turn it
+away again. Samples use made-up values only; see AGENTS.md "Webhook samples"
+for the format and the rules.
+
 ## Rejected deliveries
 
 A webhook turned away at the door — a bad secret, a signature that did not

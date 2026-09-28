@@ -1,0 +1,38 @@
+{
+  "expect": "run",
+  "note": "The error code read as either type — Meta answers a 422 by redelivering for a day.",
+  "body": {
+    "object": "whatsapp_business_account",
+    "entry": [
+      {
+        "id": "100000000000001",
+        "changes": [
+          {
+            "field": "messages",
+            "value": {
+              "messaging_product": "whatsapp",
+              "metadata": {
+                "display_phone_number": "60300000000",
+                "phone_number_id": "100000000000002"
+              },
+              "statuses": [
+                {
+                  "id": "wamid.TEST000000000000000000000002",
+                  "status": "failed",
+                  "timestamp": "1767225600",
+                  "recipient_id": "60120000000",
+                  "errors": [
+                    {
+                      "code": "131026",
+                      "title": "Message undeliverable"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

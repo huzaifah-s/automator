@@ -1,0 +1,10 @@
+{
+  "expect": "reject",
+  "note": "An event with no item cannot be acted on — a real shape we did not expect, and should say so with a 422.",
+  "body": {
+    "event": {
+      "type": "create_pulse",
+      "boardId": 1000000001
+    }
+  }
+}

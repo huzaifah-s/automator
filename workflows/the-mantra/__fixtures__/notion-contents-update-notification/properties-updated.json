@@ -1,0 +1,36 @@
+{
+  "expect": "run",
+  "note": "A page's properties changed — the event this route exists for.",
+  "body": {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "timestamp": "2026-01-01T00:00:00.000Z",
+    "workspace_id": "00000000-0000-4000-8000-000000000002",
+    "workspace_name": "Test Workspace",
+    "subscription_id": "00000000-0000-4000-8000-000000000003",
+    "integration_id": "00000000-0000-4000-8000-000000000004",
+    "authors": [
+      {
+        "id": "00000000-0000-4000-8000-000000000005",
+        "type": "person"
+      }
+    ],
+    "attempt_number": 1,
+    "api_version": "2026-03-11",
+    "type": "page.properties_updated",
+    "entity": {
+      "id": "00000000-0000-4000-8000-000000000006",
+      "type": "page"
+    },
+    "data": {
+      "parent": {
+        "id": "00000000-0000-4000-8000-000000000007",
+        "data_source_id": "00000000-0000-4000-8000-000000000008",
+        "type": "database"
+      },
+      "updated_properties": [
+        "%5B%5Bh%5B",
+        "title"
+      ]
+    }
+  }
+}

@@ -16,12 +16,56 @@ file. There is no build step and no bundler.
 bun install
 bun run dev                      # watch mode
 bun run check                    # tsc --noEmit — MUST pass before you finish
+bun run test                     # webhook samples through schema + filter — MUST pass
 bun run list                     # every workflow and its trigger
 bun run trigger -- <name>        # run one workflow, non-zero exit on failure
 docker compose up -d --build
 ```
 
-There is no test suite. Verify by running the thing (see **Verifying** below).
+The one test covers webhook payload shapes and nothing else (see **Webhook
+samples** below). Everything else is verified by running the thing (see
+**Verifying** below).
+
+## Webhook samples
+
+`test/webhook-fixtures.test.ts` feeds hand-written payloads through each
+webhook's `schema` and `filter` — the two pure things between a delivery and a
+run, and the two that have broken: both fixes on 2026-09-28 were a real
+payload shape the schema turned away. The samples for
+`workflows/<folder>/<file>.ts` live in `workflows/<folder>/__fixtures__/<file>/`,
+one JSON file per shape:
+
+```json
+{
+  "expect": "run",
+  "note": "A form sends null for an empty name box (fixed 248d971)",
+  "body": { "phone_number_id": "60120000000", "name": null }
+}
+```
+
+`expect` is `run`, `ignore` (the filter declines it — add `reason` to pin the
+exact reason) or `reject` (the schema refuses it). The loader and the reload
+watcher only read `.ts`, so the folders are invisible to them.
+
+Three rules:
+
+- **Made-up values only.** Copy a real payload's *structure* — the MCP `run`
+  tool with `section: "input"` shows one — and never its names, phone numbers,
+  message text or ids. A fixture is committed, and git history does not forget.
+  Use `60120000000`-style numbers, `Cikgu Contoh`, zeroed UUIDs.
+- **A schema fix comes with the sample that broke it.** A "rejected a delivery"
+  alert names the fields that failed; the fix adds that shape as a `run`
+  sample, with the commit in its `note`. That is what stops the next edit to
+  the schema turning it away again.
+- **Every webhook needs at least one `run` sample**, and a sample folder that
+  names no workflow fails — a sample nobody runs reads as coverage.
+
+The test sets a placeholder for every key a workflow declares with
+`defineSecrets` and points `DATABASE_PATH` at a temporary file before it
+imports anything, so it needs no `.env`, never sees a real secret and never
+touches the real database. It does not test `run()`, authentication or
+anything that reaches the network; reintroducing either 09-28 bug fails exactly
+the sample written for it, which is the whole promise.
 
 ## Layout
 
@@ -1042,8 +1086,8 @@ These were decided deliberately. Raise a trade-off before changing any of them:
 
 ## Verifying before you finish
 
-1. `bun run check` passes. It compiles all four loaded directories — `src`,
-   `workflows`, `views` and `tables`. It did not always: `views/` and `tables/`
+1. `bun run check` and `bun run test` pass. `check` compiles all four loaded
+   directories — `src`, `workflows`, `views` and `tables` — and `test/`. It did not always: `views/` and `tables/`
    sat outside `tsconfig.json` until a view read two fields off a query that
    never selected them and shipped a column of `NaNms` to the dashboard. If you
    add a fifth directory the loader reads, add it to `include` in the same

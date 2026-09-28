@@ -1,0 +1,44 @@
+{
+  "expect": "ignore",
+  "note": "A text message that is only whitespace has nothing to relay.",
+  "reason": "a message with no text — a sticker, image or reaction",
+  "body": {
+    "object": "whatsapp_business_account",
+    "entry": [
+      {
+        "id": "100000000000001",
+        "changes": [
+          {
+            "field": "messages",
+            "value": {
+              "messaging_product": "whatsapp",
+              "metadata": {
+                "display_phone_number": "60300000000",
+                "phone_number_id": "100000000000002"
+              },
+              "contacts": [
+                {
+                  "wa_id": "60120000000",
+                  "profile": {
+                    "name": "Cikgu Contoh"
+                  }
+                }
+              ],
+              "messages": [
+                {
+                  "id": "wamid.TEST000000000000000000000001",
+                  "from": "60120000000",
+                  "timestamp": "1767225600",
+                  "type": "text",
+                  "text": {
+                    "body": "   "
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "expect": "run",
+  "note": "An edited message or a callback carries no `message`; the schema is loose so it arrives, and run() decides it is nothing.",
+  "body": {
+    "update_id": 100000002,
+    "edited_message": {
+      "message_id": 1,
+      "chat": {
+        "id": 100000001,
+        "type": "private"
+      },
+      "date": 1767225600,
+      "text": "/content_today"
+    }
+  }
+}

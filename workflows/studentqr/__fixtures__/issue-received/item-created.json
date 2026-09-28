@@ -1,0 +1,23 @@
+{
+  "expect": "run",
+  "note": "Monday's create_pulse — what the create_item subscription actually sends. Every field beyond pulseId is Monday's and must be tolerated.",
+  "body": {
+    "event": {
+      "app": "monday",
+      "triggerTime": "2026-01-01T00:00:00.000Z",
+      "subscriptionId": 100000001,
+      "userId": 10000001,
+      "originalTriggerUuid": null,
+      "boardId": 1000000001,
+      "pulseId": 2000000001,
+      "pulseName": "SEKOLAH CONTOH",
+      "groupId": "topics",
+      "isTopGroup": true,
+      "triggerUuid": "00000000000000000000000000000000",
+      "type": "create_pulse",
+      "groupName": "New",
+      "groupColor": "#579bfc",
+      "columnValues": {}
+    }
+  }
+}

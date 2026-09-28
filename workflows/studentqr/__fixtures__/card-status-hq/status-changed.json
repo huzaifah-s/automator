@@ -1,0 +1,50 @@
+{
+  "expect": "run",
+  "note": "A status column moved from one named label to another — the change_specific_column_value subscription.",
+  "body": {
+    "event": {
+      "app": "monday",
+      "triggerTime": "2026-01-01T00:00:00.000Z",
+      "subscriptionId": 100000001,
+      "userId": 10000001,
+      "originalTriggerUuid": null,
+      "boardId": 1000000001,
+      "pulseId": 2000000001,
+      "pulseName": "SEKOLAH CONTOH",
+      "groupId": "topics",
+      "isTopGroup": true,
+      "triggerUuid": "00000000000000000000000000000000",
+      "type": "update_column_value",
+      "columnId": "status",
+      "columnType": "color",
+      "columnTitle": "STATUS",
+      "value": {
+        "label": {
+          "index": 1,
+          "text": "Done",
+          "style": {
+            "color": "#00c875",
+            "border": "#00b461",
+            "var_name": "green-shadow"
+          },
+          "is_done": true
+        },
+        "post_id": null
+      },
+      "previousValue": {
+        "label": {
+          "index": 0,
+          "text": "KIV",
+          "style": {
+            "color": "#00c875",
+            "border": "#00b461",
+            "var_name": "green-shadow"
+          },
+          "is_done": false
+        },
+        "post_id": null
+      },
+      "changedAt": 1767225600.0
+    }
+  }
+}

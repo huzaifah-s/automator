@@ -1,0 +1,44 @@
+{
+  "expect": "ignore",
+  "note": "A 'sent' receipt for a message we sent. The bulk of this route's traffic, and not an execution.",
+  "reason": "a delivery receipt for a message we sent",
+  "body": {
+    "object": "whatsapp_business_account",
+    "entry": [
+      {
+        "id": "100000000000001",
+        "changes": [
+          {
+            "field": "messages",
+            "value": {
+              "messaging_product": "whatsapp",
+              "metadata": {
+                "display_phone_number": "60300000000",
+                "phone_number_id": "100000000000002"
+              },
+              "statuses": [
+                {
+                  "id": "wamid.TEST000000000000000000000002",
+                  "status": "sent",
+                  "timestamp": "1767225600",
+                  "recipient_id": "60120000000",
+                  "conversation": {
+                    "id": "TESTCONVERSATION0001",
+                    "origin": {
+                      "type": "utility"
+                    }
+                  },
+                  "pricing": {
+                    "billable": true,
+                    "pricing_model": "CBP",
+                    "category": "utility"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

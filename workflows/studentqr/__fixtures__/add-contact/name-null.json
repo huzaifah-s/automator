@@ -1,0 +1,8 @@
+{
+  "expect": "run",
+  "note": "A form whose name box was left empty sends \"name\": null. Was a 422 (fixed 248d971).",
+  "body": {
+    "phone_number_id": "60120000000",
+    "name": null
+  }
+}

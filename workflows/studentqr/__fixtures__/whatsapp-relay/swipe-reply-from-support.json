@@ -1,0 +1,47 @@
+{
+  "expect": "run",
+  "note": "Support swipe-replying to a relayed message: context.id names the message being answered.",
+  "body": {
+    "object": "whatsapp_business_account",
+    "entry": [
+      {
+        "id": "100000000000001",
+        "changes": [
+          {
+            "field": "messages",
+            "value": {
+              "messaging_product": "whatsapp",
+              "metadata": {
+                "display_phone_number": "60300000000",
+                "phone_number_id": "100000000000002"
+              },
+              "contacts": [
+                {
+                  "wa_id": "60130000000",
+                  "profile": {
+                    "name": "Support"
+                  }
+                }
+              ],
+              "messages": [
+                {
+                  "id": "wamid.TEST000000000000000000000001",
+                  "from": "60130000000",
+                  "timestamp": "1767225600",
+                  "type": "text",
+                  "text": {
+                    "body": "Sudah dihantar semalam"
+                  },
+                  "context": {
+                    "from": "60300000000",
+                    "id": "wamid.TEST000000000000000000000003"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

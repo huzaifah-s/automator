@@ -1,0 +1,32 @@
+{
+  "expect": "run",
+  "note": "In a group Telegram suffixes the bot's username to the command.",
+  "body": {
+    "update_id": 100000001,
+    "message": {
+      "message_id": 1,
+      "from": {
+        "id": 100000001,
+        "is_bot": false,
+        "first_name": "Test",
+        "username": "test_user",
+        "language_code": "en"
+      },
+      "chat": {
+        "id": 100000001,
+        "first_name": "Test",
+        "username": "test_user",
+        "type": "private"
+      },
+      "date": 1767225600,
+      "text": "/content_id@TestBot 00000000",
+      "entities": [
+        {
+          "offset": 0,
+          "length": 19,
+          "type": "bot_command"
+        }
+      ]
+    }
+  }
+}

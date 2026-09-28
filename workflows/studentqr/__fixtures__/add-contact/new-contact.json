@@ -1,0 +1,8 @@
+{
+  "expect": "run",
+  "note": "A number and a name, both strings.",
+  "body": {
+    "phone_number_id": "60120000000",
+    "name": "Cikgu Contoh"
+  }
+}

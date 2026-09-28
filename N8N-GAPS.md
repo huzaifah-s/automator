@@ -34,8 +34,9 @@ what's left, and enough detail to pick any of it up cold.
 Read [AGENTS.md](AGENTS.md) first — it has the layout, the invariants that have
 already caused bugs, and how to verify. Two conventions we're holding to:
 
-- `bun run check` must pass, and **verify by actually running the thing**. There
-  is no test suite. Every entry below has a "how to verify" line.
+- `bun run check` and `bun run test` must pass, and **verify by actually running
+  the thing** — the tests cover webhook payload shapes only. Every entry below
+  has a "how to verify" line.
 - Separate commits per logical change, messages that explain *why* (the problem,
   the rejected alternative, what you verified), and a [CHANGELOG.md](CHANGELOG.md)
   entry for anything that settles a question.

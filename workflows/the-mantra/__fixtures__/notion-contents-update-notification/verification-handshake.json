@@ -1,0 +1,7 @@
+{
+  "expect": "run",
+  "note": "Notion's one-time verification token, sent when the subscription is created or 'Resend token' is clicked.",
+  "body": {
+    "verification_token": "secret_TESTTOKEN0000000000000000000000000000000"
+  }
+}

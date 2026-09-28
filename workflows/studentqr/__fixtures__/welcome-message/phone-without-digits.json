@@ -1,0 +1,8 @@
+{
+  "expect": "reject",
+  "note": "A phone field with no digits in it cannot be messaged — refused rather than sent to nobody.",
+  "body": {
+    "phone_number_id": "n/a",
+    "name": "Cikgu Contoh"
+  }
+}

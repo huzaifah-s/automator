@@ -8,6 +8,52 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-29
 
+### Webhook payloads get samples, and the repo gets its first test
+
+Both fixes on 09-28 were a webhook turning away a real payload shape. A form
+sent `"name": null`, and Monday sent `label.text: null` for a cleared
+status. Each was a 422 on a delivery that should have run, and nothing
+would stop the next schema edit bringing either back.
+
+Each webhook now keeps samples of the shapes it must handle in
+`workflows/<folder>/__fixtures__/<file>/*.json`. `bun run test` runs every
+sample through the route's schema and filter. There are 39 samples over the 13
+webhooks.
+
+Settled along the way:
+
+- **"No test suite" is now "one test, for one thing."** The project's rule was
+  to verify by running the thing, and that still holds for everything
+  else. Schemas and filters are the exception because they are pure, they have
+  broken, and running the server does not exercise an old payload shape
+  nobody thought to send. `run()`, authentication and anything that touches
+  the network stay out.
+- **Hand-written values, not recorded deliveries.** Real StudentQR and WhatsApp
+  payloads carry teachers' names, phone numbers and messages, and a committed
+  fixture stays in git history for good. Samples copy a real delivery's
+  structure, checked against production inputs through the MCP `run` tool,
+  and use made-up values.
+- **Next to the workflow, not in `test/`.** The person editing a schema is
+  looking at that folder. The loader and the reload watcher read only `.ts`,
+  so JSON there is inert.
+- **No `.env` needed.** Signature checkers refuse to build without their
+  secret at import, which is right for the server. The test gives every
+  `defineSecrets` key a placeholder, overriding the local `.env`, and points
+  `DATABASE_PATH` at a temporary file first. It runs the same on a fresh clone,
+  and a real secret never enters the process.
+- **Coverage is enforced lightly.** Every webhook must have one `run` sample,
+  and a sample folder that names no workflow fails, because a sample that
+  runs against nothing reads as coverage.
+
+Verified:
+- 40 of 40 pass: 39 samples and the coverage check.
+- It passes with an empty environment.
+- It fails on the matching samples, and only those, when each old bug is put
+  back: `label.text` back to `.optional()`, `name` back to `.optional()`, and
+  the relay filter no longer letting failed deliveries through.
+- A misspelled sample folder fails with the path it expected.
+- `bun run check` now covers `test/`.
+
 ### A webhook whose sender stops calling is reported
 
 Notion switched the Contents subscription off on 09-24 and nothing here

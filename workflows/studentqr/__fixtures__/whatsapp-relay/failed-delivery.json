@@ -1,0 +1,42 @@
+{
+  "expect": "run",
+  "note": "A message we sent that Meta could not deliver. The only report that a school never heard back, so it must never be filtered out.",
+  "body": {
+    "object": "whatsapp_business_account",
+    "entry": [
+      {
+        "id": "100000000000001",
+        "changes": [
+          {
+            "field": "messages",
+            "value": {
+              "messaging_product": "whatsapp",
+              "metadata": {
+                "display_phone_number": "60300000000",
+                "phone_number_id": "100000000000002"
+              },
+              "statuses": [
+                {
+                  "id": "wamid.TEST000000000000000000000002",
+                  "status": "failed",
+                  "timestamp": "1767225600",
+                  "recipient_id": "60120000000",
+                  "errors": [
+                    {
+                      "code": 131047,
+                      "title": "Re-engagement message",
+                      "message": "Re-engagement message",
+                      "error_data": {
+                        "details": "Message failed to send because more than 24 hours have passed since the customer last replied to this number."
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

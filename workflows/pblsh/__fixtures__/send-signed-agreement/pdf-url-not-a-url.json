@@ -1,0 +1,70 @@
+{
+  "expect": "reject",
+  "note": "Without a fetchable PDF there is nothing to attach to the email — refused at the door rather than failing mid-run.",
+  "body": {
+    "eventId": "00000000-0000-4000-8000-000000000010",
+    "eventType": "FORM_RESPONSE",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "data": {
+      "responseId": "TestResp",
+      "submissionId": "TestSub",
+      "respondentId": "TestResp1",
+      "formId": "TestForm",
+      "formName": "Content Buyout Agreement",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "submissionPdfUrl": "not a url",
+      "fields": [
+        {
+          "key": "question_a",
+          "label": "Date of this agreement",
+          "type": "INPUT_DATE",
+          "value": "2026-01-01"
+        },
+        {
+          "key": "question_b",
+          "label": "Full name (as on KTP)",
+          "type": "INPUT_TEXT",
+          "value": "Test Creator"
+        },
+        {
+          "key": "question_c",
+          "label": "KTP No.",
+          "type": "INPUT_TEXT",
+          "value": "0000000000000000"
+        },
+        {
+          "key": "question_d",
+          "label": "Date of birth",
+          "type": "INPUT_DATE",
+          "value": "2000-01-01"
+        },
+        {
+          "key": "question_e",
+          "label": "Email",
+          "type": "INPUT_EMAIL",
+          "value": "creator@example.com"
+        },
+        {
+          "key": "question_f",
+          "label": "WhatsApp",
+          "type": "INPUT_PHONE_NUMBER",
+          "value": "+620000000000"
+        },
+        {
+          "key": "question_g",
+          "label": "Signature",
+          "type": "SIGNATURE",
+          "value": [
+            {
+              "id": "sig",
+              "name": "signature.png",
+              "url": "https://example.com/signature.png",
+              "mimeType": "image/png",
+              "size": 1000
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

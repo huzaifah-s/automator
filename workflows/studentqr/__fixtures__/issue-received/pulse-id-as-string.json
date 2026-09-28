@@ -1,0 +1,20 @@
+{
+  "expect": "run",
+  "note": "pulseId arrives as a number today; the schema also takes a string, which every API call wants anyway.",
+  "body": {
+    "event": {
+      "app": "monday",
+      "triggerTime": "2026-01-01T00:00:00.000Z",
+      "subscriptionId": 100000001,
+      "userId": 10000001,
+      "originalTriggerUuid": null,
+      "boardId": 1000000001,
+      "pulseId": "2000000001",
+      "pulseName": "SEKOLAH CONTOH",
+      "groupId": "topics",
+      "isTopGroup": true,
+      "triggerUuid": "00000000000000000000000000000000",
+      "type": "create_pulse"
+    }
+  }
+}

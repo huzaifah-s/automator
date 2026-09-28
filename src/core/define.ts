@@ -1,6 +1,7 @@
 import type {
   PollCtx,
   Trigger,
+  WebhookDedupe,
   WebhookFilter,
   WebhookHandshake,
   WebhookRegistration,
@@ -59,6 +60,8 @@ export function webhook<T = unknown>(
      * write it to fail towards running.
      */
     filter?: WebhookFilter<T>;
+    /** Recognises a retry by the provider's event id — see WebhookDedupe in types.ts. */
+    dedupe?: WebhookDedupe<T>;
     /** `false` opts out of the secret check — see types.ts. */
     secret?: string | false;
     /** Authenticates from the raw request instead of a shared secret. */
@@ -77,6 +80,7 @@ export function webhook<T = unknown>(
     // workflows of every payload shape side by side. The generic above is the
     // whole point of this cast: it is what typed the function at the call site.
     filter: opts.filter as WebhookFilter | undefined,
+    dedupe: opts.dedupe as WebhookDedupe | undefined,
     schema: opts.schema as ZodType | undefined,
   };
 }
@@ -215,6 +219,7 @@ export { redact } from "./redact.ts";
 export type {
   HandshakeReply,
   WebhookDecision,
+  WebhookDedupe,
   WebhookFilter,
   WebhookHandshake,
   WebhookVerifier,

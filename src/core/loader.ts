@@ -103,6 +103,15 @@ export async function loadWorkflows(
         continue;
       }
 
+      // Only the inbox deduplicates, and a sync hook never writes to it. Left
+      // to load, this would read as protection against retries that it is not.
+      if (def.trigger.dedupe && def.trigger.respond === "sync") {
+        errors.push(
+          `${rel}: webhook declares dedupe but responds sync — only async deliveries are deduplicated`,
+        );
+        continue;
+      }
+
       const key = `${def.trigger.method ?? "POST"} /${def.trigger.path}`;
       const owner = seenHooks.get(key);
       if (owner) {

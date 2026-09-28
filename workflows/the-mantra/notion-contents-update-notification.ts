@@ -183,6 +183,12 @@ const handshake = z
  * times before giving up on the subscription.
  */
 const event = z.looseObject({
+  // Both only ever read, never required: `.catch` turns an unexpected shape
+  // into "absent" rather than into the 422 this schema exists to avoid.
+  /** The event's own id — the same on every retry of it. See `dedupe` below. */
+  id: z.string().optional().catch(undefined),
+  /** 1 on Notion's first try. Higher means an earlier try failed — see run(). */
+  attempt_number: z.number().optional().catch(undefined),
   type: z.string(),
   entity: z.looseObject({ id: z.string() }).optional(),
   data: z
@@ -315,6 +321,17 @@ export default defineWorkflow<Payload>({
     // exclusive — this replaces WEBHOOK_SECRET on this path, it does not
     // stack with it.
     verify: notionSignature(() => secrets.NOTION_WEBHOOK_TOKEN),
+    // Notion retries an event it thinks went unacknowledged for about a day,
+    // and stamps each retry with a new `attempt_number` — so the body differs
+    // and the inbox's body hash let attempt 3 of a status change run again
+    // (two Telegram messages to Jenny on 2026-09-22). The event id does not
+    // change between attempts. 25h covers Notion's last retry with margin.
+    // A handshake has no id and falls back to the body hash, which is fine:
+    // "Resend token" is meant to arrive again.
+    dedupe: {
+      key: (e) => ("id" in e ? e.id : undefined),
+      windowMs: 25 * 60 * 60 * 1000,
+    },
   }),
   // A status change must not be dropped because another one is in flight, and
   // a busy editing session produces several within a second.
@@ -323,6 +340,26 @@ export default defineWorkflow<Payload>({
   timeoutMs: 120_000,
 
   async run(ctx) {
+    // The only sign we get that Notion's earlier tries failed. Nothing reaches
+    // us from a try that never arrived, and nothing tells us a reply Notion did
+    // not get — but Notion counts both, and enough of them in a row is how the
+    // subscription was switched off on 2026-09-24 with not one failed run here.
+    // A warning per retry is what makes that visible before it happens again:
+    // search the runs for "Notion retried".
+    //
+    // Only the retries that start a run land here. One whose earlier attempt
+    // did arrive is dropped as a duplicate before any run, and says so only in
+    // the process log ("Duplicate webhook for …").
+    const attempt = "attempt_number" in ctx.input ? ctx.input.attempt_number : undefined;
+    if (attempt !== undefined && attempt > 1) {
+      ctx.log.warn(
+        `Notion retried this event (attempt ${attempt}) — its earlier ` +
+          `${attempt === 2 ? "attempt" : `${attempt - 1} attempts`} failed before reaching ` +
+          "this run. Repeated retries are how Notion ends up disabling the subscription.",
+        { eventId: "id" in ctx.input ? ctx.input.id : undefined },
+      );
+    }
+
     // Read inside a step rather than at the top of run(): a resume carries the
     // event forward, but this step also consumes `pendingToken`, and a resume
     // must get the recorded decision back rather than re-reading a handshake

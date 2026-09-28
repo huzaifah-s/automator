@@ -2014,6 +2014,26 @@ What it does and does not cover:
 - **A repeat of the same delivery inside `INBOX_DEDUP_MS` (5 min) is treated
   as a retry** and answered `202 {"duplicate": true}` without running.
   Byte-identical payloads further apart are two real events, not one.
+- **A provider that changes the body on a retry needs `dedupe`.** Notion stamps
+  `attempt_number` into every retry, so attempt 3 of an event hashes
+  differently from attempt 1 and used to run again. Name the event id instead,
+  and give it a window as long as the provider keeps retrying:
+
+  ```ts
+  trigger: webhook("notion", {
+    verify: notionSignature(() => secrets.NOTION_WEBHOOK_TOKEN),
+    dedupe: {
+      key: (e) => ("id" in e ? e.id : undefined),
+      windowMs: 25 * 60 * 60 * 1000, // Notion retries for about a day
+    },
+  }),
+  ```
+
+  A delivery `key` cannot name — a handshake, a payload with no id, a `key`
+  that throws — falls back to the body hash, so a missing id is never why a
+  delivery is dropped. The long window is safe only because it is keyed on an
+  id; the body hash keeps `INBOX_DEDUP_MS`. Async only: `dedupe` on a
+  `respond: "sync"` hook stops the boot.
 - **A run dropped by `onOverlap: "skip"` is finished, not resurrected.** Only a
   skip *the shutdown caused* stays pending.
 - **`respond: "sync"` is deliberately not recorded.** That caller is still

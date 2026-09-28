@@ -54,6 +54,35 @@ export type WebhookDecision = true | string;
 export type WebhookFilter<T = unknown> = (input: T) => WebhookDecision | Promise<WebhookDecision>;
 
 /**
+ * Recognises a provider's retry by the event id it carries, rather than by
+ * the bytes that arrived.
+ *
+ * The inbox's default is a hash of the raw body, which is right for a provider
+ * that resends the same request. Some do not: Notion stamps `attempt_number`
+ * into every retry, so attempt 3 of an event hashes differently from attempt 1
+ * and ran again — two runs, two Telegram messages, for one status change.
+ *
+ * `key` returns the provider's id for the event. Returning nothing — a
+ * handshake, a payload without one — falls back to the body hash, and so does
+ * a `key` that throws: a missing id must never be the reason a delivery is
+ * dropped as a duplicate of something else.
+ *
+ * `windowMs` is how long a repeat of that id counts as a retry. It defaults to
+ * the inbox's window (`INBOX_DEDUP_MS`, five minutes), which covers a sender
+ * retrying at once. A provider that keeps retrying for a day needs a window
+ * that long, and an id is what makes a long one safe — two genuine events can
+ * share a body, but not an id. It cannot usefully exceed `RUN_RETENTION_DAYS`,
+ * which is when the inbox forgets the delivery.
+ *
+ * Async webhooks only: a sync hook never reaches the inbox, so declaring it on
+ * one stops the boot rather than looking like protection it is not.
+ */
+export interface WebhookDedupe<T = unknown> {
+  key: (input: T) => string | null | undefined;
+  windowMs?: number;
+}
+
+/**
  * What a handshake sends back. A string is returned as `text/plain` verbatim —
  * Meta's URL verification wants the bare challenge and rejects anything that
  * wraps it — and an object as JSON.
@@ -123,6 +152,11 @@ export type Trigger =
        * "sync" waits for the workflow and returns its result.
        */
       respond?: "async" | "sync";
+      /**
+       * Recognises a retry by the provider's event id instead of the raw
+       * body. See WebhookDedupe.
+       */
+      dedupe?: WebhookDedupe;
       /**
        * Overrides the global WEBHOOK_SECRET for this route. `false` opts the
        * route out of the secret check altogether — for a URL a person clicks,

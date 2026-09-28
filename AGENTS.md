@@ -112,7 +112,7 @@ Every workflow is connected to the alert channel unless it says otherwise:
 `alerts: false` opts out, `alerts: { channel: "telegram:pblsh" }` routes its
 problems somewhere else. See README "Alerts".
 
-Triggers: `cron(expr, { tz })`, `webhook(path, { method, schema, filter, respond, secret, verify })`,
+Triggers: `cron(expr, { tz })`, `webhook(path, { method, schema, filter, dedupe, respond, secret, verify })`,
 `poll(expr, { fetch, id })`, `manual()`. On `ctx`: `http` `slack` `telegram` `discord` `ai` `email` `sql`
 `sheets` `scrape`, plus `log` `step` `run` `state` `signal` `input` `attempt` `runId`.
 Multi-page GETs go through `ctx.http.paginate(url)` rather than a hand-rolled
@@ -619,7 +619,10 @@ mean opposite things: one the shutdown caused has to survive the restart, one
 `onOverlap` decided must not be resurrected. And recovery is a **replay, not a
 resume** — the inbox row is what records the delivery, and a pending one often
 has no run behind it to resume. The cost is that recovery is at-least-once;
-that is the trade, not an oversight.
+that is the trade, not an oversight. A webhook's `dedupe` swaps the body hash
+for the provider's event id and may widen the window — only ever with an id
+behind it, since a day-long window on a body hash would swallow a genuine
+second event that repeats the first.
 
 **The inbox stores regardless of `CAPTURE_DATA`.** It uses `capture()`'s
 `force` and the checkpoint ceiling, like step outputs, because it is functional

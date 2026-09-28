@@ -138,9 +138,10 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS inbox (
     id          TEXT    PRIMARY KEY,
     workflow    TEXT    NOT NULL,
-    -- sha256 of the method, path and raw body. A digest of the payload rather
-    -- than the payload, which is what makes it the one column here that needs
-    -- no redaction.
+    -- sha256 of the method, path and raw body — or of the provider's event id
+    -- instead, for a webhook that declares dedupe. A digest of the payload
+    -- rather than the payload, which is what makes it the one column here that
+    -- needs no redaction.
     fingerprint TEXT    NOT NULL,
     input       TEXT,
     received_at INTEGER NOT NULL,

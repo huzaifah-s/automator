@@ -6,6 +6,52 @@ Entries record the *reasoning*, not just the diff — `git log` already has the
 diff. If a change settled a question, say what was settled and what the losing
 option was, so nobody relitigates it from scratch.
 
+## 2026-09-28
+
+### A Notion retry is the same event, not a second one
+
+The inbox recognised a retry by hashing the raw body. Notion writes
+`attempt_number` into every delivery, so a retry never hashed the same as
+the attempt before it. When Notion missed our 202 — which it did often
+between 09-14 and 09-24, for reasons in front of the runner rather than in
+it — the retry ran again. On 09-22, attempts 1 and 3 of the same status change
+ran 12 seconds apart and Jenny got the Telegram twice.
+
+`webhook()` now takes `dedupe: { key, windowMs }`. `key` names the provider's
+event id; the Notion route uses the payload's `id` with a 25-hour window,
+because Notion keeps retrying for about a day.
+
+Settled along the way:
+
+- **The long window needs an id.** Widening the body-hash window instead
+  would have fixed nothing here, since the bodies differ. It would also swallow
+  a genuine second event whose bytes repeat the first. `INBOX_DEDUP_MS` still
+  governs the body hash.
+- **A delivery without an id falls back to the body hash, and so does a `key`
+  that throws.** The alternative was to key those on something constant, which
+  would have deduplicated every id-less delivery into the first one. The
+  Notion handshake has no id, and "Resend token" has to get through.
+- **`dedupe` on a sync hook stops the boot.** Sync hooks never reach the
+  inbox, so the option would have loaded and done nothing.
+
+### A Notion retry says so
+
+The subscription was switched off on 09-24 without one failed run or one
+rejection here. Notion counted failures we never saw: a try that never reached
+us, and a 202 that never reached Notion. The only trace was `attempt_number`
+on the deliveries that did get through, and nothing read it.
+
+The notifier now logs a warning whenever a run starts from an attempt above 1,
+so a run search for "Notion retried" shows it building up. It is a warning,
+not an alert, because a stray retry is Notion working as designed. A retry
+whose earlier attempt did arrive is dropped as a duplicate before any run, so
+it shows only as the process log's "Duplicate webhook" line.
+
+Cloudflare was ruled out as the cause: there were no firewall events on the
+path for 09-14 to 09-24, and Bot Fight Mode is off. The free plan keeps no
+per-path status codes that far back, so whether the lost tries were a 5xx at
+the edge or a dropped connection to the origin is not recoverable.
+
 ## 2026-09-23
 
 ### A run's path on the canvas no longer breaks at every IF

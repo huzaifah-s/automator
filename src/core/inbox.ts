@@ -54,9 +54,39 @@ function fingerprint(method: string, path: string, body: string): string {
 }
 
 /**
+ * Identifies a delivery by the provider's event id — see WebhookDedupe. The
+ * leading `event` keeps it from ever equalling a body fingerprint, which
+ * always starts with the method.
+ */
+function eventFingerprint(method: string, path: string, key: string): string {
+  return createHash("sha256").update(`event ${method} ${path}\n${key}`).digest("hex");
+}
+
+/**
+ * The workflow's event id for this delivery, or null to fall back to the body.
+ * A `key` that throws falls back too: a delivery it cannot name is compared
+ * the old way, never dropped.
+ */
+function eventKey(wf: LoadedWorkflow, input: unknown): string | null {
+  const dedupe = wf.trigger.kind === "webhook" ? wf.trigger.dedupe : undefined;
+  if (!dedupe) return null;
+  try {
+    const key = dedupe.key(input);
+    return typeof key === "string" && key !== "" ? key : null;
+  } catch (err) {
+    log.warn(
+      `Dedupe key for ${wf.name} threw — comparing this delivery by its body instead: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  }
+}
+
+/**
  * Writes a delivery down before its 202 is sent. `input` is the parsed and
  * validated payload — the same value the run will receive — and `body` is the
  * bytes that arrived, used only to recognise a retry of the same delivery.
+ * A workflow with `dedupe` recognises it by the event id in `input` instead.
  */
 export function acceptDelivery(
   wf: LoadedWorkflow,
@@ -81,11 +111,20 @@ export function acceptDelivery(
     return { kind: "unrecorded" };
   }
 
+  // The window widens only with an id to stand behind it. A body hash held for
+  // a day would swallow a second genuine event that happens to repeat the first.
+  const key = eventKey(wf, input);
+  const windowMs =
+    key !== null && wf.trigger.kind === "webhook"
+      ? (wf.trigger.dedupe?.windowMs ?? DEDUP_WINDOW_MS)
+      : DEDUP_WINDOW_MS;
+
   const { id, duplicate } = store.recordDelivery({
     workflow: wf.name,
-    fingerprint: fingerprint(method, path, body),
+    fingerprint:
+      key !== null ? eventFingerprint(method, path, key) : fingerprint(method, path, body),
     input: captured.json,
-    dedupWindowMs: DEDUP_WINDOW_MS,
+    dedupWindowMs: windowMs,
   });
   return duplicate ? { kind: "duplicate", id } : { kind: "recorded", id };
 }

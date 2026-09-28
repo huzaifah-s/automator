@@ -6,6 +6,41 @@ Entries record the *reasoning*, not just the diff — `git log` already has the
 diff. If a change settled a question, say what was settled and what the losing
 option was, so nobody relitigates it from scratch.
 
+## 2026-09-29
+
+### Instagram's fetch timeout is retried, for the same reason Facebook's 324 is
+
+Two of the three failed runs in the thirty days to 09-28 were the same thing
+from two sides: Meta's fetcher timing out on our R2 URL. Facebook's was code
+324, fixed on 09-23. Instagram's arrived on 09-26 creating the container for
+image 2 of a carousel, a 400 after 10.8 seconds:
+`code -2 / subcode 2207003`, "It takes too long to download the media".
+Facebook fetched the same URL 2.5 seconds later without trouble. The post was
+never lost, because the next tick retries an unticked platform. The cost was
+the Telegram alert, which reads like a broken image a person has to fix.
+
+Container creation now retries on subcode 2207003 — three attempts, fifteen
+seconds apart, logged as a warning each time. The 324 retry and this one share
+`withFetchRetry`, each keyed on one exact code.
+
+Settled along the way:
+
+- **The subcode is the key, not the code.** `-2` is Graph's catch-all and
+  covers failures that are nothing to do with a fetch.
+- **Graph's `is_transient: false` is ignored.** It said so on an error that
+  cleared seconds later on a sibling API. A flag that is wrong on the one
+  error it describes cannot decide anything.
+- **Only codes that have been seen.** Instagram has other fetch-shaped
+  subcodes (2207052, "media could not be fetched") that are just as safe to
+  retry at this call. They were left out because none has happened here, and a
+  guessed code is how a retry list grows into "retry every 400".
+- **The publish call is untouched.** `media_publish` keeps `retries: 0` on
+  every error, 2207003 included; only container creation, which publishes
+  nothing, repeats. Verified against a stubbed Graph: a timeout that clears on
+  the third try publishes, one that never clears fails with the same message
+  as before, 2207052 is not retried, the 324 path is unchanged, and a 2207003
+  on `media_publish` is not retried.
+
 ## 2026-09-28
 
 ### A Notion retry is the same event, not a second one

@@ -632,11 +632,11 @@ function explain(err: unknown, what: string): string {
   return `${what}: ${err instanceof Error ? err.message : String(err)}`;
 }
 
-/** Graph's numeric error code, or undefined for anything that is not one. */
-function metaCode(err: unknown): number | undefined {
+/** Graph's error object, or undefined for anything that is not one. */
+function metaError(err: unknown): MetaErrorBody["error"] {
   if (!(err instanceof HttpError)) return undefined;
   try {
-    return (JSON.parse(err.body) as MetaErrorBody).error?.code;
+    return (JSON.parse(err.body) as MetaErrorBody).error;
   } catch {
     return undefined;
   }
@@ -757,9 +757,81 @@ async function describeFailure(
   }
 }
 
-/** Creates a container and returns its id. Every parameter goes on the query. */
+/* --- Meta's fetcher */
+
+/**
+ * A Graph error that says Meta's own download of our R2 URL failed — a
+ * statement about a fetch, made before anything was published. That makes it
+ * the one failure a call that can publish may repeat; see `withFetchRetry`.
+ */
+interface FetchFailure {
+  /** True for exactly this error. Match a code Graph actually sent, never a guess. */
+  matches(err: unknown): boolean;
+  /** What Meta said, with the code that said it, for the log line. */
+  says: string;
+}
+
+/** Attempts at a call that failed on Meta's fetch, the first one included. */
+const FETCH_ATTEMPTS = 3;
+/** Long enough for a transient fetch failure to clear, short enough to matter. */
+const FETCH_RETRY_MS = 15_000;
+
+/**
+ * Runs a call, retrying it only while Graph answers with `failure`.
+ *
+ * Both codes this is used for are transient in practice and indistinguishable
+ * from a genuinely bad file by the code alone, so they are distinguished by
+ * trying again. The retry exists for the alert more than the post: a failed
+ * platform is retried on the next five-minute tick anyway, but it sends a
+ * Telegram message first that reads exactly like a broken image somebody has
+ * to go and fix.
+ */
+async function withFetchRetry<T>(
+  ctx: Ctx<DuePage[]>,
+  what: string,
+  failure: FetchFailure,
+  attempt: () => Promise<T>,
+): Promise<T> {
+  for (let n = 1; ; n++) {
+    try {
+      return await attempt();
+    } catch (err) {
+      if (!failure.matches(err) || n >= FETCH_ATTEMPTS) throw err;
+      ctx.log.warn(
+        `${what}: ${failure.says} — attempt ${n} of ${FETCH_ATTEMPTS}, ` +
+          `retrying in ${FETCH_RETRY_MS / 1000}s. Nothing was published; ` +
+          "this call only ever reached Meta's fetcher.",
+      );
+      await sleep(FETCH_RETRY_MS, ctx.signal);
+    }
+  }
+}
+
+/**
+ * "It takes too long to download the media" — Instagram's fetcher timing out
+ * on the R2 URL while it creates a container.
+ *
+ * Graph files it under code -2, its catch-all, so the subcode is the only exact
+ * handle on it. It also says `is_transient: false`, which it is not: image 2 of
+ * a carousel failed with it after 10.8 seconds, and Facebook fetched the same
+ * URL in 2.5 seconds straight after.
+ */
+const IG_MEDIA_FETCH_TIMEOUT: FetchFailure = {
+  matches: (err) => metaError(err)?.error_subcode === 2207003,
+  says: "Meta took too long to download the media [subcode 2207003]",
+};
+
+/**
+ * Creates a container and returns its id. Every parameter goes on the query.
+ *
+ * A container is not a post — nothing is visible until `publishContainer` —
+ * so creating one is safe to repeat, and a fetch timeout is retried here on
+ * top of the http client's 429 / 5xx retries, which never see it: it comes
+ * back as an ordinary 400. Threads containers come through here too and are
+ * covered by the same reasoning should Threads ever answer the same way.
+ */
 async function createContainer(
-  http: Http,
+  ctx: Ctx<DuePage[]>,
   base: string,
   owner: string,
   token: string,
@@ -769,9 +841,11 @@ async function createContainer(
   const path = base === GRAPH_TH ? "threads" : "media";
   let created: { id?: string };
   try {
-    created = await http.post<{ id?: string }>(`${base}/${owner}/${path}`, undefined, {
-      query: { ...params, access_token: token },
-    });
+    created = await withFetchRetry(ctx, `${what} container`, IG_MEDIA_FETCH_TIMEOUT, () =>
+      ctx.http.post<{ id?: string }>(`${base}/${owner}/${path}`, undefined, {
+        query: { ...params, access_token: token },
+      }),
+    );
   } catch (err) {
     throw new Error(explain(err, `${what} container`));
   }
@@ -841,7 +915,7 @@ async function publishInstagram(
   let creationId: string;
 
   if (!media.isImage) {
-    creationId = await createContainer(ctx.http, GRAPH_FB, igUserId, token, {
+    creationId = await createContainer(ctx, GRAPH_FB, igUserId, token, {
       media_type: "REELS",
       video_url: media.urls[0],
       caption,
@@ -850,7 +924,7 @@ async function publishInstagram(
     }, what);
     await awaitContainer(ctx.http, ctx.signal, GRAPH_FB, creationId, token, IG_FIELDS, what);
   } else if (media.urls.length < CAROUSEL_MIN) {
-    creationId = await createContainer(ctx.http, GRAPH_FB, igUserId, token, {
+    creationId = await createContainer(ctx, GRAPH_FB, igUserId, token, {
       image_url: media.urls[0],
       caption,
     }, what);
@@ -859,7 +933,7 @@ async function publishInstagram(
     // Carousel children carry no caption — that lives on the parent.
     const children: string[] = [];
     for (const [index, url] of media.urls.entries()) {
-      const child = await createContainer(ctx.http, GRAPH_FB, igUserId, token, {
+      const child = await createContainer(ctx, GRAPH_FB, igUserId, token, {
         image_url: url,
         is_carousel_item: true,
       }, `${what} image ${index + 1}`);
@@ -869,7 +943,7 @@ async function publishInstagram(
       );
       children.push(child);
     }
-    creationId = await createContainer(ctx.http, GRAPH_FB, igUserId, token, {
+    creationId = await createContainer(ctx, GRAPH_FB, igUserId, token, {
       media_type: "CAROUSEL",
       children: children.join(","),
       caption,
@@ -884,20 +958,10 @@ async function publishInstagram(
 /* ------------------------------------------------------------ facebook */
 
 /**
- * "Missing or invalid image file" — Facebook fetched the URL we handed it and
- * got back nothing it could use.
- */
-const FB_IMAGE_FETCH_FAILED = 324;
-
-/** Attempts at a photo upload that failed with 324, the first one included. */
-const FB_FETCH_ATTEMPTS = 3;
-/** Long enough for a transient fetch failure to clear, short enough to matter. */
-const FB_FETCH_RETRY_MS = 15_000;
-
-/**
- * Runs a `/photos` upload, retrying it only while Graph says code 324.
+ * "Missing or invalid image file" [code 324] — Facebook fetched the URL we
+ * handed `/photos` and got back nothing it could use.
  *
- * 324 is the one Facebook failure on this call that is provably *not* a
+ * 324 is the one Facebook failure on that call that is provably *not* a
  * publish: it is Facebook reporting that its own fetch of the R2 URL came back
  * empty or unreadable, so there is no post and no way a second call makes two.
  * Every other error keeps the no-retry rule — a photo call that dies any other
@@ -907,28 +971,12 @@ const FB_FETCH_RETRY_MS = 15_000;
  * just been fetched fine by Instagram, seconds earlier and from the same URL,
  * failed here with 324 after 29 seconds — Facebook's fetch timing out, not a
  * broken image — and the identical call on the next five-minute tick published
- * it in seven. Indistinguishable from a genuinely bad file by the code alone,
- * so it is distinguished by trying again.
+ * it in seven.
  */
-async function withPhotoFetchRetry<T>(
-  ctx: Ctx<DuePage[]>,
-  what: string,
-  attempt: () => Promise<T>,
-): Promise<T> {
-  for (let n = 1; ; n++) {
-    try {
-      return await attempt();
-    } catch (err) {
-      if (metaCode(err) !== FB_IMAGE_FETCH_FAILED || n >= FB_FETCH_ATTEMPTS) throw err;
-      ctx.log.warn(
-        `${what}: Facebook could not fetch the image [code ${FB_IMAGE_FETCH_FAILED}] — ` +
-          `attempt ${n} of ${FB_FETCH_ATTEMPTS}, retrying in ${FB_FETCH_RETRY_MS / 1000}s. ` +
-          "Nothing was published; this call only ever reaches Facebook's fetcher.",
-      );
-      await sleep(FB_FETCH_RETRY_MS, ctx.signal);
-    }
-  }
-}
+const FB_IMAGE_FETCH_FAILED: FetchFailure = {
+  matches: (err) => metaError(err)?.code === 324,
+  says: "Facebook could not fetch the image [code 324]",
+};
 
 /**
  * A reel, a photo, or a multi-photo feed post.
@@ -950,7 +998,7 @@ async function publishFacebook(
 
   if (media.urls.length < CAROUSEL_MIN) {
     try {
-      const photo = await withPhotoFetchRetry(ctx, "facebook photo", () =>
+      const photo = await withFetchRetry(ctx, "facebook photo", FB_IMAGE_FETCH_FAILED, () =>
         ctx.http.post<{ id?: string; post_id?: string }>(
           `${GRAPH_FB}/${pageId}/photos`,
           undefined,
@@ -978,7 +1026,7 @@ async function publishFacebook(
     const what = `facebook photo ${index + 1} of ${media.urls.length}`;
     let photo: { id?: string };
     try {
-      photo = await withPhotoFetchRetry(ctx, what, () =>
+      photo = await withFetchRetry(ctx, what, FB_IMAGE_FETCH_FAILED, () =>
         ctx.http.post<{ id?: string }>(`${GRAPH_FB}/${pageId}/photos`, undefined, {
           query: { url, published: false, access_token: token },
         }),
@@ -1092,14 +1140,14 @@ async function publishThreads(
   let creationId: string;
 
   if (!media.isImage) {
-    creationId = await createContainer(ctx.http, GRAPH_TH, THREADS_USER_ID, token, {
+    creationId = await createContainer(ctx, GRAPH_TH, THREADS_USER_ID, token, {
       media_type: "VIDEO",
       video_url: media.urls[0],
       text,
     }, what);
     await awaitContainer(ctx.http, ctx.signal, GRAPH_TH, creationId, token, TH_FIELDS, what);
   } else if (media.urls.length < CAROUSEL_MIN) {
-    creationId = await createContainer(ctx.http, GRAPH_TH, THREADS_USER_ID, token, {
+    creationId = await createContainer(ctx, GRAPH_TH, THREADS_USER_ID, token, {
       media_type: "IMAGE",
       image_url: media.urls[0],
       text,
@@ -1108,7 +1156,7 @@ async function publishThreads(
   } else {
     const children: string[] = [];
     for (const [index, url] of media.urls.entries()) {
-      const child = await createContainer(ctx.http, GRAPH_TH, THREADS_USER_ID, token, {
+      const child = await createContainer(ctx, GRAPH_TH, THREADS_USER_ID, token, {
         media_type: "IMAGE",
         image_url: url,
         is_carousel_item: true,
@@ -1119,7 +1167,7 @@ async function publishThreads(
       );
       children.push(child);
     }
-    creationId = await createContainer(ctx.http, GRAPH_TH, THREADS_USER_ID, token, {
+    creationId = await createContainer(ctx, GRAPH_TH, THREADS_USER_ID, token, {
       media_type: "CAROUSEL",
       children: children.join(","),
       text,

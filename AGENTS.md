@@ -19,6 +19,7 @@ bun run check                    # tsc --noEmit — MUST pass before you finish
 bun run test                     # webhook samples through schema + filter — MUST pass
 bun run list                     # every workflow and its trigger
 bun run trigger -- <name>        # run one workflow, non-zero exit on failure
+bun run try -- <name | file.ts>  # practice run: real reads, writes held back and printed
 docker compose up -d --build
 ```
 
@@ -272,6 +273,28 @@ would deliver it every boot. The row it writes is load-bearing — being a `cron
 run it becomes the newest one, which is what makes the next boot measure from
 there instead of reporting the same gap forever. Called after `startScheduler`,
 because it reads the jobs that call creates.
+
+**A practice run gates `globalThis.fetch`, and anything it cannot classify is
+held.** `src/core/practice.ts`. Gating `ctx.http` instead looks tidier and
+misses real traffic: the Contents notifier sends its Telegram with a bare
+`fetch`, and Drive, S3, OAuth and the alerts all call it directly. The gate is
+installed at the very top of `src/index.ts`, before a module can make a
+request, and is never removed from a practising process. `classify` names the
+reads (every GET, GraphQL queries, Notion's query and search, Telegram `get*`,
+model calls, non-rotating token exchanges), and everything else is a write.
+Teach it a new read-only POST there, and never flip the default. A
+`refresh_token` grant is held on purpose, because a provider that rotates
+refresh tokens would leave the laptop with the only live copy. SMTP and
+Postgres do not go through fetch, so they are guarded where their clients are
+built in `src/integrations/index.ts`: email is held, and `ctx.sql` is refused
+because a tagged template does not say whether it writes.
+
+**Answer your own "what is that field called?" with a practice run.** Before
+asking the user for a Notion property name, a Monday column id or a status
+label, write a throwaway `manual()` workflow in your scratch directory that
+reads it, and run it with `bun run try -- <file>`. It uses this machine's
+credentials and prints redacted output. If the credential is not connected
+locally, say so and name it. Never ask for the token itself.
 
 **A webhook `filter` is a shortcut, never the enforcement.** Returning a reason
 instead of `true` answers 200 and starts no run — but a manual run, a replay
@@ -1098,6 +1121,8 @@ These were decided deliberately. Raise a trade-off before changing any of them:
    and that tab are the only places it shows.
 3. Start the server and exercise the actual path — trigger the workflow, POST
    the webhook, open `/runs/<id>` and confirm steps and HTTP calls rendered.
+   For a workflow that talks to real services, `bun run try -- <name>` first:
+   it shows what the run reads and what it *would* write, without sending it.
 4. If you touched anything storage-related, grep the API output and stdout for a
    known secret value and confirm zero occurrences. For the secret store that
    means `strings data/automator.db | grep <value>` as well — the table holds

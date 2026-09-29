@@ -8,6 +8,45 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-29
 
+### Practice runs: `bun run try`
+
+There was no way to see what a workflow would do before deploying it. The
+fixture test checks payload shapes, and `bun run trigger` sends everything for
+real. n8n's "execute node" is the missing piece: run it, see the real data,
+publish later.
+
+`bun run try -- <workflow | file.ts>` runs on the laptop against the real
+services. Reads go out, and writes are held back and printed. A poll runs its
+own `fetch()` first, a webhook uses its first `run` sample, and `--input`
+takes a payload or a fixture file. `--live` removes the gate.
+
+Settled along the way:
+
+- **The gate is `globalThis.fetch`, not `ctx.http`.** The Contents notifier's
+  Telegram, Drive, S3, OAuth and the alerts all call `fetch` directly, so a
+  gate on the client would have been a promise about some connections only.
+  SMTP is held and `ctx.sql` refused where their clients are built.
+- **Unclassified means held.** Reads are listed (GET, GraphQL queries, Notion
+  query and search, Telegram `get*`, model calls, non-rotating token
+  exchanges), and everything else is a write. A `refresh_token` grant is held
+  because a rotating provider would leave the server's copy dead.
+- **Test boards were the losing option.** Pointing a workflow at a copy of a
+  Monday board works for Monday and for nothing else.
+- **Credentials stay per machine.** A practice run uses the laptop's
+  credentials. A route that lent the server's credentials to a laptop would
+  make every MCP token a credential proxy.
+- **Scratch workflows are the lookup tool.** A throwaway `manual()` file
+  outside `workflows/` is how an agent reads a database's columns itself
+  instead of asking. AGENTS.md now says to do that first.
+
+Verified:
+- On a scratch workflow against public APIs: a GET and a GraphQL query returned
+  real data. A `ctx.http` POST, a Monday mutation, a bare `fetch` PATCH and an
+  email were all held, and all four were listed.
+- A webhook with no `--input` picked up its fixture.
+- An unconnected credential stops `try` before a poll's fetch can fail on a
+  401.
+
 ### Webhook payloads get samples, and the repo gets its first test
 
 Both fixes on 09-28 were a webhook turning away a real payload shape. A form

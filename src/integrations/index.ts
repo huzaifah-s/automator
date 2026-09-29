@@ -3,6 +3,7 @@ import { createHttp, type HttpClient } from "./http.ts";
 import { store } from "../core/db.ts";
 import { capture, captureEnabled } from "../core/capture.ts";
 import { registerSecret } from "../core/redact.ts";
+import { holdBack, isPractice } from "../core/practice.ts";
 import {
   createSlack,
   createTelegram,
@@ -93,10 +94,21 @@ export function buildIntegrations(signal: AbortSignal, runId?: string): Integrat
     get ai() {
       return (ai ??= createAi(signal));
     },
+    // SMTP and Postgres are the two ways out that are not fetch, so the
+    // practice gate in core/practice.ts cannot see them. Email is held like
+    // any other write. SQL is refused outright: a tagged template does not
+    // say whether it reads or writes, and guessing wrong is the one failure a
+    // practice run exists to prevent.
     get email() {
-      return (email ??= createEmail());
+      return (email ??= isPractice() ? practiceEmail() : createEmail());
     },
     get sql() {
+      if (isPractice()) {
+        throw new Error(
+          "ctx.sql is not available in a practice run — it cannot tell a read from a write. " +
+            "Use `bun run try -- <workflow> --live` to run it for real.",
+        );
+      }
       return createSql();
     },
     get sheets() {
@@ -116,6 +128,22 @@ export function buildIntegrations(signal: AbortSignal, runId?: string): Integrat
     },
     get whatsapp() {
       return (whatsapp ??= createWhatsApp(http));
+    },
+  };
+}
+
+/** ctx.email during a practice run: records the message, sends nothing. */
+function practiceEmail(): EmailClient {
+  return {
+    async send(msg) {
+      const to = Array.isArray(msg.to) ? msg.to.join(", ") : msg.to;
+      holdBack({
+        method: "SMTP",
+        url: `mailto:${to}`,
+        body: { subject: msg.subject, text: msg.text, html: msg.html, cc: msg.cc },
+        why: "sends an email",
+      });
+      return { messageId: "practice-run" };
     },
   };
 }

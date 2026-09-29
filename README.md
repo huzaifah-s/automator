@@ -415,6 +415,77 @@ the fix adds it as a sample, so the next edit to that schema cannot turn it
 away again. Samples use made-up values only; see AGENTS.md "Webhook samples"
 for the format and the rules.
 
+## Practice runs — trying a workflow before deploying
+
+n8n lets you press "execute" on a node and see what came back before you
+publish. Here that is `bun run try`: it runs a workflow **on your laptop,
+against the real services**. Every *read* goes out for real, so the run sees
+real data. Every *write* is **held back** and printed, never sent.
+
+```bash
+bun run try -- todo-repeat                       # a poll: runs its fetch() for real, then run() on what it found
+bun run try -- studentqr-issue-solved            # a webhook: uses its first "run" sample from __fixtures__
+bun run try -- studentqr-issue-solved --input payload.json   # …or a payload you give it
+bun run try -- ./scratch/look.ts                 # any file default-exporting defineWorkflow, anywhere
+bun run try -- todo-repeat --live                # no gate: writes are really sent
+```
+
+```
+▶ todo-repeat  (practice run — writes held back)
+  input: poll fetch() — 1 item(s), seen-list ignored
+
+✓ success in 1.4s
+steps
+  ✓ read database        out  {"id":"…","start":"Not started"}
+  ✓ create next …        out  {"practice_run":true,…}
+
+held back — 1 write(s), none of them sent
+  POST   https://api.notion.com/v1/pages   · changes something
+         {"parent":{"database_id":"…"},"properties":{"Due Date":{"date":{"start":"2026-10-24"}}…}}
+```
+
+**Read or write is decided at `fetch`, for every connection.** The gate
+replaces `globalThis.fetch` for the process, so it covers `ctx.http`, a bare
+`fetch()` in a workflow, Drive, S3, OAuth and the alert channel alike. Which
+calls count as reads:
+
+| Goes out for real | Held back |
+|---|---|
+| every `GET` / `HEAD` | every other method, unless listed on the left |
+| a GraphQL `query` (Monday, and any other GraphQL API) | a GraphQL `mutation` |
+| Notion `…/query` and `/v1/search` | creating or updating a Notion page |
+| Telegram `get*` methods | `sendMessage` and every other Telegram write |
+| Anthropic and OpenAI model calls | `ctx.email` (SMTP) |
+| a token exchange that does not rotate (service account, client credentials) | a `refresh_token` grant, because some providers retire the old token and the server would be left holding a dead one |
+
+`ctx.sql` is refused outright in a practice run, because a SQL string does not
+say whether it reads or writes. Anything the gate cannot classify is held: a
+read held by mistake shows as a placeholder, while a write sent by mistake is a
+message to a customer.
+
+**A held write answers `{"practice_run": true}`.** Code that needs the reply of
+a write, such as the id of a page it just created, gets no id. That is the
+cost of the mode, and the report names which call it was.
+
+**It needs the credentials on this machine.** A practice run uses whatever
+this laptop holds: its `.env`, its secret store and its Credentials tab
+(`bun run dev`, then `http://localhost:3000/credentials`). The server's copies
+never leave the server, and adding a route that hands them out would be a much
+bigger hole than pasting a token in twice.
+
+**The scratch-file form is for looking things up.** To find out which columns a
+Notion database has, or what a Monday board's status labels are called, write a
+five-line `manual()` workflow anywhere outside `workflows/`, point
+`defineCredential` at the connection and run it with `try`. The output is
+redacted the same way the run page is, and the file is never loaded by the
+server. This is how an agent answers "what is that field called?" itself
+instead of asking you.
+
+Each practice run is also written to the *local* database with a warning
+saying it was one, so the local dashboard's run page shows its steps and calls.
+It runs once, with no retries, and it ignores the poll seen-list without
+updating it.
+
 ## Rejected deliveries
 
 A webhook turned away at the door — a bad secret, a signature that did not

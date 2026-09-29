@@ -44,8 +44,15 @@ import { alertBoot, alertInterrupted, describeAlertChannel } from "./core/alerts
 import { isPaused, reportPauses } from "./core/pause.ts";
 import { runSecretCli } from "./cli/secrets.ts";
 import { runVariableCli } from "./cli/variables.ts";
+import { runTryCli } from "./cli/try.ts";
+import { startPractice } from "./core/practice.ts";
 
 const args = process.argv.slice(2);
+
+// First, before a single module has had the chance to make a request: a
+// practice run gates fetch for the whole process, and a gate installed after
+// the first call is a gate with a hole in it. See src/core/practice.ts.
+if (args[0] === "--try" && !args.includes("--live")) startPractice();
 
 // The secret CLI runs before workflows are imported, and that ordering is the
 // point of it: setting a credential for a workflow you have not deployed yet
@@ -123,7 +130,7 @@ if (args[0] === "--alert") {
  * terminal. Boot alerts are for the former: `bun run list` failing is already
  * on the screen of the person who ran it, and does not belong in a chat.
  */
-const isServerBoot = args[0] !== "--list" && args[0] !== "--run";
+const isServerBoot = args[0] !== "--list" && args[0] !== "--run" && args[0] !== "--try";
 
 /*
  * Data tables come up before workflows, because a workflow may write to one on
@@ -237,6 +244,10 @@ if (args[0] === "--run") {
   }
   const outcome = await runWorkflow(wf, { trigger: "manual" });
   await shutdown("cli", outcome.status === "success" ? 0 : 1);
+}
+
+if (args[0] === "--try") {
+  await shutdown("cli", await runTryCli(registry, args.slice(1)));
 }
 
 /* ---------------------------------------------------------------- server */

@@ -11,6 +11,7 @@
     "test": "bun test",
     "list": "bun src/index.ts --list",
     "trigger": "bun src/index.ts --run",
+    "try": "bun src/index.ts --try",
     "secret": "bun src/index.ts --secret",
     "up": "docker compose -f docker-compose.yml -f compose.local.yml up -d --build",
     "down": "docker compose -f docker-compose.yml -f compose.local.yml down",

@@ -142,7 +142,7 @@ export async function pollOnce(wf: LoadedWorkflow): Promise<void> {
   }
 }
 
-function buildPollCtx(
+export function buildPollCtx(
   workflow: string,
   logger: Logger,
   state: StateClient,

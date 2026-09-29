@@ -2,6 +2,7 @@ import { createLogger, log } from "./logger.ts";
 import { alertBoot } from "./alerts.ts";
 import { createState, type StateClient } from "./state.ts";
 import { isEnabled } from "./pause.ts";
+import { schedulesOn } from "./scheduler.ts";
 import { buildIntegrations } from "../integrations/index.ts";
 import type { LoadedWorkflow, RegisterCtx } from "./types.ts";
 import type { Registry } from "./loader.ts";
@@ -49,6 +50,10 @@ interface Subscription {
  * up on the next start.
  */
 export async function reconcileWebhooks(registry: Registry): Promise<void> {
+  // A laptop registering would point a provider at itself — and one that keeps
+  // a single URL per bot, like Telegram, would stop calling production.
+  if (!schedulesOn()) return;
+
   const candidates = registry
     .all()
     .filter((w) => w.trigger.kind === "webhook" && w.trigger.register);

@@ -199,6 +199,17 @@ are not captured and `PollCtx` has no `ctx.step`. Keep `fetch` to "return the
 current list" and put the actual work in `run()`, where it is observable,
 retried, and checkpointed.
 
+**Only production fires by itself.** `schedulesOn()` in
+`src/core/scheduler.ts` is false unless `NODE_ENV=production` (set by the
+Dockerfile) or `SCHEDULE=on`, and then no cron or poll job, no quiet check and
+no provider webhook registration is started. A local server beside the deploy
+shares its credentials but not its state, so every "already done" guard misses
+and everything happens twice — that is how one finished To Do task became two
+copies. The check sits inside `scheduleWorkflow` and `reconcileWebhooks`, not
+at their boot call sites, because a reload and a lifted pause reach both
+directly. A new path that starts something on a timer, or tells a provider
+where to call, asks it too. Manual runs never do.
+
 **Poll items are marked seen only after the run succeeds.** Do not "optimise"
 this into marking them up front — a failed run would then silently drop its
 items. The seen-set lives in the workflow's own state namespace under the

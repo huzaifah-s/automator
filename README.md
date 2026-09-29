@@ -40,6 +40,15 @@ bun install
 bun run dev
 ```
 
+**Away from the deployed server, nothing fires by itself.** Cron and poll
+workflows get no timer and no webhook is registered with a provider, because a
+laptop running beside the deploy, on the same credentials, does everything
+twice: its state is its own database, so it cannot see that production already
+made the copy or sent the message. Run now, `bun run trigger` and `bun run try`
+work as usual. Only the deployed container fires on its own (the Dockerfile
+sets `NODE_ENV=production`); `SCHEDULE=on` turns the timers on anywhere, and
+`SCHEDULE=off` turns them off anywhere.
+
 ## Writing a workflow
 
 Drop a file in `workflows/`. Default-export `defineWorkflow`. That's it.
@@ -2542,6 +2551,10 @@ bun run up                         # localhost:3000
 HOST_PORT=3100 bun run up
 bun run down
 ```
+
+It also sets `NODE_ENV=development`, so a local container has its schedules off
+like `bun run dev` does. `SCHEDULE=on bun run up` when the timers are what you
+are testing.
 
 ### Coolify
 

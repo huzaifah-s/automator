@@ -8,6 +8,35 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-09-30
 
+### A local server no longer runs workflows on a timer
+
+A finished "Test repeat task" got two next copies. Production and a local
+dev server on port 3100 polled the To Do database in the same second, and
+each created one. The guard that allows one copy per finished task is a key
+in the runner's own SQLite state, and the laptop's database could not see
+production's. Any second process on the same credentials repeats every timed
+workflow: the 09:00 cross-post alert would have gone out twice, and the Threads
+token refresh would have run on both.
+
+Cron and poll timers, the quiet-webhook check and provider webhook registration
+now start only where `NODE_ENV=production`, which the Dockerfile sets and
+Coolify does not override. `SCHEDULE=on` or `off` overrides it either way.
+`compose.local.yml` sets `NODE_ENV=development`, so `bun run up` counts as
+local. Registration is included because a local `PUBLIC_URL` would point
+Telegram's single webhook for the bot at the laptop. Manual runs, `bun run
+try` and webhook routes are unchanged.
+
+- **Considered: a dashboard "listen for one event" mode, like n8n's.** It was
+  dropped for two reasons. No provider can reach a laptop without a tunnel, so
+  the webhook half would have had nothing to hear. The poll and cron half is
+  already `bun run try` and Run now.
+- **Considered: keying on "no alert channel" or on the database path.** Both
+  describe today's laptop rather than the thing that matters. `NODE_ENV` is
+  set by the image, so a deploy cannot forget it.
+- **The cost:** a deploy that somehow lost `NODE_ENV=production` would run
+  nothing on a timer. It says so at boot on every start, and sends an alert
+  when an alert channel is set, as it is in production.
+
 ### A deploy's new workflow folder is no longer deleted by the sync behind it
 
 The deploy of the To Do workflow ran 19 workflows instead of 20, and warned

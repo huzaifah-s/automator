@@ -12,3 +12,9 @@ services:
   automator:
     ports:
       - "${HOST_PORT:-3000}:3000"
+    # The image says production, and a production process fires every cron and
+    # poll workflow by itself — beside the real deploy, that is everything
+    # twice. `SCHEDULE=on bun run up` when the timers are what you are testing.
+    environment:
+      NODE_ENV: development
+      SCHEDULE: ${SCHEDULE:-}

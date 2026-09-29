@@ -6,6 +6,7 @@ import {
   stopScheduler,
   nextRunFor,
   reportMissedTicks,
+  schedulesOn,
 } from "./core/scheduler.ts";
 import {
   runWorkflow,
@@ -303,6 +304,25 @@ else {
     "No alert channel configured — set ALERT_CHANNEL (e.g. telegram:the-mantra) " +
       "or problems are only visible on the dashboard",
   );
+}
+
+// Off is right on a laptop and a silent outage on the server, so it is always
+// said, and alerted when there is a channel to say it on. SCHEDULE=off was
+// somebody's decision and gets only the log line.
+if (!schedulesOn()) {
+  const forced = process.env.SCHEDULE?.trim().toLowerCase() === "off";
+  const why = forced ? "SCHEDULE=off" : "NODE_ENV is not production";
+  log.warn(
+    `Schedules off (${why}) — cron and poll workflows run only when started by hand, ` +
+      `and no webhook is registered with a provider. SCHEDULE=on to turn them on here.`,
+  );
+  if (alertChannel && !forced) {
+    void alertBoot(
+      "schedules are off — cron and poll workflows will not run",
+      "NODE_ENV is not production. If this is the deployed server, its image lost the " +
+        "Dockerfile's NODE_ENV=production; if it is a laptop, this is expected.",
+    );
+  }
 }
 
 // Warned about by the loader too, but a warning at boot is a line in a log.

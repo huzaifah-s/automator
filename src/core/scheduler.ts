@@ -26,6 +26,29 @@ let quietCheck: Cron | undefined;
 /** Days of run history kept when `RUN_RETENTION_DAYS` says nothing usable. */
 const DEFAULT_RETENTION_DAYS = 14;
 
+let schedules: boolean | undefined;
+
+/**
+ * Whether this process fires workflows by itself: cron and poll timers, the
+ * quiet-webhook check, and provider webhook registrations. Only the deployed
+ * container does — the Dockerfile sets `NODE_ENV=production` — and `SCHEDULE`
+ * (`on` / `off`) overrides it either way.
+ *
+ * Off everywhere else because a second process on the same credentials does
+ * everything twice. Its state is its own database, so the guards that stop a
+ * workflow repeating itself cannot see what production already did: a laptop
+ * left running beside the deploy turned one finished To Do task into two
+ * copies. Run now, `bun run trigger` and `bun run try` are unaffected — off
+ * means "does nothing unless asked", the same line a pause draws.
+ */
+export function schedulesOn(): boolean {
+  if (schedules !== undefined) return schedules;
+  const raw = (process.env.SCHEDULE ?? "").trim().toLowerCase();
+  if (raw === "on" || raw === "off") return (schedules = raw === "on");
+  if (raw) log.warn(`SCHEDULE="${raw}" is neither on nor off — deciding from NODE_ENV instead`);
+  return (schedules = process.env.NODE_ENV === "production");
+}
+
 /** Wires every scheduled workflow to croner and starts a nightly prune. */
 export function startScheduler(registry: Registry): void {
   // enabled() already leaves out anything paused, so a workflow switched off
@@ -46,6 +69,9 @@ export function startScheduler(registry: Registry): void {
 
   // Reads the registry on every pass rather than a list taken now, so a
   // reload that adds or changes quietAfterMs is watched from the next one.
+  // Not where schedules are off: no provider calls a laptop, so every route
+  // would be reported quiet.
+  if (!schedulesOn()) return;
   quietCheck = new Cron("*/15 * * * *", { name: "@quiet", protect: true }, () =>
     checkQuiet(registry),
   );
@@ -64,6 +90,9 @@ export function scheduleWorkflow(wf: LoadedWorkflow): void {
   // cron and poll are both "run me on this expression"; they differ only in
   // what happens when the expression fires.
   if (trigger.kind !== "cron" && trigger.kind !== "poll") return;
+  // Here rather than in startScheduler, because a reload and a lifted pause
+  // both come straight here.
+  if (!schedulesOn()) return;
   if (jobs.has(wf.name)) return;
 
   try {

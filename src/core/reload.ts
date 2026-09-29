@@ -46,8 +46,10 @@ let reloading = false;
 /** A change that arrived while a reload was already running. */
 let again = false;
 /**
- * Hashes of the `_`-prefixed files, which are shared code rather than
- * workflows. See `sharedChanged` for why they are watched separately.
+ * Hashes of the `_`-prefixed files as this process first had them — the
+ * version the module cache holds, or would hold once something imports it.
+ * Only ever gains entries, for files seen for the first time; an edit never
+ * updates one, because the cache would not update either. See `sharedDrift`.
  */
 let sharedHashes = new Map<string, string>();
 /** Set once a shared file has changed. Never cleared — only a restart clears it. */
@@ -130,10 +132,9 @@ async function reload(root: string, registry: Registry): Promise<void> {
      * which is what you were going to do anyway to pick it up.
      */
     const now = hashShared(root);
-    const changed = sharedChanged(sharedHashes, now);
+    const { stale: changed, added: newShared } = sharedDrift(sharedHashes, now);
     if (changed) {
       sharedStale = true;
-      sharedHashes = now;
       const message =
         `${changed} is shared code, not a workflow — it cannot be swapped in on its ` +
         `own, so reloading is off until the next restart`;
@@ -145,6 +146,13 @@ async function reload(root: string, registry: Registry): Promise<void> {
       // either. Nobody is reading the container log to find that out.
       await alertBoot("Workflow reloading is off until a restart", message);
       return;
+    }
+    // Recorded before the load, not after it succeeds: a load that fails
+    // part-way may already have imported the new file, and from then on the
+    // cache holds this version whether or not the swap happened.
+    for (const file of newShared) sharedHashes.set(file, now.get(file)!);
+    if (newShared.length) {
+      log.info(`New shared code: ${newShared.join(", ")} — loading it with the workflows`);
     }
 
     const next = await loadWorkflows(root, String(++generation)).catch((err) => {
@@ -276,10 +284,9 @@ async function reloadViews(root: string): Promise<void> {
     // cache-busting query does not reach a relative import, so a changed
     // `_shared.ts` would leave new view code running against the old copy.
     const now = hashShared(root);
-    const changed = sharedChanged(viewSharedHashes, now);
+    const { stale: changed, added: newShared } = sharedDrift(viewSharedHashes, now);
     if (changed) {
       viewSharedStale = true;
-      viewSharedHashes = now;
       log.warn(
         `${changed} is shared code, not a view — it cannot be swapped in on its own, ` +
           `so view reloading is off until the next restart`,
@@ -290,6 +297,7 @@ async function reloadViews(root: string): Promise<void> {
       // they will see it has not changed.
       return;
     }
+    for (const file of newShared) viewSharedHashes.set(file, now.get(file)!);
 
     const next = await loadViews(root, String(++viewGeneration)).catch((err) => {
       const problems = (err as { problems?: string[] }).problems;
@@ -343,12 +351,30 @@ function hashShared(root: string): Map<string, string> {
   return out;
 }
 
-/** The first shared file that was added, removed, or edited, if any. */
-function sharedChanged(
-  before: Map<string, string>,
-  after: Map<string, string>,
-): string | undefined {
-  for (const [file, hash] of after) if (before.get(file) !== hash) return file;
-  for (const file of before.keys()) if (!after.has(file)) return file;
-  return undefined;
+/**
+ * Whether the shared code on disk has moved away from the copy in memory.
+ *
+ * `stale` is the first file that has: one edited since this process first had
+ * it, or one removed, which a workflow still importing it would keep using
+ * from the cache. Either leaves new workflow code able to run against an old
+ * helper, and switches reloading off.
+ *
+ * `added` is the files this process has never had. Those are safe, and they
+ * are the common case: a push that brings a new folder with its own `_`
+ * helper. A path the cache has never seen cannot be served from it, so the
+ * first import reads the disk like anything else. Treating it as stale, as
+ * this used to, switched reloading off for every new folder of workflows.
+ */
+function sharedDrift(
+  known: Map<string, string>,
+  now: Map<string, string>,
+): { stale?: string; added: string[] } {
+  const added: string[] = [];
+  for (const [file, hash] of now) {
+    const had = known.get(file);
+    if (had === undefined) added.push(file);
+    else if (had !== hash) return { stale: file, added };
+  }
+  for (const file of known.keys()) if (!now.has(file)) return { stale: file, added };
+  return { added };
 }

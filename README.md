@@ -2231,12 +2231,15 @@ so in the log. Fix it and the next save goes through. This is a real difference
 from boot, where a broken workflow stops the process: there is a good version
 already running here, and keeping it beats taking the runner down.
 
-**`_`-prefixed shared files switch reloading off until a restart.** A relative
-import inside a workflow resolves without the cache-busting the reloader adds,
-so a changed `_helper.ts` would stay the copy already in memory — new workflow
-code running against a stale helper. That mixed state is worse than not
-reloading, and invisible, so a shared change refuses the swap outright and says
-what to do:
+**A changed or deleted `_`-prefixed shared file switches reloading off until a
+restart.** A relative import inside a workflow resolves without the
+cache-busting the reloader adds, so a changed `_helper.ts` would stay the copy
+already in memory — new workflow code running against a stale helper. That
+mixed state is worse than not reloading, and invisible, so a shared change
+refuses the swap outright and says what to do. A *new* shared file is not a
+change: nothing in memory can be stale about a file the process has never
+had, so a push that brings a new folder with its own helper reloads like any
+other.
 
 ```
 warn  _studentqr.ts is shared code, not a workflow — it cannot be swapped in on
@@ -2295,6 +2298,16 @@ exit — a refusal, an unreachable remote, nothing to do — has to leave that
 true. Syncing only after a successful pull meant a Coolify deploy that reset
 the live directory stayed reset until the next workflow change, which behind a
 pending `src/` refusal could be days.
+
+**But first it catches up to the deploy.** For the minute after you deploy a
+`src/` change, the clean clone is still on the older commit — it refused to
+pull that change until the deploy happened. Syncing from there would copy
+the *old* `workflows/` over the new one, and `--delete` would remove any
+folder the deploy had just added. So before copying anything, the script
+finds the newest commit whose runtime files match the deployed directory,
+fast-forwards to it, and copies from there. It does that even when GitHub is
+unreachable, from the last fetched ref, because "is this commit deployed?" is
+answered by the files on disk, not by the network.
 
 **Turn Coolify's automatic deploy off if you use this**, or a push starts a
 redeploy and this pull at the same time and you get the restart anyway. It is

@@ -251,8 +251,12 @@ up again by name mid-run.
 **`_`-prefixed files are why the reloader can refuse.** The loader's `?v=`
 query does not reach a relative import: `new URL("./_x.ts", ".../w.ts?v=3")`
 drops the query, so the shared module already in memory is the one used. A
-changed shared file therefore sets `sharedStale` and switches reloading off
-until a restart. Do not soften this into a warning that reloads anyway — new
+changed or deleted shared file therefore sets `sharedStale` and switches
+reloading off until a restart. A *new* one does not. `sharedHashes` is what
+the process first had, and it only gains entries, so a file re-added after a
+delete is judged against the copy in memory rather than treated as new. An
+added file used to count as a change, and every push that brought a new
+folder with its own helper switched reloading off. Do not soften this into a warning that reloads anyway — new
 workflow code against a stale helper is the one outcome worse than not
 reloading, because nothing on the dashboard shows it.
 
@@ -664,6 +668,19 @@ has moved on, a form whose labels were renamed, a handshake already answered.
 The approval-resolve workflow that found this read its approval id at the top of
 `run()`, so a resumed approval looked up `approval:undefined` and reported
 itself missing. This has already caused one bug.
+
+**`scripts/pull-workflows.sh` catches up before it syncs.** The clean clone
+refuses to fast-forward across a `src/` change until it is deployed, so for
+a minute after every such deploy it is *behind* the live directory. The
+first `sync_live` copied `workflows/` from there with `--delete`, which
+deleted a folder the deploy had just added. On 2026-09-29 that briefly
+removed `personal/`, and with a second push waiting it would have stayed
+removed. `catch_up()` fast-forwards to the newest commit whose runtime files
+match the live directory, and runs before the sync. Do not move the sync
+back above it. A change to the script is tested with a fixture harness: a
+bare origin, a clean clone behind it, a directory standing in for Coolify's
+checkout and a `docker` stub, covering deployed, deployed-with-another-push-
+waiting, not deployed, workflow-only, fetch failure and reset-underneath.
 
 **`markOrphans` returns the runs it flipped, and each one is alerted.** A run
 interrupted by a restart is the only failure that never reaches `onFailure` —

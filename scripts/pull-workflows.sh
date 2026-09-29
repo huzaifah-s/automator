@@ -191,14 +191,6 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
   exit 2
 fi
 
-# Before anything is decided about pulling. Whatever is checked out here is
-# what the container is meant to be running, and every exit below — a refusal,
-# an unreachable remote, nothing to do — has to leave that true. Syncing only
-# after a successful pull meant a Coolify deploy that reset the live directory
-# stayed reset until the next workflow change, which on a pending src/ refusal
-# could be days.
-sync_live
-
 # Retried, and a total failure is a silent exit rather than an error.
 #
 # Reaching GitHub is the one part of this that is somebody else's network, and
@@ -218,11 +210,64 @@ for attempt in 1 2 3; do
   fi
   [ "$attempt" -lt 3 ] && sleep 5
 done
+upstream="origin/$branch"
+
+# The commit Coolify is running, when this checkout is behind it.
+#
+# This checkout only moves when the script fast-forwards, and it refuses to
+# across a runtime change until the deploy has happened — so for the minute
+# after every such deploy, HEAD is *older* than what the container runs. The
+# sync below copies HEAD's workflows/ with --delete, and it used to run first:
+# a push that changed src/ *and* added workflows/personal/ was deployed, then
+# the next run deleted personal/ from the live directory (HEAD predated it),
+# decided the deploy had happened, fast-forwarded and copied it back. The
+# runner saw a shared file vanish and reappear and switched reloading off;
+# todo-repeat never loaded (2026-09-29). With a second push waiting behind the
+# deploy it was worse — the refusal exits before the copy-back, and personal/
+# stayed deleted from a running deployment.
+#
+# So before anything is copied, walk forward from HEAD and find the newest
+# commit whose runtime files are the ones on disk over there, and catch up to
+# it. Newest first, because two deployed-looking commits can only mean the
+# later one is live. A commit whose gap from HEAD holds no runtime change
+# proves nothing about a deploy and is left to the ordinary pull below.
+#
+# It reads origin/$branch even when this run's fetch failed. That ref is then
+# a minute or an hour old, and still names real commits; asking whether one of
+# them is deployed is a question about the live directory, which a stale ref
+# cannot get wrong. What must not use a stale ref is the decision to *pull*,
+# and that still waits for a fetch below.
+catch_up() {
+  [ -n "$LIVE_DIR" ] || return 0
+  git rev-parse --quiet --verify "$upstream" >/dev/null || return 0
+  git merge-base --is-ancestor HEAD "$upstream" 2>/dev/null || return 0
+  for candidate in $(git rev-list --first-parent --max-count=50 "HEAD..$upstream"); do
+    target=$candidate
+    changed=$(git diff --name-only HEAD "$candidate")
+    blocking=$(printf '%s\n' "$changed" | grep -E "$RUNTIME_PATHS" || true)
+    [ -n "$blocking" ] || continue
+    if already_deployed; then
+      git merge --ff-only --quiet "$candidate"
+      echo "caught up to $(git rev-parse --short HEAD) — its runtime changes are already deployed"
+      return 0
+    fi
+  done
+}
+catch_up
+
+# Now, and not before: whatever is checked out here is what the container is
+# meant to be running, and every exit below — a refusal, an unreachable
+# remote, nothing to do — has to leave that true. Syncing only after a
+# successful pull meant a Coolify deploy that reset the live directory stayed
+# reset until the next workflow change, which on a pending src/ refusal could
+# be days.
+sync_live
+
 if [ "$fetched" -eq 0 ]; then
   exit 0
 fi
 
-target="origin/$branch"
+target=$upstream
 if [ "$(git rev-parse HEAD)" = "$(git rev-parse "$target")" ]; then
   exit 0
 fi
@@ -238,17 +283,9 @@ changed=$(git diff --name-only HEAD "$target")
 
 blocking=$(printf '%s\n' "$changed" | grep -E "$RUNTIME_PATHS" || true)
 
+# A deploy that already happened was caught up to by catch_up() above, so
+# anything still blocking here is genuinely waiting.
 if [ -n "$blocking" ]; then
-  if already_deployed; then
-    # The deploy happened; only this checkout was left behind. Catching up is
-    # what makes the refusal above true again — HEAD is once more the commit
-    # the container is running, and the next runtime change is measured from
-    # there rather than from a commit that went live hours ago.
-    git merge --ff-only --quiet "$target"
-    sync_live
-    echo "caught up to $(git rev-parse --short HEAD) — its runtime changes are already deployed"
-    exit 0
-  fi
   listed=$(printf '%s\n' "$blocking" | sed 's/^/  /')
 
   # The refusal is the one path that cannot repair itself: it is reached by

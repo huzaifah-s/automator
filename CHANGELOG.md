@@ -6,6 +6,41 @@ Entries record the *reasoning*, not just the diff — `git log` already has the
 diff. If a change settled a question, say what was settled and what the losing
 option was, so nobody relitigates it from scratch.
 
+## 2026-09-30
+
+### A deploy's new workflow folder is no longer deleted by the sync behind it
+
+The deploy of the To Do workflow ran 19 workflows instead of 20, and warned
+that reloading was off because `personal/_repeat.ts` was shared code. Two
+bugs caused it, and each was enough on its own.
+
+- **The pull script synced from a clone that was behind the deploy.** It
+  refuses to fast-forward across a `src/` change until the change is
+  deployed, so for the minute after a deploy its HEAD is the older commit. Its
+  first step copied that commit's `workflows/` with `--delete`, which removed
+  `personal/` from the running deployment. The same run then saw the deploy,
+  fast-forwarded and copied `personal/` back. With a second `src/` push
+  waiting, the refusal exited before the copy-back, and the folder stayed
+  deleted. It now finds the newest commit whose runtime files match the
+  deployed directory, catches up to it, and only then syncs.
+- **The reloader treated a new shared file as a changed one.** A file the
+  process never had cannot be stale in the module cache, so it now loads live.
+  Editing or deleting one still switches reloading off, because that case is
+  the real hazard. The memory of what was loaded only ever grows, so a file
+  deleted and re-added with different content is still caught.
+
+Verified:
+- The pull script against a fixture: a bare origin, a clean clone, a
+  directory standing in for Coolify, and a `docker` stub. The old script
+  deleted and recreated the folder in the plain case, and left it deleted
+  with a push waiting and with GitHub unreachable. The new one leaves the
+  file untouched in all three, alerts only for the commit still waiting, still
+  refuses an undeployed push, still applies a workflow-only push, still
+  repairs a reset directory, and stays silent with nothing to do.
+- The reloader on a live server. A new folder with its own helper loaded
+  without a restart (1 → 2 workflows), and editing that helper afterwards
+  switched reloading off as before.
+
 ## 2026-09-29
 
 ### Practice runs: `bun run try`

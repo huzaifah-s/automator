@@ -47,6 +47,51 @@ Verified:
 - An unconnected credential stops `try` before a poll's fetch can fail on a
   401.
 
+### Repeating tasks in the personal To Do database
+
+`workflows/personal/todo-repeat.ts`. When a task with a Repeat value is marked
+Done, the workflow creates its next copy: same properties and body, Status back
+to the first not-started option, and Due Date on the next occurrence. The goal
+is to stop creating a year of monthly invoice reminders up front.
+
+- **Polling, not Notion's webhook.** Notion switched the Contents subscription
+  off for four days this month without anything noticing. A five-minute
+  filtered query cannot go quiet that way.
+- **Two dates: Due Date and Next Due.** Due Date is when this task is due, and
+  it moves freely. Next Due is when the next copy will be, and it becomes that
+  copy's Due Date. A task for the 24th pushed to the 29th is still followed by
+  the 24th, and typing 27 Feb into Next Due moves the series to the 27th. The
+  workflow fills Next Due in within a poll of Repeat being set, so the column
+  always says what will happen and can be corrected before it does.
+
+  Two options lost. Keeping the intended date hidden in `ctx.state` could not
+  tell "I'm late" from "move the series", and nobody could see it from Notion.
+  A "Repeat on" column holding this task's own intended date worked, but it
+  read as a duplicate of Due Date, and moving the series meant working out
+  which month to edit. State now keeps only the day of the month, so
+  31 Jan → 28 Feb → 31 Mar.
+- **Catch up, for every interval.** Daily and weekly skipping ahead to the
+  next future date was offered and declined, so one rule covers them all.
+- **A late finish still produces the missed occurrence** rather than skipping
+  to the next future one. Each month's request is its own piece of work.
+- **One copy per finished task.** The new page's id is stored in the same step
+  as the create, and a task with one recorded is skipped.
+
+Verified against an in-memory Notion, in ten cases:
+
+- A first task pushed to the 27th had Next Due filled as 27 Oct. Corrected to
+  24 Oct and marked Done, it gave a copy due 24 Oct with Next Due 24 Nov.
+- A second tick created nothing.
+- A copy pushed to the 29th was still followed by the 24th.
+- Editing Next Due to 27 Dec moved the series to the 27th.
+- 31 Jan went to 28 Feb, then 31 Mar.
+- Every 2 weeks from Thursday 24 Sep filled in 8 Oct.
+
+Month-end, leap-year and "every N" dates were checked
+separately. The real database (Notion / huzaifah-notion) now has Repeat and
+Next Due, and a practice run of the workflow queried it cleanly. No task in it
+repeats yet.
+
 ### Webhook payloads get samples, and the repo gets its first test
 
 Both fixes on 09-28 were a webhook turning away a real payload shape. A form

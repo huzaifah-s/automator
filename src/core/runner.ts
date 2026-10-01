@@ -442,7 +442,8 @@ async function executeNow(wf: LoadedWorkflow, opts: RunOptions): Promise<RunOutc
       logger.error("onFailure handler threw", { error: String(err) });
     }
   }
-  await alertFailure(wf, runId, lastError);
+  // A poll run's items stay unseen when it fails, so the next tick retries them.
+  await alertFailure(wf, runId, lastError, opts.trigger === "poll");
 
   return { runId, status: "failed", error: lastError };
 }

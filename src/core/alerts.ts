@@ -1,3 +1,4 @@
+import { HttpError } from "../integrations/http.ts";
 import { fieldKey } from "./credentials.ts";
 import { log } from "./logger.ts";
 import { redact, registerSecret } from "./redact.ts";
@@ -283,8 +284,36 @@ async function send(wf: AlertTarget | undefined, alert: Alert): Promise<void> {
   }
 }
 
-/** A run that used up every attempt. Includes a poll whose fetch() threw. */
-export function alertFailure(wf: AlertTarget, runId: string, error: Error): Promise<void> {
+/**
+ * A run that used up every attempt. Includes a poll whose fetch() threw.
+ *
+ * `retriedByPoll` is true when the next poll tick will try the same work again
+ * on its own — a fetch that threw, or a poll run whose items stay unseen — so
+ * the message can say there is nothing to do.
+ */
+export function alertFailure(
+  wf: AlertTarget,
+  runId: string,
+  error: Error,
+  retriedByPoll = false,
+): Promise<void> {
+  const outage = providerOutage(error);
+  if (outage) {
+    const next = retriedByPoll
+      ? "Nothing to fix on our side. It checks again on the next poll and picks up anything it missed."
+      : `Nothing to fix on our side. Once ${outage.service} is back, open the run and Resume it.`;
+    return send(wf, {
+      // Per service, not per message: the body carries a fresh request id every
+      // time, so keying on the message would send one alert per poll for the
+      // whole length of somebody else's outage.
+      key: `outage|${wf.name}|${outage.service}`,
+      icon: "🌩️",
+      title: `failed because ${outage.service} is having problems — not this workflow`,
+      workflow: wf.name,
+      detail: [outage.said, next].join("\n"),
+      runId,
+    });
+  }
   return send(wf, {
     key: `failure|${wf.name}|${error.message}`,
     icon: "🚨",
@@ -293,6 +322,81 @@ export function alertFailure(wf: AlertTarget, runId: string, error: Error): Prom
     detail: error.message,
     runId,
   });
+}
+
+/* ------------------------------------------------- whose fault it was */
+
+/**
+ * Statuses that mean the other end broke or is shedding load. A 4xx other than
+ * these is a request we got wrong — a bad token, a missing property — and is
+ * ours to fix, so it stays an ordinary failure.
+ */
+const PROVIDER_SIDE = new Set([429, 500, 502, 503, 504]);
+
+/** Friendlier names for the hosts the workflows call. Anything else shows its hostname. */
+const SERVICES: [RegExp, string][] = [
+  [/(^|\.)notion\.(com|so)$/, "Notion"],
+  [/(^|\.)threads\.net$/, "Threads"],
+  [/(^|\.)(facebook|instagram)\.com$/, "Meta (Instagram/Facebook)"],
+  [/(^|\.)telegram\.org$/, "Telegram"],
+  [/(^|\.)googleapis\.com$/, "Google"],
+  [/(^|\.)monday\.com$/, "monday.com"],
+  [/(^|\.)brevo\.com$/, "Brevo"],
+  [/(^|\.)slack\.com$/, "Slack"],
+  [/(^|\.)discord\.com$/, "Discord"],
+];
+
+/**
+ * The service at fault and what it said, when the error is an HTTP status that
+ * puts the fault on the other end. Reads an `HttpError` directly, and falls
+ * back to its message shape for one a workflow caught and re-threw as text.
+ */
+export function providerOutage(error: Error): { service: string; said: string } | null {
+  let status: number;
+  let url: string;
+  let body: string;
+  if (error instanceof HttpError) {
+    ({ status, url, body } = error);
+  } else {
+    const m = /HTTP (\d{3}) (https?:\/\/\S+) — ([\s\S]*)/.exec(error.message);
+    if (!m) return null;
+    status = Number(m[1]);
+    url = m[2]!;
+    body = m[3]!;
+  }
+  if (!PROVIDER_SIDE.has(status)) return null;
+
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return null;
+  }
+  const service = SERVICES.find(([pattern]) => pattern.test(host))?.[1] ?? host;
+  const reason = providerMessage(body);
+  const what = status === 429 ? "asked us to slow down (429)" : `answered ${status}`;
+  return { service, said: `${service} ${what}${reason ? `: ${reason}` : ""}` };
+}
+
+/**
+ * The human sentence out of an error body, in the shapes the providers here
+ * use. An HTML error page — what a gateway 504 usually is — gives nothing
+ * worth reading on a phone, so it is dropped rather than quoted.
+ */
+function providerMessage(body: string): string | null {
+  let parsed: any;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  const text =
+    (typeof parsed?.message === "string" && parsed.message) || // Notion
+    (typeof parsed?.error?.message === "string" && parsed.error.message) || // Meta
+    (typeof parsed?.description === "string" && parsed.description) || // Telegram
+    (typeof parsed?.error === "string" && parsed.error) || // Slack
+    null;
+  return text ? text.slice(0, 200) : null;
 }
 
 /** A run refused at the door because a credential it declares is not connected. */

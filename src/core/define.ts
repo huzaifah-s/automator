@@ -241,6 +241,34 @@ export type {
   MondayItem,
 } from "../integrations/monday.ts";
 export type { WhatsAppSent, TemplateOptions } from "../integrations/whatsapp.ts";
+/**
+ * Evolution API — a self-hosted WhatsApp gateway. The webhook's schema, the
+ * reader for an inbound message, and the register/verify pair that keeps an
+ * instance's webhook pointed at a workflow. See src/integrations/evolution.ts.
+ */
+export {
+  evolutionEvent,
+  evolutionMessage,
+  evolutionRegistration,
+  evolutionSecret,
+} from "../integrations/evolution.ts";
+export type {
+  EvolutionClient,
+  EvolutionConnection,
+  EvolutionEvent,
+  EvolutionEventName,
+  EvolutionMedia,
+  EvolutionMessage,
+  EvolutionSent,
+} from "../integrations/evolution.ts";
+export type {
+  TelegramPeer,
+  TelegramUserClient,
+  TelegramUserConnection,
+  TelegramUserMessage,
+  TelegramUserPeer,
+  TelegramUserSent,
+} from "../integrations/telegram-user.ts";
 export type {
   Ctx,
   PollCtx,

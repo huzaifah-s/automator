@@ -27,7 +27,11 @@ import { reconcileWebhooks } from "./core/webhooks.ts";
 import { recoverInbox } from "./core/inbox.ts";
 import { store, db } from "./core/db.ts";
 import { log } from "./core/logger.ts";
-import { closeSql, registerIntegrationSecrets } from "./integrations/index.ts";
+import {
+  closeSql,
+  closeTelegramUsers,
+  registerIntegrationSecrets,
+} from "./integrations/index.ts";
 import { loadSecretStore, startSecretRefresh, stopSecretRefresh } from "./core/secret-store.ts";
 import {
   loadVariables,
@@ -45,6 +49,7 @@ import { alertBoot, alertInterrupted, describeAlertChannel } from "./core/alerts
 import { isPaused, reportPauses } from "./core/pause.ts";
 import { runSecretCli } from "./cli/secrets.ts";
 import { runVariableCli } from "./cli/variables.ts";
+import { runTelegramLoginCli } from "./cli/telegram-login.ts";
 import { runTryCli } from "./cli/try.ts";
 import { startPractice } from "./core/practice.ts";
 
@@ -66,6 +71,12 @@ if (args[0] === "--secret") {
 // deployed yet is exactly what the loader would abort on.
 if (args[0] === "--variable") {
   process.exit(await runVariableCli(args.slice(1)));
+}
+
+// Same again: logging in is how the credential a workflow needs comes to
+// exist, so it cannot wait on that workflow loading.
+if (args[0] === "--telegram-login") {
+  process.exit(await runTelegramLoginCli(args.slice(1)));
 }
 
 // Before anything reads the environment: fold the stored credentials into it,
@@ -405,6 +416,7 @@ async function shutdown(signal: string, code = 0): Promise<never> {
 
   await server?.stop(true);
   await closeSql().catch(() => {});
+  await closeTelegramUsers().catch(() => {});
   closeViewReader();
   db.close(false);
   process.exit(code);

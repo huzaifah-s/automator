@@ -160,7 +160,7 @@ problems somewhere else. See README "Alerts".
 
 Triggers: `cron(expr, { tz })`, `webhook(path, { method, schema, filter, dedupe, quietAfterMs, respond, secret, verify })`,
 `poll(expr, { fetch, id })`, `manual()`. On `ctx`: `http` `slack` `telegram` `discord` `ai` `email` `sql`
-`sheets` `scrape`, plus `log` `step` `run` `state` `signal` `input` `attempt` `runId`.
+`sheets` `scrape` `whatsapp` `evolution` `telegramUser`, plus `log` `step` `run` `state` `signal` `input` `attempt` `runId`.
 Multi-page GETs go through `ctx.http.paginate(url)` rather than a hand-rolled
 loop — see README "Pagination".
 
@@ -193,6 +193,35 @@ not hypothetical, it was caught by running it, not by reading it.
 **New integration env vars go in `INTEGRATION_SECRET_ENV`**
 (`src/integrations/index.ts`). Integrations read their own credentials from the
 environment, so the redactor only learns about them from that list.
+
+**A Telegram user session is live in exactly one connection, and only the
+pool opens one.** `src/integrations/telegram-user.ts`. Telegram revokes a
+session used on two connections at once (`AUTH_KEY_DUPLICATED`), and the
+account then needs a manual re-login. Runs, polls and the Credentials tab's
+test all go through `withClient`, which keeps one connection per session in the
+process — the provider's `test` borrows it rather than opening its own for
+exactly this reason. The login CLI is the one exception, because it creates a
+session, and it disconnects before its own test runs. Across processes nothing
+can enforce it, which is why `telegram-login` never prints a session: there is
+nothing to copy to a laptop. Do not add a `--print`, a reveal, or a route that
+returns one. The client uses `MemoryStorage` and `updates: false` — the default
+storage is a plaintext `client.session` SQLite file in the working directory,
+and an update loop is a listener, which would start something in a process
+that is not production.
+
+**MTProto is not fetch, so its practice gate is in `index.ts`.**
+`practiceTelegramUser` lists every method: reads pass through, sends are held.
+It is a full object literal of `TelegramUserClient`, so a new method fails to
+compile until it is sorted into one or the other — keep it that way rather
+than spreading the real client into it. Evolution needs nothing of its own: it
+is plain HTTP to a host `classify` has never heard of, so its POSTs are held.
+
+**`evolutionEvent` drops `apikey`, and the inbox depends on it.** Evolution
+puts the instance token in every delivery's body when
+`AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES` is on, and a credential holding the
+*global* key never registers that token with the redactor. The inbox, the run
+input and replays store the schema's output, not the raw body, so the
+`.transform` at the end of the schema is what keeps it off disk.
 
 **A poll's `fetch` runs outside a run.** There is no runId, so its HTTP calls
 are not captured and `PollCtx` has no `ctx.step`. Keep `fetch` to "return the

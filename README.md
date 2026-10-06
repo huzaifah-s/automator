@@ -423,6 +423,7 @@ access — and refuses the operations and data-table ones, as they refuse it.
 | `lessons` / `outcomes` / `learn` | What you have taught it; drafts that ended and are not learned from yet; recording a lesson |
 | `brief` | An update to you — the morning and night digests |
 | `now` | Your local time, and whether a digest is due and already sent |
+| `log_run` | Called last every run: a row in `run_log` with its own account of what it did and why, and counts the runner measures itself |
 
 **It cannot send anything.** `draft_reply` saves a `pending` row in `drafts`
 and that is all; there is no tool that sends or approves. It only drafts to a

@@ -2,6 +2,7 @@ import type { ZodType } from "zod";
 import type { Logger } from "./logger.ts";
 import type { StateClient } from "./state.ts";
 import type { TableClient } from "./tables.ts";
+import type { ChatLog } from "./chat-log.ts";
 import type { Integrations } from "../integrations/index.ts";
 
 /** "workflow" means another workflow started this run through ctx.run(). */
@@ -307,6 +308,12 @@ export interface Ctx<Input = unknown> extends Integrations {
    * first run rather than a silent empty result forever.
    */
   table(name: string): TableClient;
+  /**
+   * Messages read from WhatsApp and Telegram, kept for an assistant to read
+   * back and forgotten after `CHAT_LOG_RETENTION_DAYS` (default 14). Never
+   * shown on the dashboard. See src/core/chat-log.ts.
+   */
+  chatLog: ChatLog;
   /**
    * Wraps a unit of work so it shows up in the run log with its own timing.
    * Purely observational — a failing step fails the run.

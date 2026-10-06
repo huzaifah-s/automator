@@ -4,6 +4,7 @@ import { runWorkflow } from "./runner.ts";
 import { pollOnce } from "./poll.ts";
 import { store } from "./db.ts";
 import { checkQuiet } from "./quiet.ts";
+import { pruneChatLog } from "./chat-log.ts";
 import type { Registry } from "./loader.ts";
 import type { LoadedWorkflow } from "./types.ts";
 
@@ -65,6 +66,9 @@ export function startScheduler(registry: Registry): void {
     // reclaiming disk — it runs even when run pruning is switched off.
     const stale = store.pruneExpiredState();
     if (stale > 0) log.info(`Pruned ${stale} expired state key(s)`);
+    // Its own retention, and never switched off: forgetting is the promise.
+    const forgotten = pruneChatLog();
+    if (forgotten > 0) log.info(`Forgot ${forgotten} chat message(s) past their retention`);
   });
 
   // Reads the registry on every pass rather than a list taken now, so a

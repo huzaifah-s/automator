@@ -160,7 +160,7 @@ problems somewhere else. See README "Alerts".
 
 Triggers: `cron(expr, { tz })`, `webhook(path, { method, schema, filter, dedupe, quietAfterMs, respond, secret, verify })`,
 `poll(expr, { fetch, id })`, `manual()`. On `ctx`: `http` `slack` `telegram` `discord` `ai` `email` `sql`
-`sheets` `scrape` `whatsapp` `evolution` `telegramUser`, plus `log` `step` `run` `state` `signal` `input` `attempt` `runId`.
+`sheets` `scrape` `whatsapp` `evolution` `telegramUser`, plus `log` `step` `run` `state` `table` `chatLog` `signal` `input` `attempt` `runId`.
 Multi-page GETs go through `ctx.http.paginate(url)` rather than a hand-rolled
 loop — see README "Pagination".
 
@@ -222,6 +222,28 @@ puts the instance token in every delivery's body when
 *global* key never registers that token with the redactor. The inbox, the run
 input and replays store the schema's output, not the raw body, so the
 `.transform` at the end of the schema is what keeps it off disk.
+
+**Chat messages have exactly one copy, in the chat log.** `src/core/chat-log.ts`
+is deliberately not a data table: it has no tab and no route, and it forgets
+every message after `CHAT_LOG_RETENTION_DAYS`, a prune that cannot be switched
+off. Everything else that would keep a second copy has to be kept from doing
+it: the reads in `personal-assistant/sync-chats.ts` pass `private: true`, so
+the run page records each call's size rather than its body; its steps return
+counts, because a step's result is stored as its checkpoint; and it polls
+Evolution's database rather than taking the webhook, because a delivery is
+stored as the run's input and in the inbox. A new reader of chats — or a
+debugging `console.log` — follows the same rules. Telegram's service account
+(777000) is never read: it is where login codes arrive.
+
+**`people` rows are added before the cursor moves.** The sync adds a chat to
+the `people` table inside the step that reads it, ahead of the
+`ctx.state.set` that moves past its messages. Moving the insert to a later
+step loses the chat to any run that fails in between: the cursor is already
+past, and the chat does not come round again until it next has something new.
+That was a real bug in the first draft. So is the Telegram read cap: a first
+sync that read 60 chats' history in 20 seconds got `FLOOD_WAIT`, which is why
+history calls are capped per run and a flood wait ends the pass instead of
+failing it.
 
 **A poll's `fetch` runs outside a run.** There is no runId, so its HTTP calls
 are not captured and `PollCtx` has no `ctx.step`. Keep `fetch` to "return the

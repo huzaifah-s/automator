@@ -7,6 +7,15 @@ export interface HttpOptions {
   retries?: number;
   /** How to read the body. Default "json", falling back to text if unparseable. */
   as?: "json" | "text" | "buffer" | "none";
+  /**
+   * Keep a successful response's body off the run page: the call is still
+   * listed, with its status and timing, but the body becomes its size. For a
+   * read whose answer is somebody's private messages, which the workflow
+   * stores somewhere of its own and the run log has no business holding a
+   * second copy of. An error's body is still recorded — that is the provider
+   * talking, and it is what a failure is debugged from.
+   */
+  private?: boolean;
 }
 
 /** One page, as `next` sees it. */
@@ -99,6 +108,25 @@ export interface HttpClient {
 
 const RETRYABLE = new Set([408, 425, 429, 500, 502, 503, 504]);
 
+/**
+ * What a private call's response is recorded as: how much came back, not
+ * what. See `private` on HttpOptions.
+ */
+export function withheld(value: unknown): unknown {
+  if (value === undefined || value === null) return value;
+  let bytes = 0;
+  try {
+    bytes = JSON.stringify(value)?.length ?? 0;
+  } catch {
+    // A buffer or a cycle — the size is a courtesy, not worth failing over.
+  }
+  return {
+    private: "body not recorded",
+    ...(Array.isArray(value) ? { items: value.length } : {}),
+    bytes,
+  };
+}
+
 export type CallRecorder = (call: {
   method: string;
   url: string;
@@ -163,7 +191,7 @@ export function createHttp(runSignal: AbortSignal, record?: CallRecorder): HttpC
           status: res.status,
           durationMs: Date.now() - startedAt,
           request: body,
-          response: parsed,
+          response: opts.private ? withheld(parsed) : parsed,
         });
         return { body: parsed, status: res.status, headers: res.headers, url: res.url || target };
       } catch (err) {

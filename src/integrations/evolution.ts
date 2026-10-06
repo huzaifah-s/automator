@@ -36,6 +36,11 @@ export interface EvolutionCallOptions {
    *   ctx.evolution.text(to, body, { credential: shop });
    */
   credential?: EvolutionConnection;
+  /**
+   * For `chats()` and `messages()`: list the call on the run page without
+   * what came back. Same as `private` on ctx.http.
+   */
+  private?: boolean;
 }
 
 /** What Evolution gives back for one accepted message. */
@@ -237,7 +242,7 @@ export function createEvolution(http: HttpClient): EvolutionClient {
           ...(opts.since ? { where: { messageTimestamp: sinceFilter(opts.since) } } : {}),
           take: limit,
         },
-        { headers: headers(c) },
+        { headers: headers(c), private: opts.private },
       );
       return (Array.isArray(res) ? res : []).flatMap((r): EvolutionChat[] => {
         const chat = typeof r.remoteJid === "string" ? r.remoteJid : undefined;
@@ -275,7 +280,7 @@ export function createEvolution(http: HttpClient): EvolutionClient {
           offset: limit,
           page: 1,
         },
-        { headers: headers(c) },
+        { headers: headers(c), private: opts.private },
       );
       const records = res?.messages?.records ?? [];
       // Newest first from Evolution; oldest first here, like Telegram's history.

@@ -1,5 +1,5 @@
 import type { TelegramClient } from "@mtcute/bun";
-import type { CallRecorder } from "./http.ts";
+import { withheld, type CallRecorder } from "./http.ts";
 import { createLogger } from "../core/logger.ts";
 import { registerSecret } from "../core/redact.ts";
 
@@ -51,6 +51,12 @@ export interface TelegramUserCallOptions {
    *   ctx.telegramUser.send("@someone", "hi", { credential: me });
    */
   credential?: TelegramUserConnection;
+  /**
+   * List the call on the run page without what came back — its size instead.
+   * For reading chats into a store of their own, so the run log does not
+   * keep a second copy of somebody's messages. Same as `private` on ctx.http.
+   */
+  private?: boolean;
 }
 
 /**
@@ -89,6 +95,13 @@ export interface TelegramUserMessage {
   replyTo: number | undefined;
   /** Sent by this account. */
   outgoing: boolean;
+  /**
+   * A notice rather than something somebody wrote — "joined Telegram", a
+   * pinned message, a member added. Its `text` is empty.
+   */
+  service: boolean;
+  /** `photo`, `video`, `voice`, `document`, `sticker`, … when it carries one. */
+  media: string | undefined;
 }
 
 /** One chat in the account's chat list, as `chats()` returns it. */
@@ -200,6 +213,7 @@ export function createTelegramUser(signal: AbortSignal, record?: CallRecorder): 
     conn: TelegramUserConnection,
     request: unknown,
     fn: (client: TelegramClient) => Promise<T>,
+    opts: TelegramUserCallOptions = {},
   ): Promise<T> => {
     const startedAt = Date.now();
     try {
@@ -210,7 +224,7 @@ export function createTelegramUser(signal: AbortSignal, record?: CallRecorder): 
         status: 200,
         durationMs: Date.now() - startedAt,
         request,
-        response: result,
+        response: opts.private ? withheld(result) : result,
       });
       return result;
     } catch (err) {
@@ -299,6 +313,7 @@ export function createTelegramUser(signal: AbortSignal, record?: CallRecorder): 
               : [...(await c.getHistory(chat, { limit }))].reverse();
           return [...page].filter((m) => opts.after === undefined || m.id > opts.after).map(toMessage);
         },
+        opts,
       );
     },
 
@@ -321,6 +336,7 @@ export function createTelegramUser(signal: AbortSignal, record?: CallRecorder): 
           }
           return found;
         },
+        opts,
       );
     },
   };
@@ -508,6 +524,8 @@ function toMessage(m: MtMessage): TelegramUserMessage {
       : { id: sender.id, name: sender.displayName, username: sender.username ?? undefined },
     replyTo: m.replyToMessage?.id ?? undefined,
     outgoing: m.isOutgoing,
+    service: m.isService,
+    media: m.media?.type ?? undefined,
   };
 }
 

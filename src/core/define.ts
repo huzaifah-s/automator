@@ -253,6 +253,7 @@ export {
   evolutionSecret,
 } from "../integrations/evolution.ts";
 export type {
+  EvolutionChat,
   EvolutionClient,
   EvolutionConnection,
   EvolutionEvent,
@@ -263,6 +264,7 @@ export type {
 } from "../integrations/evolution.ts";
 export type {
   TelegramPeer,
+  TelegramUserChat,
   TelegramUserClient,
   TelegramUserConnection,
   TelegramUserMessage,
@@ -278,6 +280,7 @@ export type {
   WorkflowDef,
 } from "./types.ts";
 export type { StateClient, StateStore, StateSetOptions } from "./state.ts";
+export type { ChatChannel, ChatLog, ChatLogEntry } from "./chat-log.ts";
 export type { OAuthConfig, OAuthCredential, TokenStatus } from "../integrations/oauth.ts";
 export type {
   HttpOptions,

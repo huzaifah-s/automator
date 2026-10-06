@@ -6,6 +6,7 @@ import { buildIntegrations } from "../integrations/index.ts";
 import { capture, captureEnabled, isTruncated, MAX_CHECKPOINT_BYTES } from "./capture.ts";
 import { createState } from "./state.ts";
 import { table } from "./tables.ts";
+import { chatLog } from "./chat-log.ts";
 import { isEnabled, isPaused, pausedInfo } from "./pause.ts";
 import type { Ctx, LoadedWorkflow, RunStatus, TriggerKind } from "./types.ts";
 import type { Registry } from "./loader.ts";
@@ -470,6 +471,7 @@ function buildCtx(
     // a table never looks one up — and a bad name throws where the call is,
     // not at the top of every run.
     table,
+    chatLog,
     run<R = unknown>(name: string, input?: unknown): Promise<R> {
       return runChild(wf.name, runId, opts.parent?.ancestry ?? [], signal, logger, name, input) as
         Promise<R>;

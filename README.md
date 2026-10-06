@@ -153,8 +153,8 @@ the next boot if a restart landed in between — see
 ### What's on `ctx`
 
 `http` `slack` `telegram` `discord` `ai` `email` `sql` `sheets` `drive` `s3`
-`scrape` `monday` `whatsapp` `evolution` `telegramUser`, plus `log`, `step`, `run`, `state`, `signal`,
-`input`, `attempt`, `runId`.
+`scrape` `monday` `whatsapp` `evolution` `telegramUser`, plus `log`, `step`, `run`, `state`,
+`table`, `chatLog`, `signal`, `input`, `attempt`, `runId`.
 
 All of them except `http` are lazy — a workflow that only makes an HTTP call
 never opens a Postgres pool or reads an unrelated env var.
@@ -355,17 +355,52 @@ trigger: poll("*/5 * * * *", {
 ```
 
 `history` returns plain objects, oldest first — `id`, `chatId`, `chatName`,
-`date`, `text`, `from`, `replyTo`, `outgoing` — and `after: <id>` returns only
-newer messages.
+`date`, `text`, `from`, `replyTo`, `outgoing`, `service` (a notice such as
+"joined Telegram", with no text) and `media` (`photo`, `voice`, …) — and
+`after: <id>` returns only newer messages.
 
 `chats()` is the chat list as the phone orders it, each chat with `unread`,
 `mentions`, `muted`, `pinned`, `archived` and its `lastMessage`.
 `chats({ unread: true })` is the ones with something waiting — searched
 among the newest 500, archived left out unless `archived: true`. An `id` from
 either is what `history` and `send` take, in this run or a later one. Reading
-never marks anything read; the phone still shows it as new. Every call is on the run page as `MTPROTO
-mtproto://telegram/<call>`, and a practice run holds the sends and makes the
-reads for real.
+never marks anything read; the phone still shows it as new.
+
+Every call is on the run page as `MTPROTO mtproto://telegram/<call>`, and a
+practice run holds the sends and makes the reads for real.
+
+### Reading chats without copying them to the run page
+
+A run page normally shows every call's response, which for `history` or
+`messages` is somebody's private conversation. Pass `private: true` to any of
+the reads — `ctx.telegramUser.chats`/`history`, `ctx.evolution.chats`/`messages`,
+or any `ctx.http` call — and the call is still listed, with its status and
+timing, but the body is recorded as its size:
+
+```ts
+const list = await ctx.telegramUser.history(chat.id, { after: cursor, private: true });
+// on the run page: {"private":"body not recorded","items":12,"bytes":3104}
+```
+
+An error's body is still recorded, because that is the provider talking.
+
+Where the messages go instead is `ctx.chatLog` — a store with no tab and no
+route, read only by the assistant, that forgets every message
+`CHAT_LOG_RETENTION_DAYS` (default 14, never off) after it was sent.
+`ctx.chatLog.record(entries)` stores the ones it has not seen (a message is
+its channel, chat and id) and returns how many were new. Text is redacted on
+the way in. Keep what the step *returns* to counts, since a step's result is
+on the run page too.
+
+`workflows/personal-assistant/sync-chats.ts` is the one user: every two
+minutes it copies new WhatsApp and Telegram messages into the log and adds
+each new chat to the `people` table (`tables/personal-assistant/`) with no
+priority, for the assistant to ask about. It polls rather than taking
+Evolution's webhook, because a webhook delivery is stored as the run's input.
+It skips Telegram channels, bots, muted and archived chats and Saved Messages,
+WhatsApp broadcast lists and channels, and always Telegram's service account
+(777000, which sends login codes). A `people` row set to `ignore` skips a chat;
+`always` reads one the defaults would skip.
 
 ## Checkpoints and resume
 

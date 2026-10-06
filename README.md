@@ -457,12 +457,15 @@ and restart the server — webhooks register at boot.
 
 ### The scheduled assistant
 
-A Claude Code routine runs the assistant every hour from 08:00 to 23:00
-Malaysia time. It clones this repository, connects to `/mcp/assistant`
-through the root `.mcp.json` (the token comes from the routine environment's
-`ASSISTANT_MCP_TOKEN`, and `run.aidi.vision` has to be in the environment's
-allowed domains), and follows [assistant/PLAYBOOK.md](assistant/PLAYBOOK.md) —
-so changing how it behaves is a commit to that file. It is given the
+A Claude Code routine runs the assistant — Maria — every hour from 08:00 to
+23:00 Malaysia time. It does not clone this repository: its playbook and MCP
+connection live in their own private repository,
+[huzaifah-s/maria-personal-assistant](https://github.com/huzaifah-s/maria-personal-assistant)
+— `CLAUDE.md` is the playbook, so changing how it behaves is a commit there,
+and `.mcp.json` connects to `/mcp/assistant` with the token in the routine
+environment's `ASSISTANT_MCP_TOKEN` (`run.aidi.vision` has to be in the
+environment's allowed domains). Kept apart so a run clones two files instead
+of the runner, and the agent never sees this code. It is given the
 assistant's tools and nothing else: no shell, no file edits.
 
 **It learns.** Every draft that ends — sent as written, skipped, or replaced

@@ -260,6 +260,12 @@ sets it — the credential is the one thing to configure. The bot credential is
 declared in each workflow file, not in `_bot.ts`, so both are marked blocked
 without it.
 
+**The scheduled assistant's playbook is not in this repository.** It is
+`CLAUDE.md` in huzaifah-s/maria-personal-assistant, with the `.mcp.json` the
+routine connects through. A change to a tool's name or meaning here usually
+needs a matching change to the playbook there — the tools and the playbook
+are one contract kept in two places.
+
 **The scheduled assistant has no shell.** The routine's `allowed_tools` is
 the `assistant` MCP server and nothing else, and the playbook gets the time
 from the `now` tool rather than `date`. Every message it reads is text a

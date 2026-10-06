@@ -537,6 +537,8 @@ border:1px solid var(--border);background:var(--sunk);cursor:pointer}
    descriptions are written for an agent — the expenses one carries the rules
    about what is and is not a row — and pasted whole onto a card they bury the
    thing you opened the page to see. */
+/* Tiles inside a folder sit on its panel, so they take the panel's inset. */
+.folder>.tiles{padding:12px;border-top:1px solid var(--border-soft)}
 .tiles .counts{display:flex;flex-wrap:wrap;gap:4px 12px;margin:2px 0 6px;
 font-size:12px;color:var(--muted)}
 .tiles .counts b{display:inline;font-weight:600;color:var(--fg)}
@@ -4123,27 +4125,37 @@ export function tablesPage(args: {
             <b>No tables yet</b>
             Add a file under <code class="mono">tables/</code> and restart.
           </div></div>`
-        : html`
-            <div class="tiles">
-              ${tables.map(
-                (t) => html`
-                  <a href="/tables/${t.table.name}">
-                    <b>${ICON_TABLE} ${t.table.name}</b>
-                    <div class="counts">
-                      <span><b>${t.rows}</b> row${t.rows === 1 ? "" : "s"}</span>
-                      ${t.review
-                        ? html`<span class="skipped"><b>${t.review}</b> to review</span>`
-                        : ""}
-                      ${t.newest ? html`<span>${relative(t.newest)}</span>` : ""}
-                    </div>
-                    ${t.table.description
-                      ? html`<span class="clamp">${t.table.description}</span>`
-                      : ""}
-                  </a>
-                `,
-              )}
-            </div>
-          `}
+        : groupByFolder(tables.map((t) => ({ ...t, folder: t.table.folder }))).map(
+            ([folder, group]) => html`
+              <details class="folder" open>
+                <summary>
+                  ${folder ? ICON_FOLDER : ICON_HOME}
+                  <span class="fname">${folder ? html`tables/<b>${folder}</b>/` : html`tables/<i>(top level)</i>`}</span>
+                  <span class="grow"></span>
+                  <span class="tag">${group.length}</span>
+                </summary>
+                <div class="tiles">
+                  ${group.map(
+                    (t) => html`
+                      <a href="/tables/${t.table.name}">
+                        <b>${ICON_TABLE} ${t.table.name}</b>
+                        <div class="counts">
+                          <span><b>${t.rows}</b> row${t.rows === 1 ? "" : "s"}</span>
+                          ${t.review
+                            ? html`<span class="skipped"><b>${t.review}</b> to review</span>`
+                            : ""}
+                          ${t.newest ? html`<span>${relative(t.newest)}</span>` : ""}
+                        </div>
+                        ${t.table.description
+                          ? html`<span class="clamp">${t.table.description}</span>`
+                          : ""}
+                      </a>
+                    `,
+                  )}
+                </div>
+              </details>
+            `,
+          )}
     `,
   );
 }

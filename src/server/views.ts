@@ -6,6 +6,7 @@ import type { LoadedView, Panel } from "../core/views.ts";
 import type { Flow, FlowNode, FlowUse, RunMark, RunTrace } from "../core/flow.ts";
 import { framed, layoutFlow, placeRun, runPath, type Layout, type Placed, type Wire } from "./flow-layout.ts";
 import type { ViewLinkRecord } from "../core/types.ts";
+import type { McpAudience } from "../core/mcp-tokens.ts";
 import { VIEW_CSS, renderControls, renderPanels } from "./view-render.ts";
 import type {
   CallRecord,
@@ -3519,9 +3520,16 @@ export interface McpTokenView {
   calls: number;
   /** Data tables this token may reach on /mcp/tables, or null for all of them. */
   tables: string[] | null;
-  /** Which endpoint it is for: "ops" (/mcp) or "tables" (/mcp/tables). */
-  audience: "ops" | "tables";
+  /** Which endpoint it is for: "ops" (/mcp), "tables" (/mcp/tables) or "assistant" (/mcp/assistant). */
+  audience: McpAudience;
 }
+
+/** How each audience reads on the MCP tab: its tag, its endpoint, a client name. */
+const AUDIENCE_UI: Record<McpAudience, { tag: string; path: string; client: string }> = {
+  ops: { tag: "ops", path: "/mcp", client: "automator" },
+  tables: { tag: "tables", path: "/mcp/tables", client: "automator-tables" },
+  assistant: { tag: "assistant", path: "/mcp/assistant", client: "automator-assistant" },
+};
 
 /**
  * The MCP tab — the tokens an AI agent connects with, and the closest thing
@@ -3544,7 +3552,7 @@ export function mcpTokensPage(args: {
   tokens: McpTokenView[];
   writable: boolean;
   /** Set only on the response that just minted one. Shown once, then gone. */
-  created?: { name: string; token: string; audience: "ops" | "tables" } | null;
+  created?: { name: string; token: string; audience: McpAudience } | null;
   /** True when DASHBOARD_USER/PASS are set — minting is refused without them. */
   authenticated: boolean;
   /** Loaded data tables, offered as the optional scope on a new token. */
@@ -3592,8 +3600,8 @@ export function mcpTokensPage(args: {
             Connect a client with:
             <div class="mono" style="margin-top:7px;word-break:break-all;font-size:11.5px">
               claude mcp add --transport http
-              ${created.audience === "tables" ? "automator-tables" : "automator"}
-              ${base}${created.audience === "tables" ? "/mcp/tables" : "/mcp"} --header
+              ${AUDIENCE_UI[created.audience].client}
+              ${base}${AUDIENCE_UI[created.audience].path} --header
               "Authorization: Bearer ${created.token}"
             </div>
           </div>`
@@ -3618,9 +3626,11 @@ export function mcpTokensPage(args: {
         </summary>
         <div class="body">
           <p>
-            Tokens an AI agent authenticates with, at one of two endpoints:
+            Tokens an AI agent authenticates with, at one of three endpoints:
             <code class="mono">${base}/mcp</code> for operations — workflows, runs, triggers —
-            and <code class="mono">${base}/mcp/tables</code> for the data tables. They have
+            <code class="mono">${base}/mcp/tables</code> for the data tables, and
+            <code class="mono">${base}/mcp/assistant</code> for the personal assistant, which
+            reads your WhatsApp and Telegram. They have
             separate tool lists on purpose: a tool costs context on every turn of every
             conversation whether or not anything calls it, so an incident chat should not be
             carrying ledger tools. A token reaches one endpoint and is refused by the other.
@@ -3675,9 +3685,16 @@ export function mcpTokensPage(args: {
                           Reading and writing rows — <code class="mono">/mcp/tables</code>.
                         </span>
                       </label>
+                      <label class="opt">
+                        <input type="radio" id="aud-assistant" name="audience" value="assistant">
+                        <span><b>Personal assistant</b>
+                          Your chats, drafts and Notion tasks — <code class="mono">/mcp/assistant</code>.
+                          Reads private messages; give it only to the assistant.
+                        </span>
+                      </label>
                     </div>
                     <div class="help">
-                      A token reaches one of them, never both. One minted for the tables is
+                      A token reaches one of them, never another. One minted for the tables is
                       refused by the operations endpoint outright, so a credential that logs
                       expenses cannot also trigger a workflow.
                     </div>
@@ -3761,11 +3778,8 @@ export function mcpTokensPage(args: {
                       <span class="dot ${t.lastUsedAt === null ? "" : "success"}"
                             title="${t.lastUsedAt === null ? "never used" : "has been used"}"></span>
                       <b class="trunc">${t.name}</b>
-                      <span class="tag" title="${
-                        t.audience === "tables"
-                          ? "Reaches /mcp/tables only"
-                          : "Reaches /mcp only"
-                      }">${t.audience === "tables" ? "tables" : "ops"}</span>
+                      <span class="tag" title="Reaches ${AUDIENCE_UI[t.audience].path} only"
+                        >${AUDIENCE_UI[t.audience].tag}</span>
                     </div>
                     <div class="scope">
                       <span class="pill ${t.scope === "full" ? "skipped" : "muted"}">

@@ -58,7 +58,14 @@ import { queuedCount, runningCount, runWorkflow } from "../core/runner.ts";
 import { allPauses, isEnabled, isPaused, pause, resume } from "../core/pause.ts";
 import { quietRoutes } from "../core/quiet.ts";
 import { nextRunFor, scheduleWorkflow, unscheduleWorkflow } from "../core/scheduler.ts";
-import { identify, mayUseEndpoint, mcpEnabled, noteUse, type McpIdentity } from "../core/mcp-tokens.ts";
+import {
+  identify,
+  mayUseEndpoint,
+  mcpEnabled,
+  noteUse,
+  wrongEndpoint,
+  type McpIdentity,
+} from "../core/mcp-tokens.ts";
 import { listCredentials, testCredential, credentialRef } from "../core/credentials.ts";
 import { secretStoreReady, storedSecretKeys } from "../core/secret-store.ts";
 import { listVariables, setVariable } from "../core/variables.ts";
@@ -1374,12 +1381,7 @@ export function createMcpRouter(registry: Registry): Hono<{ Variables: { mcp: Mc
     // silently could.
     if (!mayUseEndpoint(identity, "ops")) {
       return c.json(
-        rpcError(
-          null,
-          -32001,
-          `"${identity.label}" is a data-table token. This endpoint is the runner's ` +
-            "operations MCP — connect this token to /mcp/tables instead.",
-        ),
+        rpcError(null, -32001, wrongEndpoint(identity, "the runner's operations MCP")),
         403,
       );
     }

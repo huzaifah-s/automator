@@ -402,6 +402,33 @@ WhatsApp broadcast lists and channels, and always Telegram's service account
 (777000, which sends login codes). A `people` row set to `ignore` skips a chat;
 `always` reads one the defaults would skip.
 
+### The assistant's endpoint
+
+`/mcp/assistant` is what a scheduled Claude connects to: the chat log, the
+three `tables/personal-assistant/` tables, and the Notion To Do list. It needs
+its own token — on the MCP tab, **Create token → Personal assistant**, full
+access — and refuses the operations and data-table ones, as they refuse it.
+
+| Tool | Does |
+|---|---|
+| `waiting` | Chats where they spoke last, priority first, then longest wait |
+| `thread` | One chat's messages, with what `people` knows about it |
+| `people` / `update_person` | Priorities and notes |
+| `drafts` / `draft_reply` | Replies waiting for approval; a new one, or a revision |
+| `questions` / `ask` / `close_question` | Asking you something and acting on the answer |
+| `create_task` | A task in the Notion To Do database, through the `personal-assistant-create-task` workflow |
+
+**It cannot send anything.** `draft_reply` saves a `pending` row in `drafts`
+and that is all; there is no tool that sends or approves. It only drafts to a
+chat already in `people`, and keeps one open draft per chat — a revision
+names the draft it `replaces`, which becomes `replaced`, so every version and
+your comments on it stay in the table. Times are shown in `ASSISTANT_TZ`
+(default `Asia/Kuala_Lumpur`).
+
+`create_task` sets Name, Status (the first "To-do" option), Due Date and
+Category — a category that is not one of the database's is refused with the
+list, not added. The same title within a week returns the existing task.
+
 ## Checkpoints and resume
 
 A successful `ctx.step` stores its result. A later run against the same

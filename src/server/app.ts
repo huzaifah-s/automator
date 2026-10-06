@@ -64,6 +64,7 @@ import type { Registry } from "../core/loader.ts";
 import { planReplay, workflowsBlockedBy } from "./inspect.ts";
 import { createMcpRouter } from "./mcp.ts";
 import { createTableMcpRouter } from "./mcp-tables.ts";
+import { createAssistantMcpRouter } from "./mcp-assistant.ts";
 import {
   createMcpToken,
   deleteMcpToken,
@@ -455,8 +456,10 @@ export function createApp(registry: Registry): Hono {
   // agent authenticates with MCP_TOKEN, not with the dashboard's basic-auth
   // credentials. Unset, the router answers 503 rather than opening.
   // Before "/mcp", so the more specific path wins: Hono matches in
-  // registration order and "/mcp" would otherwise swallow "/mcp/tables".
+  // registration order and "/mcp" would otherwise swallow "/mcp/tables" and
+  // "/mcp/assistant".
   app.route("/mcp/tables", createTableMcpRouter());
+  app.route("/mcp/assistant", createAssistantMcpRouter(registry));
   app.route("/mcp", createMcpRouter(registry));
 
   /**
@@ -2169,7 +2172,7 @@ export function createApp(registry: Registry): Hono {
 
     const audience = String((body as any).audience ?? "ops") as McpAudience;
     if (!isAudience(audience)) {
-      return c.json({ error: "audience must be 'ops' or 'tables'" }, 400);
+      return c.json({ error: "audience must be 'ops', 'tables' or 'assistant'" }, 400);
     }
 
     let tables: string[] | undefined;

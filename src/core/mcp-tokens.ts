@@ -45,10 +45,39 @@ export type McpScope = "read" | "full";
  * could do both — the table scope narrowed what it saw on `/mcp/tables` and
  * said nothing about `/mcp`, which is not what anybody minting it intended.
  */
-export type McpAudience = "ops" | "tables";
+export type McpAudience = "ops" | "tables" | "assistant";
+
+export const AUDIENCES: readonly McpAudience[] = ["ops", "tables", "assistant"];
 
 export function isAudience(value: unknown): value is McpAudience {
-  return value === "ops" || value === "tables";
+  return AUDIENCES.includes(value as McpAudience);
+}
+
+/** Where each audience connects, for messages that send a token elsewhere. */
+export const AUDIENCE_PATH: Record<McpAudience, string> = {
+  ops: "/mcp",
+  tables: "/mcp/tables",
+  assistant: "/mcp/assistant",
+};
+
+const AUDIENCE_NAME: Record<McpAudience, string> = {
+  ops: "an operations token",
+  tables: "a data-table token",
+  assistant: "an assistant token",
+};
+
+/**
+ * The refusal an endpoint gives a token minted for a different one: what it
+ * is, and where it does work. Shared so three endpoints cannot drift into
+ * three wordings, one of them wrong.
+ */
+export function wrongEndpoint(identity: McpIdentity, here: string): string {
+  const its = identity.audiences[0] ?? "ops";
+  return (
+    `"${identity.label}" is ${AUDIENCE_NAME[its]}. This endpoint is ${here} — ` +
+    `connect this token to ${AUDIENCE_PATH[its]} instead, or create one for this endpoint ` +
+    "on the dashboard's MCP tab."
+  );
 }
 
 /** Recognisable in a log line or a config file as this and nothing else. */
@@ -175,13 +204,13 @@ export function identify(presented: string): McpIdentity | null {
 
   const fromEnv = process.env.MCP_TOKEN;
   if (fromEnv && constantTimeEqual(presented, fromEnv)) {
-    // Both endpoints: this is the bootstrap credential, and a way back in that
-    // only reaches half the server is not one.
+    // Every endpoint: this is the bootstrap credential, and a way back in that
+    // only reaches part of the server is not one.
     return {
       scope: "full",
       label: "MCP_TOKEN (environment)",
       tables: null,
-      audiences: ["ops", "tables"],
+      audiences: [...AUDIENCES],
     };
   }
 

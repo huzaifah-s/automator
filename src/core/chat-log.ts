@@ -114,6 +114,115 @@ export const chatLog: ChatLog = {
   },
 };
 
+/* ------------------------------------------------------------- reading */
+
+/**
+ * Reads for the assistant's endpoint (src/server/mcp-assistant.ts) — the only
+ * reader. Deliberately not on `ctx`: a workflow that wants to act on a
+ * conversation is the assistant's job, and one more reader is one more place
+ * a message can be copied out of the log.
+ */
+
+export interface StoredMessage {
+  channel: ChatChannel;
+  chat: string;
+  id: string;
+  chatName: string | null;
+  isGroup: boolean;
+  sender: string | null;
+  senderName: string | null;
+  text: string;
+  type: string | null;
+  outgoing: boolean;
+  replyTo: string | null;
+  sentAt: number;
+}
+
+/** A chat whose newest message is theirs, not yours. */
+export interface WaitingChat {
+  /** The newest message — theirs. */
+  last: StoredMessage;
+  /** Their messages since your last reply, or in the log if you never replied. */
+  unanswered: number;
+  /** When you last wrote in it, or null if not in the log. */
+  myLastAt: number | null;
+}
+
+type Raw = Record<string, unknown>;
+
+function toStored(r: Raw): StoredMessage {
+  return {
+    channel: r.channel as ChatChannel,
+    chat: String(r.chat),
+    id: String(r.id),
+    chatName: (r.chat_name as string | null) ?? null,
+    isGroup: r.is_group === 1,
+    sender: (r.sender as string | null) ?? null,
+    senderName: (r.sender_name as string | null) ?? null,
+    text: String(r.text ?? ""),
+    type: (r.type as string | null) ?? null,
+    outgoing: r.outgoing === 1,
+    replyTo: (r.reply_to as string | null) ?? null,
+    sentAt: Number(r.sent_at),
+  };
+}
+
+const waitingQuery = db.prepare(`
+  WITH newest AS (
+    SELECT channel, chat, MAX(sent_at) AS at
+    FROM chat_messages WHERE sent_at >= ? GROUP BY channel, chat
+  ),
+  mine AS (
+    SELECT channel, chat, MAX(sent_at) AS at
+    FROM chat_messages WHERE outgoing = 1 GROUP BY channel, chat
+  )
+  SELECT m.*, mine.at AS my_last_at,
+    (SELECT count(*) FROM chat_messages x
+      WHERE x.channel = m.channel AND x.chat = m.chat AND x.outgoing = 0
+        AND x.sent_at > COALESCE(mine.at, 0)) AS unanswered
+  FROM newest
+  JOIN chat_messages m ON m.channel = newest.channel AND m.chat = newest.chat AND m.sent_at = newest.at
+  LEFT JOIN mine ON mine.channel = m.channel AND mine.chat = m.chat
+  ORDER BY m.sent_at ASC
+`);
+
+/**
+ * Chats active since `since` whose newest message is not yours — the "they
+ * spoke last" signal, which holds up where unread counts do not (Evolution's
+ * stays 0). Oldest wait first.
+ */
+export function waitingChats(since: number): WaitingChat[] {
+  const out = new Map<string, WaitingChat>();
+  // Two messages stamped the same second are both "newest". If either of
+  // them is yours, you have answered.
+  const answered = new Set<string>();
+  for (const r of waitingQuery.all(since) as Raw[]) {
+    const key = `${r.channel}:${r.chat}`;
+    const last = toStored(r);
+    if (last.outgoing) answered.add(key);
+    else if (!out.has(key)) {
+      out.set(key, {
+        last,
+        unanswered: Number(r.unanswered),
+        myLastAt: r.my_last_at === null ? null : Number(r.my_last_at),
+      });
+    }
+  }
+  return [...out].filter(([key]) => !answered.has(key)).map(([, w]) => w);
+}
+
+const threadQuery = db.prepare(`
+  SELECT * FROM (
+    SELECT * FROM chat_messages WHERE channel = ? AND chat = ?
+    ORDER BY sent_at DESC LIMIT ?
+  ) ORDER BY sent_at ASC
+`);
+
+/** The latest `limit` messages in one chat, oldest first. */
+export function chatThread(channel: ChatChannel, chat: string, limit: number): StoredMessage[] {
+  return (threadQuery.all(channel, chat, limit) as Raw[]).map(toStored);
+}
+
 /** Days of chat log kept when `CHAT_LOG_RETENTION_DAYS` says nothing usable. */
 const DEFAULT_RETENTION_DAYS = 14;
 

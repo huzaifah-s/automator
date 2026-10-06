@@ -88,6 +88,8 @@ src/server/        app (webhooks + REST + dashboard routes) · views (HTML)
                    `src/core/views.ts` is the Views *feature*)
                    mcp (the endpoint an AI agent connects to)
                    mcp-tables (the same, for data tables, on its own tokens)
+                   mcp-assistant (the personal assistant: chats, drafts,
+                   questions, Notion tasks — on its own tokens again)
                    inspect (what app.ts and mcp.ts must not decide twice)
 tables/            data tables — one file per table, `defineTable()` as the
                    default export, grouped by subdirectory the way workflows
@@ -234,6 +236,25 @@ Evolution's database rather than taking the webhook, because a delivery is
 stored as the run's input and in the inbox. A new reader of chats — or a
 debugging `console.log` — follows the same rules. Telegram's service account
 (777000) is never read: it is where login codes arrive.
+
+**The assistant cannot send, and that is enforced by absence.**
+`src/server/mcp-assistant.ts` has no tool that sends a message: `draft_reply`
+writes a `pending` row and stops, and only a person's approval moves it on —
+on a path that does not go through that endpoint. Do not add a "send" or
+"approve" tool there, however convenient it would be for testing; a prompt
+asking the model to wait for approval is not the same thing as it being unable
+not to. A draft is only accepted for a chat already in `people`, so a number
+handed to the model inside a message cannot become a recipient. Its log lines
+carry the tool name and the refusal, never the arguments, which are messages.
+An `assistant` token is refused by `/mcp` and `/mcp/tables`, and theirs by it.
+
+**`create_task` returns `refused` for bad input instead of throwing.** A
+throw is a failed run and a failed run is an alert; a model picking a
+category that does not exist should be told, not page you. Real failures —
+Notion down, a 401 — still throw. It is not retried, because a page create
+that timed out may have happened, and it remembers a title for a week only
+once Notion has returned a real page — a practice run's held POST returns no
+url, and remembering that made the next real attempt "already on the list".
 
 **`people` rows are added before the cursor moves.** The sync adds a chat to
 the `people` table inside the step that reads it, ahead of the

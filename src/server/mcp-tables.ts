@@ -57,6 +57,7 @@ import {
   mayUseTable,
   mcpEnabled,
   noteUse,
+  wrongEndpoint,
   type McpIdentity,
 } from "../core/mcp-tokens.ts";
 
@@ -535,12 +536,7 @@ export function createTableMcpRouter(): Hono<{ Variables: { mcp: McpIdentity } }
     // workflows and stops there; the ledger is not an extra thing it gets.
     if (!mayUseEndpoint(identity, "tables")) {
       return c.json(
-        rpcError(
-          null,
-          -32001,
-          `"${identity.label}" is an operations token. This endpoint serves data tables — ` +
-            "create a token for them on the dashboard's MCP tab, or connect this one to /mcp.",
-        ),
+        rpcError(null, -32001, wrongEndpoint(identity, "the data-table MCP")),
         403,
       );
     }

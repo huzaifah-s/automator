@@ -1,0 +1,21 @@
+{
+  "expect": "run",
+  "note": "Replying to a draft card with what to change: a message whose reply_to_message is the card.",
+  "body": {
+    "update_id": 100000102,
+    "message": {
+      "message_id": 42,
+      "from": { "id": 100000001, "is_bot": false, "first_name": "Test", "language_code": "en" },
+      "chat": { "id": 100000001, "first_name": "Test", "type": "private" },
+      "date": 1767225660,
+      "text": "Lebih formal sikit, sebut hari Jumaat",
+      "reply_to_message": {
+        "message_id": 41,
+        "from": { "id": 200000001, "is_bot": true, "first_name": "Assistant", "username": "contoh_assistant_bot" },
+        "chat": { "id": 100000001, "first_name": "Test", "type": "private" },
+        "date": 1767225600,
+        "text": "Reply to Cikgu Contoh · WhatsApp"
+      }
+    }
+  }
+}

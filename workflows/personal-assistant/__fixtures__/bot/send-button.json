@@ -1,0 +1,20 @@
+{
+  "expect": "run",
+  "note": "Tapping Send on a draft card: a callback_query carrying d:<draft id>:send.",
+  "body": {
+    "update_id": 100000101,
+    "callback_query": {
+      "id": "1000000000000000101",
+      "from": { "id": 100000001, "is_bot": false, "first_name": "Test", "language_code": "en" },
+      "message": {
+        "message_id": 41,
+        "from": { "id": 200000001, "is_bot": true, "first_name": "Assistant", "username": "contoh_assistant_bot" },
+        "chat": { "id": 100000001, "first_name": "Test", "type": "private" },
+        "date": 1767225600,
+        "text": "Reply to Cikgu Contoh · WhatsApp"
+      },
+      "chat_instance": "-1000000000000000001",
+      "data": "d:000000000000000:send"
+    }
+  }
+}

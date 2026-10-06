@@ -429,6 +429,29 @@ your comments on it stay in the table. Times are shown in `ASSISTANT_TZ`
 Category — a category that is not one of the database's is refused with the
 list, not added. The same title within a week returns the existing task.
 
+### The approval bot
+
+Drafts and questions reach you as cards from a Telegram bot of your own —
+the `telegram` credential **maria**, whose *Default chat id* is your
+Telegram user id (the bot answers nobody else, and says nothing to them).
+`personal-assistant-deliver-cards` posts a card for each new `pending` draft
+and `open` question every minute; `personal-assistant-bot` handles what comes
+back:
+
+| You | Happens |
+|---|---|
+| **✅ Send** | Sent from your own WhatsApp or Telegram, exactly as drafted; the card says when |
+| **Skip** | Closed; nothing is sent |
+| Reply to a draft card | Your words go in `feedback`, the draft goes to `revise`, and the assistant writes a new version — whose card says what you asked for, while the old card's buttons are removed |
+| Tap an option, or reply to a question card | The answer |
+| Any other message | A note the assistant reads on its next run |
+
+Updates are handled one at a time (`onOverlap: "queue"`), so a double tap on
+Send sends once. A failed send is written on the card with Send still there.
+The webhook secret is derived from the bot token, so the credential is the
+only thing to set up: add it, set the chat id, press **Start** in the bot,
+and restart the server — webhooks register at boot.
+
 ## Checkpoints and resume
 
 A successful `ctx.step` stores its result. A later run against the same

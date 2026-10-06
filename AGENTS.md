@@ -248,6 +248,18 @@ handed to the model inside a message cannot become a recipient. Its log lines
 carry the tool name and the refusal, never the arguments, which are messages.
 An `assistant` token is refused by `/mcp` and `/mcp/tables`, and theirs by it.
 
+**The bot acts only for the credential's chat id, one update at a time.**
+`personal-assistant-bot` drops anything not from the `maria`
+credential's Default chat id without replying (a reply confirms the bot is
+alive), and runs with `onOverlap: "queue"`: skipped, a tap could be lost; in
+parallel, two taps on Send could send twice. A draft is only sent from
+`pending` or `failed`, which is what makes the second tap a no-op. Its webhook
+secret is derived from the bot token in `_bot.ts` rather than declared with
+`defineSecrets`, because a new required secret stops the boot until somebody
+sets it — the credential is the one thing to configure. The bot credential is
+declared in each workflow file, not in `_bot.ts`, so both are marked blocked
+without it.
+
 **`create_task` returns `refused` for bad input instead of throwing.** A
 throw is a failed run and a failed run is an alert; a model picking a
 category that does not exist should be told, not page you. Real failures —

@@ -39,6 +39,11 @@ export default defineTable({
     revision_of: text({ nullable: true, label: "Revision of", help: "The draft this one replaces." }),
     sent_at: datetime({ nullable: true, label: "Sent" }),
     error: text({ nullable: true, label: "Error", help: "Why sending failed." }),
+    card_id: text({
+      nullable: true,
+      label: "Card",
+      help: "The Telegram message id of its approval card. Empty until the card is sent.",
+    }),
   },
 
   order: { column: "created_at", direction: "desc" },

@@ -1,0 +1,16 @@
+{
+  "expect": "ignore",
+  "reason": "not a message or a button",
+  "note": "Editing a message you already sent arrives as edited_message, which the bot does not act on.",
+  "body": {
+    "update_id": 100000104,
+    "edited_message": {
+      "message_id": 43,
+      "from": { "id": 100000001, "is_bot": false, "first_name": "Test" },
+      "chat": { "id": 100000001, "first_name": "Test", "type": "private" },
+      "date": 1767225720,
+      "edit_date": 1767225780,
+      "text": "Remind me to call the printer on Tuesday"
+    }
+  }
+}

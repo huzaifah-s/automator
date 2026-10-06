@@ -28,6 +28,11 @@ export default defineTable({
     answer: text({ nullable: true, label: "Answer" }),
     status: enumOf(["open", "answered", "done"], { default: "open", label: "Status" }),
     answered_at: datetime({ nullable: true, label: "Answered" }),
+    card_id: text({
+      nullable: true,
+      label: "Card",
+      help: "The Telegram message id it was asked in. Empty until it is sent.",
+    }),
   },
 
   order: { column: "created_at", direction: "desc" },

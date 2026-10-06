@@ -153,7 +153,7 @@ the next boot if a restart landed in between — see
 ### What's on `ctx`
 
 `http` `slack` `telegram` `discord` `ai` `email` `sql` `sheets` `drive` `s3`
-`scrape` `monday` `whatsapp`, plus `log`, `step`, `run`, `state`, `signal`,
+`scrape` `monday` `whatsapp` `evolution` `telegramUser`, plus `log`, `step`, `run`, `state`, `signal`,
 `input`, `attempt`, `runId`.
 
 All of them except `http` are lazy — a workflow that only makes an HTTP call
@@ -189,12 +189,165 @@ row, and it rejects the whole send rather than rendering that placeholder oddly.
 Doing that at the wire instead of per call site is deliberate; see the note on
 `sanitise` in `src/integrations/whatsapp.ts`.
 
+`ctx.evolution` and `ctx.telegramUser` are WhatsApp and Telegram as an
+ordinary *account* rather than a business number or a bot — see
+[WhatsApp and Telegram as an account](#whatsapp-and-telegram-as-an-account).
+
 `ctx.step(name, fn, { input })` wraps a unit of work. It gets its own timing
 line, its input and output are recorded, and its result becomes a checkpoint.
 
 `ctx.signal` aborts on timeout or shutdown. Pass it to `fetch` and other
 cancellable calls — the runner can *stop waiting* on work that ignores it, but
 it can't *cancel* it.
+
+## WhatsApp and Telegram as an account
+
+`ctx.whatsapp` and `ctx.telegram` are the official business routes: Meta's
+Cloud API, with templates and a 24-hour window, and a Telegram bot, which
+cannot message anyone who has not messaged it first. Two more clients speak as
+an ordinary account instead.
+
+| | `ctx.evolution` | `ctx.telegramUser` |
+|---|---|---|
+| What it is | [Evolution API](https://github.com/EvolutionAPI/evolution-api), a WhatsApp gateway you host | Your Telegram account, over MTProto |
+| Credential | **Evolution API (WhatsApp)** — server URL, key, instance | **Telegram (user account)** — made by `bun run telegram-login` |
+| Sends | `text(to, body)`, `media(to, {…})` | `send(peer, text)`, `sendMedia(peer, {…})` |
+| Reads | `exists(numbers)`, `state()` | `history(peer)`, `resolve(peer)`, `me()` |
+| Inbound | a webhook that registers itself | `poll()` over `history()` |
+
+Both pass `{ credential }` to speak as a credential other than the primary one,
+the way `ctx.telegram` takes `token`:
+
+```ts
+const shop = defineCredential("evolution", "shop");
+await ctx.evolution.text("+60 12-000 0000", "Your order shipped", { credential: shop });
+```
+
+**The trade, for both: an account is not a business API.** Nobody approves
+your templates, and nobody will appeal for you either. WhatsApp bans numbers it
+decides are bots, and Telegram limits accounts that message strangers
+(`PEER_FLOOD`) and watches accounts on unofficial clients. Message people who
+expect to hear from you, at a human rate.
+
+### Evolution API
+
+Connect it on the Credentials tab. The instance's own token is enough, and
+reaches only that instance. The connection test fails if the phone is not
+linked, as well as on a bad key — a wrong key and an unlinked phone fail
+differently, and only the second fails silently on every send.
+
+`to` is a phone number in any punctuation, or a JID passed through untouched —
+`1203…@g.us` for a group. Sends are not retried by the client (a retried send
+can be a second message); a failed step is retried by the run.
+
+Receiving is a webhook whose `register` keeps the instance pointed at it:
+
+```ts
+import { z } from "zod";
+import {
+  defineCredential, defineSecrets, defineWorkflow, evolutionEvent,
+  evolutionMessage, evolutionRegistration, evolutionSecret, webhook,
+} from "../../src/core/define.ts";
+
+const shop = defineCredential("evolution", "shop");
+const secrets = defineSecrets({ EVOLUTION_WEBHOOK_SECRET: z.string().min(16) });
+
+export default defineWorkflow({
+  name: "shop-whatsapp-inbound",
+  trigger: webhook("shop/whatsapp", {
+    schema: evolutionEvent,
+    filter: (e) => (evolutionMessage(e) ? true : "not an inbound message"),
+    verify: evolutionSecret(() => secrets.EVOLUTION_WEBHOOK_SECRET),
+    register: evolutionRegistration({
+      credential: shop,
+      secret: () => secrets.EVOLUTION_WEBHOOK_SECRET,
+    }),
+  }),
+  async run(ctx) {
+    const m = await ctx.step("read message", async () => evolutionMessage(ctx.input)!);
+    await ctx.step("reply", () => ctx.evolution.text(m.chat, "Thanks!", { credential: shop }));
+  },
+});
+```
+
+- **Evolution signs nothing.** `evolutionRegistration` asks it to send
+  `x-evolution-secret` on every delivery and `evolutionSecret` checks it — a
+  per-workflow secret, so the copy kept in Evolution's database opens one route.
+- **`evolutionMessage` returns `undefined` for anything that is not a new
+  inbound message** — receipts, connection changes, status broadcasts, and
+  messages *this account* sent, which arrive down the same webhook and would
+  otherwise have a bot replying to itself. `from` is the sender's number when
+  WhatsApp disclosed it; behind a privacy `@lid` it is `undefined`, and `chat`
+  is still where a reply goes.
+- **`evolutionEvent` drops the body's `apikey`.** Evolution includes the
+  instance token in every delivery when its
+  `AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES` is on; the schema's output is what
+  the inbox and the run page store, so it never reaches disk.
+- **One instance, one receiving workflow.** An instance has a single webhook,
+  so two workflows registering the same instance overwrite each other on every
+  boot.
+- **Evolution 2.4 needs license activation**, and answers `503
+  LICENSE_REQUIRED` to everything until it has it. 2.3.7 does not.
+
+### Telegram as you
+
+Log in once, on the machine that will use it. On the deployment that means
+inside the running container — on Coolify, the app's **Terminal** tab, where
+the command is just:
+
+```bash
+bun run telegram-login -- me --primary
+```
+
+or, over SSH on the host (Coolify suffixes the container's name on every
+deploy, so it is found by name rather than through `docker compose exec`):
+
+```bash
+docker exec -it $(docker ps --format '{{.Names}}' | grep -m1 -E '^automator[-_]') bun run telegram-login -- me --primary
+```
+
+It asks for the API ID and hash from [my.telegram.org](https://my.telegram.org/apps),
+your phone number, the code Telegram sends, and your 2FA password if you have
+one, then saves the session as the credential `telegram_user:me` and tests it.
+**The session is never printed** — it is the account, and it goes from Telegram
+into the encrypted store and nowhere else. It needs `SECRETS_ENCRYPTION_KEY`.
+
+**Log in separately on every machine; never copy a session.** Telegram treats
+one session used from two places at once as stolen and revokes it
+(`AUTH_KEY_DUPLICATED`), and the account then needs logging in again by hand.
+A laptop login is a second device on the account with its own session, which
+is the safe way to practise against real chats. Inside one process this cannot
+happen: every call, poll and connection test shares one connection per session.
+
+```ts
+await ctx.telegramUser.send("@someone", "<b>Hello</b>", { format: "html" });
+await ctx.telegramUser.send("somechannel", "Posted as the channel");
+await ctx.telegramUser.sendMedia("+60120000000", { url: "https://…/card.jpg", caption: "Your card" });
+```
+
+A peer is `@username`, a `t.me/` link, `"me"` (Saved Messages), a phone number
+**with its `+`**, or a numeric chat id. The `+` is what tells a phone number
+from an id. A phone resolves only if the person is in your contacts or lets
+anyone find them by number; prefer usernames. `format` is `plain` (default),
+`html` — the Bot API's tags, so text written for `ctx.telegram` reads the same —
+or `markdown`.
+
+Nothing listens. The connection opens on the first call and closes five minutes
+after the last (`TELEGRAM_USER_IDLE_MS`), so a laptop beside the deploy holds
+nothing open. Reading a channel or a group is a poll:
+
+```ts
+trigger: poll("*/5 * * * *", {
+  fetch: (ctx) => ctx.telegramUser.history("somechannel", { limit: 50 }),
+  id: (m) => `${m.chatId}:${m.id}`,
+}),
+```
+
+`history` returns plain objects, oldest first — `id`, `chatId`, `chatName`,
+`date`, `text`, `from`, `replyTo`, `outgoing` — and `after: <id>` returns only
+newer messages. Every call is on the run page as `MTPROTO
+mtproto://telegram/<call>`, and a practice run holds the sends and makes the
+reads for real.
 
 ## Checkpoints and resume
 

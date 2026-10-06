@@ -15,10 +15,12 @@
     "secret": "bun src/index.ts --secret",
     "up": "docker compose -f docker-compose.yml -f compose.local.yml up -d --build",
     "down": "docker compose -f docker-compose.yml -f compose.local.yml down",
-    "variable": "bun src/index.ts --variable"
+    "variable": "bun src/index.ts --variable",
+    "telegram-login": "bun src/index.ts --telegram-login"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.0",
+    "@mtcute/bun": "0.32.4",
     "cheerio": "^1.1.2",
     "croner": "^9.1.0",
     "hono": "^4.9.10",

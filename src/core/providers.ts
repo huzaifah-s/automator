@@ -552,6 +552,117 @@ export const PROVIDERS = {
       return `Sending as ${name}${number}${quality}`;
     },
   },
+
+  /*
+   * Evolution API — the open-source WhatsApp gateway you host yourself. Not
+   * `whatsapp` above: that is Meta's Cloud API with templates and a 24-hour
+   * window, this is an ordinary WhatsApp account linked by QR code.
+   *
+   * The URL and the instance name are configuration — every captured call's
+   * URL is made of them, and blanking them would leave the run page unable to
+   * say which phone sent what.
+   */
+  evolution: {
+    label: "Evolution API (WhatsApp)",
+    blurb: "A self-hosted Evolution API server and one of its instances, for sending and receiving WhatsApp.",
+    docs: "https://github.com/EvolutionAPI/evolution-api",
+    fields: {
+      url: {
+        label: "Server URL",
+        schema: z.string().url(),
+        secret: false,
+        placeholder: "https://evolution.example.com",
+      },
+      api_key: {
+        label: "API key",
+        schema: z.string().min(8),
+        help:
+          "The instance's own token is enough and can only reach that instance. " +
+          "The server's global AUTHENTICATION_API_KEY works too, and reaches all of them.",
+      },
+      instance: {
+        label: "Instance name",
+        schema: z.string().min(1),
+        secret: false,
+        placeholder: "shop",
+        help: "As created in Evolution's manager — the linked phone this credential speaks as.",
+      },
+    },
+    envMap: { url: "EVOLUTION_URL", api_key: "EVOLUTION_API_KEY", instance: "EVOLUTION_INSTANCE" },
+    async test(v, signal) {
+      const instance = need(v, "instance");
+      // Not fetchInstances, which is the obvious "who am I" call: its answer
+      // carries the instance token and the instance's proxy and Chatwoot
+      // credentials, and nothing that reads a credential needs to hold those.
+      const res = await probe(
+        `${need(v, "url").replace(/\/+$/, "")}/instance/connectionState/${encodeURIComponent(instance)}`,
+        { headers: { apikey: need(v, "api_key") } },
+        signal,
+        "Evolution",
+      );
+      const state = res?.instance?.state;
+      // The key working and the phone being linked are separate failures, and
+      // only the second one silently swallows every message.
+      if (state !== "open") {
+        throw new Error(
+          `Authenticated, but instance "${instance}" is ${state ?? "in an unknown state"} — ` +
+            "link the phone by scanning the QR code in Evolution's manager",
+        );
+      }
+      return `Instance "${instance}" is connected`;
+    },
+  },
+
+  /*
+   * Telegram as your own account, over MTProto — not `telegram` above, which
+   * is a bot. The session is a logged-in device on the account, so it is
+   * never typed into this form by hand: `bun run telegram-login` creates it
+   * and saves it here directly, without it ever being printed.
+   *
+   * The api_id is configuration — it identifies the app, not the account,
+   * and does nothing without the hash.
+   */
+  telegram_user: {
+    label: "Telegram (user account)",
+    blurb: "Your own Telegram account over MTProto — DM people, read channels, post as yourself.",
+    docs: "https://my.telegram.org/apps",
+    fields: {
+      api_id: {
+        label: "API ID",
+        schema: z.string().regex(/^\d+$/, "An API ID is digits only"),
+        secret: false,
+        help: "my.telegram.org › API development tools.",
+      },
+      api_hash: {
+        label: "API hash",
+        schema: z.string().regex(/^[0-9a-f]{32}$/i, "An API hash is 32 hex characters"),
+      },
+      session: {
+        label: "Session",
+        schema: z.string().min(100),
+        help:
+          "Created by `bun run telegram-login -- <name>`, which saves it here itself. " +
+          "Use a separate login on each machine: one session used from two places at once is revoked by Telegram.",
+      },
+    },
+    envMap: { api_id: "TELEGRAM_API_ID", api_hash: "TELEGRAM_API_HASH", session: "TELEGRAM_SESSION" },
+    async test(v, signal) {
+      // Through the pool, not a client of its own: a second connection on a
+      // session the workflows already have open is exactly what Telegram
+      // revokes sessions for.
+      const { withClient } = await import("../integrations/telegram-user.ts");
+      const me = await Promise.race([
+        withClient(
+          { api_id: need(v, "api_id"), api_hash: need(v, "api_hash"), session: need(v, "session") },
+          (c) => c.getMe(),
+        ),
+        new Promise<never>((_, reject) =>
+          signal.addEventListener("abort", () => reject(new Error("Telegram did not answer")), { once: true }),
+        ),
+      ]);
+      return `Logged in as ${me.displayName}${me.username ? ` (@${me.username})` : ""}`;
+    },
+  },
 } satisfies Record<string, Provider>;
 
 export type ProviderId = keyof typeof PROVIDERS;

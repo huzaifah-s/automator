@@ -21,6 +21,8 @@ import { createS3, type S3Client } from "./s3.ts";
 import { createScrape, type ScrapeClient } from "./scrape.ts";
 import { createMonday, type MondayClient } from "./monday.ts";
 import { createWhatsApp, type WhatsAppClient } from "./whatsapp.ts";
+import { createEvolution, type EvolutionClient } from "./evolution.ts";
+import { createTelegramUser, type TelegramUserClient } from "./telegram-user.ts";
 
 /** Everything hanging off `ctx` besides the run metadata. */
 export interface Integrations {
@@ -37,6 +39,8 @@ export interface Integrations {
   scrape: ScrapeClient;
   monday: MondayClient;
   whatsapp: WhatsAppClient;
+  evolution: EvolutionClient;
+  telegramUser: TelegramUserClient;
 }
 
 /**
@@ -79,6 +83,8 @@ export function buildIntegrations(signal: AbortSignal, runId?: string): Integrat
   let scrape: ScrapeClient | undefined;
   let monday: MondayClient | undefined;
   let whatsapp: WhatsAppClient | undefined;
+  let evolution: EvolutionClient | undefined;
+  let telegramUser: TelegramUserClient | undefined;
 
   return {
     http,
@@ -129,6 +135,45 @@ export function buildIntegrations(signal: AbortSignal, runId?: string): Integrat
     get whatsapp() {
       return (whatsapp ??= createWhatsApp(http));
     },
+    // Plain HTTP to a self-hosted server, so the practice gate on fetch holds
+    // its sends already — POSTs to a host it has never heard of are writes.
+    get evolution() {
+      return (evolution ??= createEvolution(http));
+    },
+    // MTProto is not fetch, so like SMTP it is gated here: reads go out for
+    // real, sends are held.
+    get telegramUser() {
+      const client = (telegramUser ??= createTelegramUser(signal, record));
+      return isPractice() ? practiceTelegramUser(client) : client;
+    },
+  };
+}
+
+/**
+ * ctx.telegramUser during a practice run: the reads are real, the sends are
+ * recorded and not made. A held send answers id 0 — code that stores the id
+ * to match a later reply sees that it is not a real one.
+ */
+function practiceTelegramUser(real: TelegramUserClient): TelegramUserClient {
+  const hold = (call: string, peer: unknown, body: Record<string, unknown>) => {
+    holdBack({
+      method: "MTPROTO",
+      url: `mtproto://telegram/${call} → ${String(peer)}`,
+      body,
+      why: "sends a Telegram message as your account",
+    });
+    return { id: 0, chatId: 0 };
+  };
+  return {
+    me: (opts) => real.me(opts),
+    resolve: (peer, opts) => real.resolve(peer, opts),
+    history: (peer, opts) => real.history(peer, opts),
+    async send(peer, text, opts = {}) {
+      return hold("sendText", peer, { text, format: opts.format ?? "plain", replyTo: opts.replyTo });
+    },
+    async sendMedia(peer, media, opts = {}) {
+      return hold("sendMedia", peer, { ...media, replyTo: opts.replyTo });
+    },
   };
 }
 
@@ -149,6 +194,7 @@ function practiceEmail(): EmailClient {
 }
 
 export { closeSql } from "./sql.ts";
+export { closeTelegramUsers } from "./telegram-user.ts";
 export { HttpError } from "./http.ts";
 
 /**
@@ -176,6 +222,12 @@ const INTEGRATION_SECRET_ENV = [
   // configuration and stay readable; only the two that authenticate are here.
   "MONDAY_API_TOKEN",
   "WHATSAPP_ACCESS_TOKEN",
+  // ctx.evolution and ctx.telegramUser. The Evolution URL and instance name,
+  // and the Telegram api_id, are configuration and stay readable. The
+  // session is the account itself.
+  "EVOLUTION_API_KEY",
+  "TELEGRAM_API_HASH",
+  "TELEGRAM_SESSION",
   // Declared through defineSecrets by every defineOAuth() call, so this only
   // covers the case where the key is set before any credential uses it.
   "OAUTH_ENCRYPTION_KEY",

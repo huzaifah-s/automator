@@ -124,6 +124,12 @@ export function classify(
         return { send: true, why: "Notion query" };
       }
     }
+    // Evolution is self-hosted, so there is no host to match — but its routes
+    // end in the instance name, and these names are its own. Each one queries
+    // the server's database or asks WhatsApp who exists; none sends anything.
+    if (/\/chat\/(findChats|findMessages|findContacts|whatsappNumbers)\/[^/]+$/.test(path)) {
+      return { send: true, why: "Evolution read" };
+    }
     // getMe, getUpdates, getChat, getFile, getWebhookInfo — Telegram's reads
     // are all named get*, and every one of its writes is not.
     if (host === "api.telegram.org" && /^\/bot[^/]+\/get[A-Z]\w*$/.test(path)) {

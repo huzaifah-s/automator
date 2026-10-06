@@ -60,8 +60,9 @@ export interface TelegramUserCallOptions {
  *
  * The `+` is required for a phone number, because without it a number and a
  * chat id are the same string. A phone only resolves if the person is in the
- * account's contacts or lets anyone find them by number; a numeric id only
- * resolves for a chat this process has already seen, so prefer usernames.
+ * account's contacts or lets anyone find them by number. A numeric id — what
+ * `chats()` and `history()` hand back — resolves for any chat the account is
+ * in, on a fresh connection too: mtcute asks Telegram when its cache misses.
  */
 export type TelegramPeer = string | number;
 
@@ -88,6 +89,20 @@ export interface TelegramUserMessage {
   replyTo: number | undefined;
   /** Sent by this account. */
   outgoing: boolean;
+}
+
+/** One chat in the account's chat list, as `chats()` returns it. */
+export interface TelegramUserChat extends TelegramUserPeer {
+  /** Unread messages, as the phone counts them. */
+  unread: number;
+  /** How many of those @-mention this account or reply to it. */
+  mentions: number;
+  /** Marked unread by hand — counts as unread even with nothing new in it. */
+  markedUnread: boolean;
+  muted: boolean;
+  pinned: boolean;
+  archived: boolean;
+  lastMessage: TelegramUserMessage | undefined;
 }
 
 export interface TelegramUserSent {
@@ -143,6 +158,21 @@ export interface TelegramUserClient {
     peer: TelegramPeer,
     opts?: TelegramUserCallOptions & { limit?: number; after?: number },
   ): Promise<TelegramUserMessage[]>;
+  /**
+   * The chat list, as the phone orders it — pinned first, then newest
+   * activity — each with its unread count and newest message. Reading it
+   * marks nothing as read. `id` is what `history()` and `send()` take.
+   *
+   *   const waiting = await ctx.telegramUser.chats({ unread: true });
+   *
+   * `limit` (default 30, at most 200) is how many come back. With `unread`
+   * only chats with something unread count towards it, and the search stops
+   * after the newest 500 chats. Archived chats are left out unless `archived`
+   * is set, the same as the main list.
+   */
+  chats(
+    opts?: TelegramUserCallOptions & { limit?: number; unread?: boolean; archived?: boolean },
+  ): Promise<TelegramUserChat[]>;
 }
 
 /** How long a connection is kept after its last call. */
@@ -151,6 +181,10 @@ const IDLE_MS = Number(process.env.TELEGRAM_USER_IDLE_MS ?? 5 * 60_000);
 const CONNECT_TIMEOUT_MS = 30_000;
 /** Telegram's own ceiling on one page of history. */
 const MAX_HISTORY = 100;
+/** Most chats `chats()` returns. */
+const MAX_CHATS = 200;
+/** How far down the chat list an unread search goes. Five pages of Telegram's 100. */
+const SCAN_CHATS = 500;
 
 const mtLog = createLogger("telegram-user");
 
@@ -264,6 +298,28 @@ export function createTelegramUser(signal: AbortSignal, record?: CallRecorder): 
                 })
               : [...(await c.getHistory(chat, { limit }))].reverse();
           return [...page].filter((m) => opts.after === undefined || m.id > opts.after).map(toMessage);
+        },
+      );
+    },
+
+    chats(opts = {}) {
+      const limit = Math.min(Math.max(1, opts.limit ?? 30), MAX_CHATS);
+      return call(
+        "getDialogs",
+        connection(opts.credential),
+        { limit, unread: opts.unread ?? false, archived: opts.archived ?? false },
+        async (c) => {
+          const found: TelegramUserChat[] = [];
+          let scanned = 0;
+          for await (const d of c.iterDialogs({
+            archived: opts.archived ? "keep" : "exclude",
+            limit: opts.unread ? SCAN_CHATS : limit,
+          })) {
+            scanned++;
+            if (!opts.unread || d.isUnread) found.push(toChat(d));
+            if (found.length >= limit || scanned >= SCAN_CHATS) break;
+          }
+          return found;
         },
       );
     },
@@ -452,6 +508,22 @@ function toMessage(m: MtMessage): TelegramUserMessage {
       : { id: sender.id, name: sender.displayName, username: sender.username ?? undefined },
     replyTo: m.replyToMessage?.id ?? undefined,
     outgoing: m.isOutgoing,
+  };
+}
+
+type MtDialog = import("@mtcute/bun").Dialog;
+
+function toChat(d: MtDialog): TelegramUserChat {
+  return {
+    ...toPeer(d.peer),
+    unread: d.unreadCount,
+    mentions: d.unreadMentionsCount,
+    markedUnread: d.isManuallyUnread,
+    // null is "whatever the account's default is", which is not muted.
+    muted: d.isMuted === true,
+    pinned: d.isPinned,
+    archived: d.isArchived,
+    lastMessage: d.lastMessage ? toMessage(d.lastMessage) : undefined,
   };
 }
 

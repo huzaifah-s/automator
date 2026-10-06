@@ -8,13 +8,14 @@
  * instead — the structures come from Evolution's source (2.3.7), the values
  * are made up. See AGENTS.md "Webhook samples".
  */
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 process.env.DATABASE_PATH = join(mkdtempSync(join(tmpdir(), "automator-test-")), "test.db");
-const { evolutionEvent, evolutionMessage } = await import("../src/integrations/evolution.ts");
+const { createEvolution, evolutionEvent, evolutionMessage } = await import("../src/integrations/evolution.ts");
+type HttpClient = import("../src/integrations/http.ts").HttpClient;
 
 const envelope = (data: unknown, event = "messages.upsert") => ({
   event,
@@ -71,6 +72,7 @@ describe("evolutionMessage", () => {
       type: "conversation",
       replyTo: undefined,
       timestamp: 1767250800,
+      outgoing: false,
     });
   });
 
@@ -140,5 +142,111 @@ describe("evolutionMessage", () => {
   test("a sticker has no text, and is still a message", () => {
     const sticker = { ...dm, messageType: "stickerMessage", message: { stickerMessage: { mimetype: "image/webp" } } };
     expect(evolutionMessage(envelope(sticker))?.text).toBe("");
+  });
+});
+
+/**
+ * Reading back what Evolution stored. The record shapes are what `fetchChats`
+ * and `fetchMessages` return in Evolution's source; the client is a stand-in
+ * that answers the one POST and remembers what it was asked.
+ */
+describe("reading history", () => {
+  // Test files share one process, so the connection is set for these and put back.
+  const env = {
+    EVOLUTION_URL: "https://evolution.example.com/",
+    EVOLUTION_API_KEY: "made-up-key-0000",
+    EVOLUTION_INSTANCE: "contoh",
+  };
+  const before = Object.fromEntries(Object.keys(env).map((k) => [k, process.env[k]]));
+  beforeAll(() => Object.assign(process.env, env));
+  afterAll(() => {
+    for (const [k, v] of Object.entries(before)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  const fake = (answer: unknown) => {
+    const calls: { url: string; body: any }[] = [];
+    const http = {
+      async post(url: string, body: unknown) {
+        calls.push({ url, body });
+        return answer;
+      },
+    } as unknown as HttpClient;
+    return { evo: createEvolution(http), calls };
+  };
+
+  const ours = { ...dm, key: { ...dm.key, fromMe: true, id: "3EB000000000000000E5" }, pushName: "Saya", message: { conversation: "Baik" } };
+
+  test("messages() asks for one chat by its full JID and returns oldest first, both sides", async () => {
+    const { evo, calls } = fake({
+      messages: { total: 2, pages: 1, currentPage: 1, records: [ours, dm] },
+    });
+    const list = await evo.messages("+60 12-000 0000", { limit: 20 });
+    expect(calls[0]!.url).toBe("https://evolution.example.com/chat/findMessages/contoh");
+    expect(calls[0]!.body).toEqual({
+      where: { key: { remoteJid: "60120000000@s.whatsapp.net" } },
+      offset: 20,
+      page: 1,
+    });
+    expect(list.map((m) => [m.text, m.outgoing])).toEqual([
+      ["Selamat pagi", false],
+      ["Baik", true],
+    ]);
+    // Our own message is not attributed to the person we sent it to.
+    expect(list[1]!.from).toBeUndefined();
+    expect(list[1]!.name).toBeUndefined();
+  });
+
+  test("messages() sends both ends of the time filter, which Evolution needs", async () => {
+    const { evo, calls } = fake({ messages: { records: [] } });
+    await evo.messages("120363000000000000@g.us", { since: new Date("2026-01-01T00:00:00Z") });
+    const filter = calls[0]!.body.where.messageTimestamp;
+    expect(filter.gte).toBe("2026-01-01T00:00:00.000Z");
+    expect(typeof filter.lte).toBe("string");
+    expect(calls[0]!.body.where.key.remoteJid).toBe("120363000000000000@g.us");
+  });
+
+  test("a stored reply keeps its context beside the message", async () => {
+    const reply = { ...dm, contextInfo: { stanzaId: "3EB000000000000000F6" } };
+    const { evo } = fake({ messages: { records: [reply] } });
+    expect((await evo.messages("60120000000"))[0]!.replyTo).toBe("3EB000000000000000F6");
+  });
+
+  test("chats() lists each chat with its unread count and newest message", async () => {
+    const { evo, calls } = fake([
+      {
+        id: "00000000-0000-0000-0000-000000000001",
+        remoteJid: "60120000000@s.whatsapp.net",
+        pushName: "Cikgu Contoh",
+        profilePicUrl: null,
+        updatedAt: "2026-01-01T09:00:00.000Z",
+        windowActive: false,
+        lastMessage: { ...dm, pushName: "Cikgu Contoh" },
+        unreadCount: 3,
+        isSaved: true,
+      },
+      {
+        id: null,
+        remoteJid: "120363000000000000@g.us",
+        pushName: "Kumpulan Contoh",
+        updatedAt: "2026-01-01T08:00:00.000Z",
+        lastMessage: { ...ours, key: { ...ours.key, remoteJid: "120363000000000000@g.us" }, pushName: "Você" },
+        unreadCount: null,
+        isSaved: false,
+      },
+      { remoteJid: "status@broadcast", unreadCount: 9 },
+    ]);
+    const chats = await evo.chats({ limit: 10 });
+    expect(calls[0]!.url).toBe("https://evolution.example.com/chat/findChats/contoh");
+    expect(calls[0]!.body).toEqual({ take: 10 });
+    expect(chats.map((c) => [c.chat, c.name, c.isGroup, c.unread])).toEqual([
+      ["60120000000@s.whatsapp.net", "Cikgu Contoh", false, 3],
+      ["120363000000000000@g.us", "Kumpulan Contoh", true, 0],
+    ]);
+    expect(chats[0]!.lastMessage?.text).toBe("Selamat pagi");
+    expect(chats[1]!.lastMessage?.outgoing).toBe(true);
+    expect(chats[1]!.lastMessage?.name).toBeUndefined();
   });
 });

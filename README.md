@@ -212,7 +212,7 @@ an ordinary account instead.
 | What it is | [Evolution API](https://github.com/EvolutionAPI/evolution-api), a WhatsApp gateway you host | Your Telegram account, over MTProto |
 | Credential | **Evolution API (WhatsApp)** — server URL, key, instance | **Telegram (user account)** — made by `bun run telegram-login` |
 | Sends | `text(to, body)`, `media(to, {…})` | `send(peer, text)`, `sendMedia(peer, {…})` |
-| Reads | `exists(numbers)`, `state()` | `history(peer)`, `resolve(peer)`, `me()` |
+| Reads | `chats()`, `messages(chat)`, `exists(numbers)`, `state()` | `chats()`, `history(peer)`, `resolve(peer)`, `me()` |
 | Inbound | a webhook that registers itself | `poll()` over `history()` |
 
 Both pass `{ credential }` to speak as a credential other than the primary one,
@@ -286,6 +286,17 @@ export default defineWorkflow({
 - **One instance, one receiving workflow.** An instance has a single webhook,
   so two workflows registering the same instance overwrite each other on every
   boot.
+- **Reading back is `chats()` and `messages(chat)`.** `chats({ since, limit })`
+  lists chats newest first, each with `unread` and its `lastMessage`;
+  `messages(chat, { since, limit })` is one chat, oldest first, both sides —
+  `outgoing` says which. Neither marks anything read. Both answer from
+  Evolution's own database, so they are empty unless the server runs with
+  `DATABASE_SAVE_DATA_NEW_MESSAGE=true`, and hold nothing from before the
+  phone was linked unless `DATABASE_SAVE_DATA_HISTORIC` was on when it was.
+  `unread` is Evolution's count and in practice stays 0; whether
+  `lastMessage.outgoing` is false — they spoke last — is the signal that holds.
+  A person's chat is named from their last message, so one where you spoke
+  last can come back without a `name`.
 - **Evolution 2.4 needs license activation**, and answers `503
   LICENSE_REQUIRED` to everything until it has it. 2.3.7 does not.
 
@@ -326,7 +337,7 @@ await ctx.telegramUser.sendMedia("+60120000000", { url: "https://…/card.jpg", 
 ```
 
 A peer is `@username`, a `t.me/` link, `"me"` (Saved Messages), a phone number
-**with its `+`**, or a numeric chat id. The `+` is what tells a phone number
+**with its `+`**, or a numeric chat id from `chats()` or `history()`. The `+` is what tells a phone number
 from an id. A phone resolves only if the person is in your contacts or lets
 anyone find them by number; prefer usernames. `format` is `plain` (default),
 `html` — the Bot API's tags, so text written for `ctx.telegram` reads the same —
@@ -345,7 +356,14 @@ trigger: poll("*/5 * * * *", {
 
 `history` returns plain objects, oldest first — `id`, `chatId`, `chatName`,
 `date`, `text`, `from`, `replyTo`, `outgoing` — and `after: <id>` returns only
-newer messages. Every call is on the run page as `MTPROTO
+newer messages.
+
+`chats()` is the chat list as the phone orders it, each chat with `unread`,
+`mentions`, `muted`, `pinned`, `archived` and its `lastMessage`.
+`chats({ unread: true })` is the ones with something waiting — searched
+among the newest 500, archived left out unless `archived: true`. An `id` from
+either is what `history` and `send` take, in this run or a later one. Reading
+never marks anything read; the phone still shows it as new. Every call is on the run page as `MTPROTO
 mtproto://telegram/<call>`, and a practice run holds the sends and makes the
 reads for real.
 

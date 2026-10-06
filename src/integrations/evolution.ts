@@ -57,6 +57,24 @@ export interface EvolutionMedia {
   mimetype?: string;
 }
 
+/** One chat, as `chats()` lists it. */
+export interface EvolutionChat {
+  /** The JID — what `messages()` and a reply take. `…@g.us` for a group. */
+  chat: string;
+  /** The contact's or group's name, when Evolution has one. */
+  name: string | undefined;
+  isGroup: boolean;
+  /**
+   * Evolution's own count of unread messages — and in practice it stays
+   * 0 however much is waiting. "Their message is the newest" is the signal
+   * that holds up: `lastMessage` with `outgoing` false.
+   */
+  unread: number;
+  /** ISO 8601 — when the newest message arrived. */
+  updatedAt: string | undefined;
+  lastMessage: EvolutionMessage | undefined;
+}
+
 export interface EvolutionClient {
   /**
    * Sends plain text. `to` is a phone number in international format (any
@@ -87,6 +105,27 @@ export interface EvolutionClient {
   ): Promise<{ number: string; exists: boolean; jid?: string }[]>;
   /** `open` when the linked phone is connected; `close` or `connecting` otherwise. */
   state(opts?: EvolutionCallOptions): Promise<"open" | "close" | "connecting" | string>;
+  /**
+   * Chats, most recently active first, each with its newest message. Read-only,
+   * and nothing is marked as read. `since` keeps only chats with a message
+   * after it.
+   *
+   * Evolution can only answer from its own database, so this is empty unless
+   * the server runs with `DATABASE_SAVE_DATA_NEW_MESSAGE=true` — and holds only
+   * what arrived after the phone was linked, plus whatever history sync
+   * brought in if `DATABASE_SAVE_DATA_HISTORIC` was on at the time.
+   */
+  chats(opts?: EvolutionCallOptions & { limit?: number; since?: Date }): Promise<EvolutionChat[]>;
+  /**
+   * Messages in one chat, **oldest first**, both directions — `outgoing`
+   * says which. `chat` is a JID from `chats()` or a phone number. Without
+   * `since`, the latest `limit` (default 50, at most 100). Read-only, from
+   * the same database as `chats()`.
+   */
+  messages(
+    chat: string,
+    opts?: EvolutionCallOptions & { limit?: number; since?: Date },
+  ): Promise<EvolutionMessage[]>;
   /**
    * Points the instance's webhook at `url`. An instance has exactly one, so
    * this replaces whatever was there. `headers` are sent on every delivery,
@@ -187,6 +226,62 @@ export function createEvolution(http: HttpClient): EvolutionClient {
       return res?.instance?.state ?? "unknown";
     },
 
+    // findChats and findMessages are POSTs that change nothing, so they keep
+    // ctx.http's retries — and `classify` in practice.ts lets them through.
+    async chats(opts = {}) {
+      const c = connection(opts.credential);
+      const limit = Math.min(Math.max(1, opts.limit ?? 50), MAX_PAGE);
+      const res = await http.post<Record<string, unknown>[]>(
+        endpoint(c, "chat/findChats"),
+        {
+          ...(opts.since ? { where: { messageTimestamp: sinceFilter(opts.since) } } : {}),
+          take: limit,
+        },
+        { headers: headers(c) },
+      );
+      return (Array.isArray(res) ? res : []).flatMap((r): EvolutionChat[] => {
+        const chat = typeof r.remoteJid === "string" ? r.remoteJid : undefined;
+        if (!chat || chat === "status@broadcast") return [];
+        const updatedAt = typeof r.updatedAt === "string" ? r.updatedAt : undefined;
+        const lastMessage = r.lastMessage ? toMessage(r.lastMessage, true) : undefined;
+        // findChats selects `pushName` twice and the second, the chat's own
+        // name, wins — set for a group, empty for a person. Their name on
+        // their last message is the next best thing.
+        const named = typeof r.pushName === "string" && r.pushName ? r.pushName : undefined;
+        return [
+          {
+            chat,
+            name: named ?? (lastMessage?.isGroup ? undefined : lastMessage?.name),
+            isGroup: chat.endsWith("@g.us"),
+            unread: Number(r.unreadCount) || 0,
+            updatedAt,
+            lastMessage,
+          },
+        ];
+      });
+    },
+
+    async messages(chat, opts = {}) {
+      const c = connection(opts.credential);
+      const limit = Math.min(Math.max(1, opts.limit ?? 50), MAX_PAGE);
+      const res = await http.post<{ messages?: { records?: unknown[] } }>(
+        endpoint(c, "chat/findMessages"),
+        {
+          where: {
+            key: { remoteJid: jid(chat) },
+            ...(opts.since ? { messageTimestamp: sinceFilter(opts.since) } : {}),
+          },
+          // Evolution's names: `offset` is the page size, `page` is 1-based.
+          offset: limit,
+          page: 1,
+        },
+        { headers: headers(c) },
+      );
+      const records = res?.messages?.records ?? [];
+      // Newest first from Evolution; oldest first here, like Telegram's history.
+      return records.flatMap((r) => toMessage(r, true) ?? []).reverse();
+    },
+
     async setWebhook(url, opts = {}) {
       const c = connection(opts.credential);
       await http.post(
@@ -230,6 +325,26 @@ function recipient(to: string): string {
   const digits = to.replace(/[^\d]/g, "");
   if (!digits) throw new Error(`"${to}" is not a usable WhatsApp number`);
   return digits;
+}
+
+/**
+ * The full JID Evolution stores a chat under. A send takes bare digits, but
+ * the message table is keyed by `…@s.whatsapp.net` and matches it exactly.
+ */
+function jid(chat: string): string {
+  const to = recipient(chat);
+  return to.includes("@") ? to : `${to}@s.whatsapp.net`;
+}
+
+/** Evolution's largest sensible page; it has no ceiling of its own. */
+const MAX_PAGE = 100;
+
+/**
+ * A time filter as Evolution takes one. It ignores the filter unless both
+ * ends are given, so "since" needs an explicit "until now".
+ */
+function sinceFilter(since: Date) {
+  return { gte: since.toISOString(), lte: new Date().toISOString() };
 }
 
 /* ---------------------------------------------------------------- webhooks */
@@ -325,6 +440,40 @@ export function evolutionSecret(secret: string | (() => string | undefined)): We
 }
 
 /**
+ * One message as Evolution stores it — the `data` of a `messages.upsert`
+ * delivery, and a record from `findMessages` or a chat's `lastMessage`, which
+ * are the same row read back.
+ */
+const messageData = z
+  .object({
+    key: z
+      .object({
+        remoteJid: z.string().optional(),
+        fromMe: z.boolean().optional(),
+        id: z.string().optional(),
+        /** The member who wrote it, in a group. */
+        participant: z.string().optional(),
+        /**
+         * The other half of a privacy `@lid` pair. Evolution swaps the two
+         * when it can, so `remoteJid` is the phone-number JID and this is
+         * the `@lid`; when it cannot, `remoteJid` is the `@lid`.
+         */
+        remoteJidAlt: z.string().optional(),
+        /** In a group, the author's phone-number JID when `participant` is a `@lid`. */
+        participantAlt: z.string().optional(),
+      })
+      .passthrough()
+      .optional(),
+    pushName: z.string().nullish(),
+    messageType: z.string().optional(),
+    messageTimestamp: z.union([z.number(), z.string()]).optional(),
+    message: z.record(z.string(), z.unknown()).nullish(),
+    /** A stored record keeps a reply's context here, beside the message. */
+    contextInfo: z.record(z.string(), z.unknown()).nullish(),
+  })
+  .passthrough();
+
+/**
  * One delivery, narrowed to what a workflow reads. Loose everywhere and
  * `passthrough` at the top, because a schema that rejects answers 422 and the
  * same instance sends connection updates, receipts and our own outgoing
@@ -344,45 +493,22 @@ export const evolutionEvent = z
     /** `messages.upsert`, lower-case and dotted — not the name `setWebhook` takes. */
     event: z.string(),
     instance: z.string().optional(),
-    data: z
-      .object({
-        key: z
-          .object({
-            remoteJid: z.string().optional(),
-            fromMe: z.boolean().optional(),
-            id: z.string().optional(),
-            /** The member who wrote it, in a group. */
-            participant: z.string().optional(),
-            /**
-             * The other half of a privacy `@lid` pair. Evolution swaps the two
-             * when it can, so `remoteJid` is the phone-number JID and this is
-             * the `@lid`; when it cannot, `remoteJid` is the `@lid`.
-             */
-            remoteJidAlt: z.string().optional(),
-            /** In a group, the author's phone-number JID when `participant` is a `@lid`. */
-            participantAlt: z.string().optional(),
-          })
-          .passthrough()
-          .optional(),
-        pushName: z.string().nullish(),
-        messageType: z.string().optional(),
-        messageTimestamp: z.union([z.number(), z.string()]).optional(),
-        message: z.record(z.string(), z.unknown()).nullish(),
-      })
-      .passthrough()
-      .optional(),
+    data: messageData.optional(),
   })
   .passthrough()
   .transform(({ apikey: _dropped, ...rest }) => rest);
 
 export type EvolutionEvent = z.output<typeof evolutionEvent>;
 
-/** An inbound message, as a workflow wants to read one. */
+/** A message, as a workflow wants to read one. */
 export interface EvolutionMessage {
   id: string;
   /** Where to send a reply: the person, or the group it was said in. */
   chat: string;
-  /** The person's number, digits only, when WhatsApp disclosed it. */
+  /**
+   * The person's number, digits only, when WhatsApp disclosed it. Undefined
+   * for a message this account sent.
+   */
   from: string | undefined;
   /** Their WhatsApp display name. Chosen by them, so not an identity. */
   name: string | undefined;
@@ -395,6 +521,8 @@ export interface EvolutionMessage {
   replyTo: string | undefined;
   /** Seconds since the epoch, as WhatsApp stamped it. */
   timestamp: number | undefined;
+  /** Sent by this account. Always false from `evolutionMessage`, which skips those. */
+  outgoing: boolean;
 }
 
 /**
@@ -410,10 +538,24 @@ export function evolutionMessage(event: unknown): EvolutionMessage | undefined {
   if (!parsed.success) return undefined;
   const e = parsed.data;
   if (e.event.toLowerCase().replace(/_/g, ".") !== "messages.upsert") return undefined;
+  return toMessage(e.data, false);
+}
 
-  const key = e.data?.key;
-  if (!key?.id || !key.remoteJid || key.fromMe === true) return undefined;
+/**
+ * One stored or delivered message, or `undefined` for one that is not a chat
+ * message at all. `own` decides whether this account's messages count: a
+ * webhook must skip them, a history wants both sides of the conversation.
+ */
+function toMessage(data: unknown, own: boolean): EvolutionMessage | undefined {
+  const parsed = messageData.safeParse(data);
+  if (!parsed.success) return undefined;
+  const d = parsed.data;
+
+  const key = d.key;
+  if (!key?.id || !key.remoteJid) return undefined;
   if (key.remoteJid === "status@broadcast") return undefined;
+  const outgoing = key.fromMe === true;
+  if (outgoing && !own) return undefined;
 
   const isGroup = key.remoteJid.endsWith("@g.us");
   // A group's remoteJid is the group and the person is `participant`, which
@@ -422,12 +564,16 @@ export function evolutionMessage(event: unknown): EvolutionMessage | undefined {
   // whenever WhatsApp disclosed one, and a `@lid` only when it did not.
   const pick = (...jids: (string | undefined)[]) =>
     jids.find((j) => j?.endsWith("@s.whatsapp.net"));
-  const person = isGroup
-    ? pick(key.participant, key.participantAlt)
-    : pick(key.remoteJid, key.remoteJidAlt);
+  // Our own message in a DM is keyed by the *other* person's JID, so picking
+  // from it would name them as the author.
+  const person = outgoing
+    ? undefined
+    : isGroup
+      ? pick(key.participant, key.participantAlt)
+      : pick(key.remoteJid, key.remoteJidAlt);
 
-  const message = (e.data?.message ?? {}) as Record<string, any>;
-  const type = e.data?.messageType ?? Object.keys(message)[0] ?? "unknown";
+  const message = (d.message ?? {}) as Record<string, any>;
+  const type = d.messageType ?? Object.keys(message)[0] ?? "unknown";
   const inner = message[type] as Record<string, any> | undefined;
   // Evolution folds an `extendedTextMessage` into `conversation` before it
   // sends, so the second line is for an older server, not a second shape.
@@ -437,18 +583,23 @@ export function evolutionMessage(event: unknown): EvolutionMessage | undefined {
     inner?.caption ??
     inner?.text ??
     "";
-  const replyTo = inner?.contextInfo?.stanzaId ?? message.extendedTextMessage?.contextInfo?.stanzaId;
-  const ts = Number(e.data?.messageTimestamp);
+  const replyTo =
+    inner?.contextInfo?.stanzaId ??
+    message.extendedTextMessage?.contextInfo?.stanzaId ??
+    d.contextInfo?.stanzaId;
+  const ts = Number(d.messageTimestamp);
 
   return {
     id: key.id,
     chat: key.remoteJid,
     from: person?.split("@")[0],
-    name: e.data?.pushName ?? undefined,
+    // A stored message of ours carries our own name, or Evolution's "Você".
+    name: outgoing ? undefined : (d.pushName ?? undefined),
     isGroup,
     text: String(text),
     type,
     replyTo: typeof replyTo === "string" ? replyTo : undefined,
     timestamp: Number.isFinite(ts) && ts > 0 ? ts : undefined,
+    outgoing,
   };
 }

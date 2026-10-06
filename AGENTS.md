@@ -325,7 +325,8 @@ misses real traffic: the Contents notifier sends its Telegram with a bare
 installed at the very top of `src/index.ts`, before a module can make a
 request, and is never removed from a practising process. `classify` names the
 reads (every GET, GraphQL queries, Notion's query and search, Telegram `get*`,
-model calls, non-rotating token exchanges), and everything else is a write.
+Evolution's `chat/find*` and `whatsappNumbers`, model calls, non-rotating
+token exchanges), and everything else is a write.
 Teach it a new read-only POST there, and never flip the default. A
 `refresh_token` grant is held on purpose, because a provider that rotates
 refresh tokens would leave the laptop with the only live copy. SMTP and

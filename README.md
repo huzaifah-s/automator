@@ -417,6 +417,9 @@ access — and refuses the operations and data-table ones, as they refuse it.
 | `drafts` / `draft_reply` | Replies waiting for approval; a new one, or a revision |
 | `questions` / `ask` / `close_question` | Asking you something and acting on the answer |
 | `create_task` | A task in the Notion To Do database, through the `personal-assistant-create-task` workflow |
+| `lessons` / `outcomes` / `learn` | What you have taught it; drafts that ended and are not learned from yet; recording a lesson |
+| `brief` | An update to you — the morning and night digests |
+| `now` | Your local time, and whether a digest is due and already sent |
 
 **It cannot send anything.** `draft_reply` saves a `pending` row in `drafts`
 and that is all; there is no tool that sends or approves. It only drafts to a
@@ -451,6 +454,30 @@ Send sends once. A failed send is written on the card with Send still there.
 The webhook secret is derived from the bot token, so the credential is the
 only thing to set up: add it, set the chat id, press **Start** in the bot,
 and restart the server — webhooks register at boot.
+
+### The scheduled assistant
+
+A Claude Code routine runs the assistant every hour from 08:00 to 23:00
+Malaysia time. It clones this repository, connects to `/mcp/assistant`
+through the root `.mcp.json` (the token comes from the routine environment's
+`ASSISTANT_MCP_TOKEN`, and `run.aidi.vision` has to be in the environment's
+allowed domains), and follows [assistant/PLAYBOOK.md](assistant/PLAYBOOK.md) —
+so changing how it behaves is a commit to that file. It is given the
+assistant's tools and nothing else: no shell, no file edits.
+
+**It learns.** Every draft that ends — sent as written, skipped, or replaced
+after your comment — is listed by `outcomes` until the assistant has turned it
+into a lesson with `learn` (or decided there is none). Lessons are rows in
+`tables/personal-assistant/lessons.ts`, read at the start of every run, and
+yours to edit or retire on the Tables tab. Replying to a card you already
+sent or skipped records the reason, which is exactly what it learns from.
+
+**It starts early** when you comment on a draft, send the bot a note, or a
+chat marked `always` gets a message — if the routine has an API trigger and
+automator knows it: the variable `ASSISTANT_ROUTINE_FIRE_URL` and the secret
+`ASSISTANT_ROUTINE_TOKEN`, both shown once when the trigger is added. Without
+them the hourly schedule still does everything, a little later. At most one
+early start every two minutes.
 
 ## Checkpoints and resume
 

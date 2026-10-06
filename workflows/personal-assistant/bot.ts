@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   defineCredential,
   defineWorkflow,
+  optionalSecret,
   telegramSecretToken,
   webhook,
   type Ctx,
@@ -16,6 +17,7 @@ import {
   questionOutcome,
   webhookSecret,
 } from "./_bot.ts";
+import { fireAssistant } from "./_routine.ts";
 
 /**
  * Personal assistant — the Telegram bot's side of the conversation: what
@@ -26,6 +28,8 @@ import {
  *   Skip       closes it; nothing is sent.
  *   reply to a draft card    is a comment: the draft goes to `revise` with your
  *              words in `feedback`, and the assistant writes a new version.
+ *              On a draft already sent or skipped it is the reason, kept for
+ *              the assistant to learn from.
  *   option / reply to a question card    is the answer.
  *   any other message    is a note to the assistant, filed as an answered
  *              "question" so its next run reads it.
@@ -47,6 +51,8 @@ import {
 const bot = defineCredential("telegram", "maria");
 const whatsappAccount = defineCredential("evolution", "huzaifah-evolution-api");
 const telegramAccount = defineCredential("telegram_user", "huzaifah-telegram-user-account");
+/** Optional: without it, comments wait for the hourly run. See _routine.ts. */
+const routineToken = optionalSecret("ASSISTANT_ROUTINE_TOKEN", z.string().min(20), "");
 
 const update = z.looseObject({
   update_id: z.number().optional(),
@@ -239,17 +245,30 @@ async function onMessage(ctx: Ctx, m: NonNullable<Update["message"]>) {
   // Not about a card: a note for the assistant's next run. Filed as an
   // answered question so the one place it already looks is where it is.
   const { row } = ctx.table("questions").insert(
-    { question: "(a message from you)", answer: text, status: "answered", answered_at: Date.now() },
+    { kind: "note", question: "(a message from you)", answer: text, status: "answered", answered_at: Date.now() },
     { writtenBy: ctx.workflow },
   );
-  await api.reply(m.message_id, "Noted — I'll read this on my next run.");
-  return { note: row.id };
+  const fired = await fireAssistant(ctx, routineToken, "The user sent you a note. Read `questions` and act on it.");
+  await api.reply(
+    m.message_id,
+    fired === "fired" ? "Noted — on it now." : "Noted — I'll read this on my next run.",
+  );
+  return { note: row.id, fired };
 }
 
 /** Your reply to a draft card: what to change. */
 async function comment(ctx: Ctx, d: Row, text: string, messageId: number) {
   const api = botApi(ctx, bot);
   const drafts = ctx.table("drafts");
+  // After it ended, a reply is not a request to change it but a reason —
+  // "skipped: he already called me" — and the reason is what the assistant
+  // learns from. Kept on the draft, which is not reopened.
+  if (d.status === "sent" || d.status === "skipped") {
+    const feedback = d.feedback ? `${d.feedback}\n${text}` : text;
+    drafts.update(String(d.id), { feedback, learned: false }, { writtenBy: ctx.workflow });
+    await api.reply(messageId, "Noted — I'll learn from that.");
+    return { draft: d.id, outcome: "reason noted" };
+  }
   if (d.status !== "pending" && d.status !== "revise" && d.status !== "failed") {
     await api.reply(messageId, `That draft is already ${d.status}.`);
     return { draft: d.id, outcome: `already ${d.status}` };
@@ -259,7 +278,12 @@ async function comment(ctx: Ctx, d: Row, text: string, messageId: number) {
   const feedback = d.status === "revise" && d.feedback ? `${d.feedback}\n${text}` : text;
   const row = drafts.update(String(d.id), { status: "revise", feedback }, { writtenBy: ctx.workflow });
   if (d.card_id) await api.edit(String(d.card_id), draftOutcome(row, "revise"));
-  return { draft: d.id, outcome: "revise" };
+  const fired = await fireAssistant(
+    ctx,
+    routineToken,
+    "The user commented on a draft. Revise the drafts in `revise` (see `drafts`) and learn from the comment.",
+  );
+  return { draft: d.id, outcome: "revise", fired };
 }
 
 function answer(ctx: Ctx, q: Row, value: string): Row {

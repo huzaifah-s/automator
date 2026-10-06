@@ -209,7 +209,7 @@ export function draftOutcome(d: Row, outcome: "sent" | "skipped" | "revise" | "r
   const to = esc(String(d.chat_name));
   const head = {
     sent: `✅ <b>Sent to ${to}</b> · ${clock(Date.now())}`,
-    skipped: `⏭ <b>Skipped</b> — reply to ${to}`,
+    skipped: `⏭ <b>Skipped</b> — reply to ${to}\n<i>Reply to this message to say why, and I'll learn from it.</i>`,
     revise: `✏️ <b>Revising</b> — reply to ${to}\nYou said: “${esc(String(d.feedback ?? ""))}”`,
     replaced: `↪️ <b>Replaced</b> by a newer draft to ${to}`,
     failed: `⚠️ <b>Could not send to ${to}</b>: ${esc(String(d.error ?? "unknown error"))}`,

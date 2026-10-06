@@ -1,4 +1,4 @@
-import { datetime, defineTable, enumOf, text } from "../../src/core/define.ts";
+import { bool, datetime, defineTable, enumOf, text } from "../../src/core/define.ts";
 
 /**
  * Replies the assistant wrote and nobody has sent yet.
@@ -43,6 +43,11 @@ export default defineTable({
       nullable: true,
       label: "Card",
       help: "The Telegram message id of its approval card. Empty until the card is sent.",
+    }),
+    learned: bool({
+      default: false,
+      label: "Learned from",
+      help: "Set once the assistant has drawn its lesson from how this draft ended.",
     }),
   },
 

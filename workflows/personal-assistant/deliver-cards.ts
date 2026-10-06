@@ -1,5 +1,5 @@
 import { cron, defineCredential, defineWorkflow, type Row } from "../../src/core/define.ts";
-import { botApi, draftButtons, draftCard, draftOutcome, questionButtons, questionCard } from "./_bot.ts";
+import { botApi, draftButtons, draftCard, draftOutcome, esc, questionButtons, questionCard } from "./_bot.ts";
 
 /**
  * Personal assistant — posts a Telegram card for every draft and question the
@@ -39,9 +39,12 @@ export default defineWorkflow({
     const newDrafts = drafts
       .query({ where: [{ column: "card_id", op: "is null" }], limit: 20 })
       .filter((d) => d.status === "pending");
-    const newQuestions = questions
+    const unsent = questions
       .query({ where: [{ column: "card_id", op: "is null" }], limit: 20 })
       .filter((q) => q.status === "open");
+    // `kind` is NULL on rows from before it existed, which were all questions.
+    const updates = unsent.filter((q) => q.kind === "update");
+    const newQuestions = unsent.filter((q) => q.kind !== "update" && q.kind !== "note");
 
     let posted = 0;
     // Oldest first, so cards arrive in the order they were written.
@@ -66,6 +69,16 @@ export default defineWorkflow({
       posted++;
     }
 
-    return { drafts: newDrafts.length, questions: newQuestions.length, posted };
+    // The assistant's own updates to you — the digests. Plain messages: there
+    // is nothing to answer, so they are done once delivered.
+    for (const u of [...updates].reverse()) {
+      await ctx.step(`update ${u.id}`, async () => {
+        const cardId = await api.send(`🗒 ${esc(String(u.question))}`);
+        questions.update(String(u.id), { card_id: String(cardId), status: "done" }, { writtenBy: ctx.workflow });
+      });
+      posted++;
+    }
+
+    return { drafts: newDrafts.length, questions: newQuestions.length, updates: updates.length, posted };
   },
 });

@@ -260,6 +260,27 @@ sets it — the credential is the one thing to configure. The bot credential is
 declared in each workflow file, not in `_bot.ts`, so both are marked blocked
 without it.
 
+**The scheduled assistant has no shell.** The routine's `allowed_tools` is
+the `assistant` MCP server and nothing else, and the playbook gets the time
+from the `now` tool rather than `date`. Every message it reads is text a
+stranger chose, and an agent with Bash in a sandbox that holds its MCP token
+and can reach the network is one persuasive message away from sending that
+token somewhere. Do not add Bash "just for the date".
+
+**Feedback is never consumed and forgotten.** Drafts carry `learned`; a draft
+that ended stays in `outcomes` until `learn` names it. Anything new that
+carries the user's judgement — a new card action, a new kind of answer — needs
+the same: somewhere the routine reads it back until it has been turned into a
+lesson. The user asked for an assistant that keeps improving, and that is the
+mechanism.
+
+**The routine is started early at most every two minutes, never retried.**
+`_routine.ts`: the fire endpoint has no idempotency key, so a retry after a
+lost reply is a second session working the same drafts. The fire text names a
+reason, never message content — it becomes the opening of a session log kept
+on claude.ai. Missing URL or token means "not configured", not an error: the
+hourly schedule is the mechanism, the fire is a shortcut.
+
 **`create_task` returns `refused` for bad input instead of throwing.** A
 throw is a failed run and a failed run is an alert; a model picking a
 category that does not exist should be told, not page you. Real failures —

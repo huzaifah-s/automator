@@ -1,13 +1,16 @@
+import { z } from "zod";
 import {
   cron,
   defineCredential,
   defineWorkflow,
+  optionalSecret,
   type ChatLogEntry,
   type Ctx,
   type EvolutionMessage,
   type Row,
   type TelegramUserMessage,
 } from "../../src/core/define.ts";
+import { fireAssistant } from "./_routine.ts";
 
 /**
  * Personal assistant — copies new WhatsApp and Telegram messages into the
@@ -43,6 +46,8 @@ const TZ = "Asia/Kuala_Lumpur";
 // shown as blocked there instead of failing every two minutes.
 const whatsappAccount = defineCredential("evolution", "huzaifah-evolution-api");
 const telegramAccount = defineCredential("telegram_user", "huzaifah-telegram-user-account");
+/** Optional: without it, an `always` chat waits for the hourly run like any other. */
+const routineToken = optionalSecret("ASSISTANT_ROUTINE_TOKEN", z.string().min(20), "");
 
 /** Telegram's own notifications account, which sends login codes. */
 const TELEGRAM_SERVICE = 777000;
@@ -98,7 +103,14 @@ export default defineWorkflow({
 
     const whatsapp = await ctx.step("whatsapp", () => syncWhatsApp(ctx, book));
     const telegram = await ctx.step("telegram", () => syncTelegram(ctx, book));
-    return { whatsapp, telegram };
+
+    // Somebody whose chat is `always` wrote: start the assistant now rather
+    // than at the top of the hour. The count, never who — see _routine.ts.
+    const urgent = whatsapp.urgent + telegram.urgent;
+    const fired = urgent
+      ? await fireAssistant(ctx, routineToken, `${urgent} new message(s) in chats marked always. Start with \`waiting\`.`)
+      : undefined;
+    return { whatsapp, telegram, ...(fired ? { fired } : {}) };
   },
 });
 
@@ -124,6 +136,8 @@ interface Synced {
   messages: number;
   /** Chats added to `people`. */
   newChats: number;
+  /** Chats marked `always` with a new message from somebody else. */
+  urgent: number;
   /** Chats with something new that were left for the next run. */
   deferred?: number;
 }
@@ -146,6 +160,7 @@ async function syncWhatsApp(ctx: Ctx, people: People): Promise<Synced> {
   let messages = 0;
   let read = 0;
   let newChats = 0;
+  let urgent = 0;
 
   for (const chat of chats) {
     const key = `whatsapp:${chat.chat}`;
@@ -173,13 +188,15 @@ async function syncWhatsApp(ctx: Ctx, people: People): Promise<Synced> {
       })
     ) newChats++;
     read++;
-    messages += ctx.chatLog.record(list.map((m) => fromWhatsApp(m, chat.name)));
+    const added = ctx.chatLog.record(list.map((m) => fromWhatsApp(m, chat.name)));
+    messages += added;
+    if (added > 0 && p === "always" && list.some((m) => !m.outgoing)) urgent++;
   }
 
   // Only once everything is recorded: a failure above leaves the cursor
   // where it was, and the next run reads the same window again.
   await ctx.state.set("wa:since", startedAt);
-  return { chats: read, messages, newChats };
+  return { chats: read, messages, newChats, urgent };
 }
 
 function fromWhatsApp(m: EvolutionMessage, chatName: string | undefined): ChatLogEntry {
@@ -221,6 +238,7 @@ async function syncTelegram(ctx: Ctx, people: People): Promise<Synced> {
   let calls = 0;
   let stopped = false;
   let newChats = 0;
+  let urgent = 0;
 
   for (const chat of chats) {
     if (chat.id === TELEGRAM_SERVICE || chat.id === me) continue;
@@ -284,12 +302,14 @@ async function syncTelegram(ctx: Ctx, people: People): Promise<Synced> {
         })
       ) newChats++;
       read++;
-      messages += ctx.chatLog.record(said.map((m) => fromTelegram(m, chat.type !== "user")));
+      const added = ctx.chatLog.record(said.map((m) => fromTelegram(m, chat.type !== "user")));
+      messages += added;
+      if (added > 0 && p === "always" && said.some((m) => !m.outgoing)) urgent++;
     }
     if (last !== undefined) await ctx.state.set(`tg:${chat.id}`, last);
   }
 
-  return { chats: read, messages, newChats, deferred };
+  return { chats: read, messages, newChats, deferred, urgent };
 }
 
 function fromTelegram(m: TelegramUserMessage, isGroup: boolean): ChatLogEntry {

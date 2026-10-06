@@ -10,10 +10,15 @@ import { datetime, defineTable, enumOf, json, text } from "../../src/core/define
 export default defineTable({
   name: "questions",
   description:
-    "Questions the assistant asked you. open: not answered yet. answered: you replied and the " +
-    "assistant has not acted on it yet. done: acted on.",
+    "The conversation between you and the assistant outside of drafts: its questions (open → " +
+    "answered → done), your notes to it (answered until acted on), and its updates to you.",
 
   columns: {
+    kind: enumOf(["question", "note", "update"], {
+      default: "question",
+      label: "Kind",
+      help: "question: the assistant asks you. note: you told it something. update: it tells you (the morning and night digests).",
+    }),
     question: text({ label: "Question" }),
     options: json({
       nullable: true,

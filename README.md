@@ -212,7 +212,7 @@ an ordinary account instead.
 | What it is | [Evolution API](https://github.com/EvolutionAPI/evolution-api), a WhatsApp gateway you host | Your Telegram account, over MTProto |
 | Credential | **Evolution API (WhatsApp)** — server URL, key, instance | **Telegram (user account)** — made by `bun run telegram-login` |
 | Sends | `text(to, body)`, `media(to, {…})` | `send(peer, text)`, `sendMedia(peer, {…})` |
-| Reads | `chats()`, `messages(chat)`, `exists(numbers)`, `state()` | `chats()`, `history(peer)`, `resolve(peer)`, `me()` |
+| Reads | `chats()`, `messages(chat)`, `contactName(jid)`, `exists(numbers)`, `state()` | `chats()`, `history(peer)`, `resolve(peer)`, `me()` |
 | Inbound | a webhook that registers itself | `poll()` over `history()` |
 
 Both pass `{ credential }` to speak as a credential other than the primary one,
@@ -296,7 +296,10 @@ export default defineWorkflow({
   `unread` is Evolution's count and in practice stays 0; whether
   `lastMessage.outgoing` is false — they spoke last — is the signal that holds.
   A person's chat is named from their last message, so one where you spoke
-  last can come back without a `name`.
+  last can come back without a `name`; `contactName(jid)` looks them up in
+  Evolution's contacts. Evolution stores the phone number where WhatsApp gave
+  no name, so `contactName` and `realName()` treat a number as no name — some
+  people simply have none, and a `@lid` chat has no visible number either.
 - **Evolution 2.4 needs license activation**, and answers `503
   LICENSE_REQUIRED` to everything until it has it. 2.3.7 does not.
 

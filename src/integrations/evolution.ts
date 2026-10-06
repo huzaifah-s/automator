@@ -132,6 +132,13 @@ export interface EvolutionClient {
     opts?: EvolutionCallOptions & { limit?: number; since?: Date },
   ): Promise<EvolutionMessage[]>;
   /**
+   * A person's WhatsApp name, from Evolution's contact list — the one source
+   * that has it for somebody you wrote to last, whose own messages are not in
+   * the window. `undefined` when Evolution has no name: it stores the phone
+   * number in place of one, which is not returned as a name. Read-only.
+   */
+  contactName(jid: string, opts?: EvolutionCallOptions): Promise<string | undefined>;
+  /**
    * Points the instance's webhook at `url`. An instance has exactly one, so
    * this replaces whatever was there. `headers` are sent on every delivery,
    * which is how a delivery proves where it came from — Evolution signs
@@ -287,6 +294,17 @@ export function createEvolution(http: HttpClient): EvolutionClient {
       return records.flatMap((r) => toMessage(r, true) ?? []).reverse();
     },
 
+    async contactName(chat, opts = {}) {
+      const c = connection(opts.credential);
+      const res = await http.post<{ pushName?: string | null }[]>(
+        endpoint(c, "chat/findContacts"),
+        { where: { remoteJid: jid(chat) } },
+        { headers: headers(c), private: opts.private },
+      );
+      const name = (Array.isArray(res) ? res : [])[0]?.pushName?.trim();
+      return realName(name);
+    },
+
     async setWebhook(url, opts = {}) {
       const c = connection(opts.credential);
       await http.post(
@@ -339,6 +357,17 @@ function recipient(to: string): string {
 function jid(chat: string): string {
   const to = recipient(chat);
   return to.includes("@") ? to : `${to}@s.whatsapp.net`;
+}
+
+/**
+ * A display name, or `undefined` for one that is really a phone number.
+ * Evolution fills `pushName` with the number when WhatsApp gave no name, and a
+ * number shown where a name should be is what this exists to avoid.
+ */
+export function realName(name: string | null | undefined): string | undefined {
+  const n = name?.trim();
+  if (!n || /^\+?[\d\s-]+$/.test(n)) return undefined;
+  return n;
 }
 
 /** Evolution's largest sensible page; it has no ceiling of its own. */

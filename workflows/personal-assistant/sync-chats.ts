@@ -4,6 +4,7 @@ import {
   defineCredential,
   defineWorkflow,
   optionalSecret,
+  realName,
   type ChatLogEntry,
   type Ctx,
   type EvolutionMessage,
@@ -64,6 +65,27 @@ const FIRST_SIGHT = 20;
  */
 const NOISE = new Set(["protocolMessage"]);
 
+/**
+ * People rows still named by a phone number that get a contact lookup per
+ * run, and how long before the same one is tried again.
+ */
+const NAME_REPAIRS = 10;
+
+/**
+ * What a person is called when WhatsApp gave no name at all — some people set
+ * none, and Evolution has no address book. A phone number is shown as one;
+ * a `@lid` is a privacy id, not a number, so it says the number is hidden
+ * rather than showing digits that would be mistaken for one.
+ */
+const HIDDEN = "Hidden number (WhatsApp)";
+function placeholder(jid: string): string {
+  const [id, server] = jid.split("@");
+  return server === "lid" ? HIDDEN : `+${id}`;
+}
+/** A people name that is only a stand-in, and may be replaced by a real one. */
+const isPlaceholder = (name: unknown) => name === HIDDEN || !realName(String(name ?? ""));
+const NAME_RETRY_SECONDS = 86_400;
+
 /** Chats looked at per platform per run, newest first. */
 const CHATS = 100;
 /**
@@ -94,10 +116,30 @@ export default defineWorkflow({
       // after the cursors had moved, so the chat would not come round again
       // until it next had something new.
       remember(chat) {
-        if (people.has(chat.chat_key)) return false;
+        const known = people.get(chat.chat_key);
+        if (known) {
+          // A row first added under a phone number takes the real name once
+          // one turns up. A name somebody typed in is never overwritten —
+          // only one that is still a number.
+          if (isPlaceholder(known.name) && realName(chat.name)) {
+            people.set(
+              chat.chat_key,
+              ctx.table("people").update(String(known.id), { name: chat.name }, { writtenBy: ctx.workflow }),
+            );
+          }
+          return false;
+        }
         const { row, created } = ctx.table("people").insert(chat, { writtenBy: ctx.workflow });
         people.set(chat.chat_key, row);
         return created;
+      },
+      unnamed: () =>
+        [...people.values()].filter((p) => p.channel === "whatsapp" && p.kind === "person" && isPlaceholder(p.name)),
+      relabel(row, name) {
+        people.set(
+          String(row.chat_key),
+          ctx.table("people").update(String(row.id), { name }, { writtenBy: ctx.workflow }),
+        );
       },
     };
 
@@ -125,8 +167,15 @@ type NewChat = {
 /** What a sync step reads and writes of the `people` table. */
 interface People {
   priority(key: string): Priority;
-  /** Adds a chat not in the table yet. True when it was new. */
+  /**
+   * Adds a chat not in the table yet — true when it was new — or gives a row
+   * still named by its number the real name.
+   */
   remember(chat: NewChat): boolean;
+  /** WhatsApp people rows whose name is still a stand-in. */
+  unnamed(): Row[];
+  /** Replaces one stand-in name with another, e.g. raw digits with +digits. */
+  relabel(row: Row, name: string): void;
 }
 
 /** What a sync step returns — counts only, because it is the run page's copy. */
@@ -138,6 +187,8 @@ interface Synced {
   newChats: number;
   /** Chats marked `always` with a new message from somebody else. */
   urgent: number;
+  /** People rows that had a phone number for a name and now have a name. */
+  renamed?: number;
   /** Chats with something new that were left for the next run. */
   deferred?: number;
 }
@@ -177,10 +228,19 @@ async function syncWhatsApp(ctx: Ctx, people: People): Promise<Synced> {
       })
     ).filter((m) => !NOISE.has(m.type));
     if (list.length === 0) continue;
+    // The chat's own name; else the name on any message of theirs, not just
+    // the newest — the newest is often yours; else their contact entry,
+    // which is the only source when they have not written in the window.
+    const name =
+      realName(chat.name) ??
+      (chat.isGroup ? undefined : realName([...list].reverse().find((m) => !m.outgoing)?.name)) ??
+      (chat.isGroup || broadcast
+        ? undefined
+        : await ctx.evolution.contactName(chat.chat, { private: true, credential: whatsappAccount }));
     // Before the cursor moves — see syncTelegram.
     if (
       people.remember({
-        name: chat.name ?? chat.chat.split("@")[0]!,
+        name: name ?? placeholder(chat.chat),
         channel: "whatsapp",
         kind: broadcast ? "channel" : chat.isGroup ? "group" : "person",
         priority: null,
@@ -193,10 +253,41 @@ async function syncWhatsApp(ctx: Ctx, people: People): Promise<Synced> {
     if (added > 0 && p === "always" && list.some((m) => !m.outgoing)) urgent++;
   }
 
+  // Rows added under a phone number, a few per run, each tried at most daily:
+  // the name may only have reached Evolution's contacts since.
+  const unnamedBefore = people.unnamed().length;
+  for (const row of people.unnamed().slice(0, NAME_REPAIRS)) {
+    const jid = String(row.chat_key).slice("whatsapp:".length);
+    const tried = `wa:name-tried:${jid}`;
+    if (await ctx.state.get(tried)) continue;
+    await ctx.state.set(tried, true, { ttlSeconds: NAME_RETRY_SECONDS });
+    // Their contact entry first; then their own messages, which carry the
+    // name they write under even when the contact list holds a number. Some
+    // have none anywhere — no profile name, or a hidden-number @lid — and
+    // keep the stand-in until somebody names them in `people`.
+    const found =
+      (await ctx.evolution.contactName(jid, { private: true, credential: whatsappAccount })) ??
+      realName(
+        // 100, not 20: yours share the page — Evolution ignores a
+        // `fromMe: false` filter — so twenty can be all yours.
+        (await ctx.evolution.messages(jid, { limit: 100, private: true, credential: whatsappAccount }))
+          .reverse()
+          .find((m) => !m.outgoing && realName(m.name))?.name,
+      );
+    if (found) {
+      people.remember({ name: found, channel: "whatsapp", kind: "person", priority: null, chat_key: String(row.chat_key) });
+    } else if (row.name !== placeholder(jid)) {
+      // No name anywhere: at least show the stand-in readably — rows from
+      // before this had bare digits, and a @lid's digits are not a number.
+      people.relabel(row, placeholder(jid));
+    }
+  }
+  const renamed = unnamedBefore - people.unnamed().length;
+
   // Only once everything is recorded: a failure above leaves the cursor
   // where it was, and the next run reads the same window again.
   await ctx.state.set("wa:since", startedAt);
-  return { chats: read, messages, newChats, urgent };
+  return { chats: read, messages, newChats, urgent, renamed };
 }
 
 function fromWhatsApp(m: EvolutionMessage, chatName: string | undefined): ChatLogEntry {

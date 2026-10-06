@@ -375,14 +375,19 @@ function tools(registry: Registry): Tool[] {
       name: "update_person",
       scope: "write",
       description:
-        "Sets a chat's priority (from the user's answer — not your own guess) and/or replaces its " +
-        "notes. Keep notes short: who they are, what is pending, what was promised.",
+        "Sets a chat's priority (from the user's answer — not your own guess), replaces its notes, " +
+        "or names it when the user told you who it is. Keep notes short: who they are, what is " +
+        "pending, what was promised.",
       inputSchema: {
         type: "object",
         properties: {
           ...CHAT_ARG,
           priority: { type: "string", enum: [...PRIORITIES] },
           notes: { type: "string", description: "Replaces the notes. Max 1000 characters." },
+          name: {
+            type: "string",
+            description: "Who they are, when the user told you — for a chat named only by a number.",
+          },
         },
         required: ["chat"],
         additionalProperties: false,
@@ -402,7 +407,12 @@ function tools(registry: Registry): Tool[] {
           if (notes.length > 1000) throw new Error("notes are at most 1000 characters — keep them short");
           patch.notes = notes || null;
         }
-        if (Object.keys(patch).length === 0) throw new Error("Nothing to change — pass priority and/or notes");
+        const name = str(args, "name");
+        if (name !== undefined) {
+          if (name.length > 80) throw new Error("name is at most 80 characters");
+          patch.name = name;
+        }
+        if (Object.keys(patch).length === 0) throw new Error("Nothing to change — pass priority, notes or name");
         table("people").update(String(person.id), patch, { writtenBy: identity.label });
         return `Updated ${person.name}: ${Object.keys(patch).join(", ")}.`;
       },

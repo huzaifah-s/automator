@@ -251,6 +251,7 @@ export {
   evolutionMessage,
   evolutionRegistration,
   evolutionSecret,
+  realName,
 } from "../integrations/evolution.ts";
 export type {
   EvolutionChat,

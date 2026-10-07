@@ -60,13 +60,13 @@ type Button = { text: string; callback_data: string } | { text: string; url: str
 
 /** Only `http` is needed, so a webhook's `register` can use it as well as a run. */
 export function botApi(ctx: Pick<Ctx, "http"> & Partial<Pick<Ctx, "log">>, bot: Partial<BotCredential>) {
-  const call = async <T>(method: string, body: Record<string, unknown>, retries = 2): Promise<T> => {
+  const call = async <T>(method: string, body: Record<string, unknown>, retries = 2, privateRequest = false): Promise<T> => {
     if (!bot.token) throw new Error("The telegram / maria credential is not connected");
     try {
       const res = await ctx.http.post<{ ok: boolean; result: T; description?: string }>(
         `https://api.telegram.org/bot${bot.token}/${method}`,
         body,
-        { retries },
+        { retries, privateRequest },
       );
       return res.result;
     } catch (err) {
@@ -105,6 +105,36 @@ export function botApi(ctx: Pick<Ctx, "http"> & Partial<Pick<Ctx, "log">>, bot: 
         0,
       );
       return m.message_id;
+    },
+
+    /**
+     * Live Maria's answer, threaded under your message. Like `send`, but the
+     * text is kept off the run page (`privateRequest`): it can quote a chat,
+     * and the chat log is the only place messages live.
+     */
+    async liveReply(replyTo: number, html: string): Promise<number> {
+      const m = await call<{ message_id: number }>(
+        "sendMessage",
+        {
+          chat_id: owner(bot),
+          text: html,
+          parse_mode: "HTML",
+          link_preview_options: { is_disabled: true },
+          reply_parameters: { message_id: replyTo, allow_sending_without_reply: true },
+        },
+        0,
+        true,
+      );
+      return m.message_id;
+    },
+
+    /** "typing…" under the bot's name for about five seconds. Best effort. */
+    async typing(): Promise<void> {
+      try {
+        await call("sendChatAction", { chat_id: owner(bot), action: "typing" }, 0);
+      } catch {
+        /* a missing typing indicator is not worth a failed answer */
+      }
     },
 
     /** Rewrites a card in place — its outcome, and no buttons unless given. */

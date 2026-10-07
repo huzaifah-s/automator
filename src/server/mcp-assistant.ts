@@ -81,7 +81,7 @@ import { chatMessage, chatThread, waitingChats, type ChatChannel, type StoredMes
 import { table, type Row } from "../core/tables.ts";
 import { canonicalKey, linkChats } from "../core/chat-link.ts";
 import { scorecard, scorecardText } from "../core/scorecard.ts";
-import { runWorkflow } from "../core/runner.ts";
+import { currentRegistry, runWorkflow } from "../core/runner.ts";
 import { store } from "../core/db.ts";
 import {
   identify,
@@ -2319,6 +2319,64 @@ interface Rpc {
   params?: Record<string, unknown>;
 }
 
+/**
+ * Runs one tool the way the endpoint does: a write needs a full-scope
+ * identity, and a refusal is logged by tool name — never its arguments,
+ * which are somebody's messages — and handed back as an error result rather
+ * than thrown. The endpoint's `tools/call` and live Maria
+ * (workflows/personal-assistant/_live.ts) both come through here, so the two
+ * cannot drift into different rules.
+ */
+async function callTool(
+  tool: Tool,
+  args: Record<string, unknown>,
+  identity: McpIdentity,
+): Promise<{ text: string; isError: boolean }> {
+  if (tool.scope === "write" && identity.scope !== "full") {
+    return { text: `"${tool.name}" needs a full-scope token. This one ("${identity.label}") is read-only.`, isError: true };
+  }
+  try {
+    return { text: await tool.run(args, identity), isError: false };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.warn(`MCP assistant tool ${tool.name} refused: ${message.slice(0, 200)}`);
+    return { text: message, isError: true };
+  }
+}
+
+/** One tool as a model sees it. */
+export interface AssistantToolSpec {
+  name: string;
+  description: string;
+  inputSchema: object;
+}
+
+/**
+ * The assistant's tools in-process, for live Maria: the same functions the
+ * endpoint runs, with the same checks, minus `exclude`. Built against the
+ * runner's registry, the one the endpoint was given at boot — so a task
+ * created here starts the same workflow, and no token goes over the wire.
+ * `label` is who the rows it writes say wrote them.
+ */
+export function assistantTools(opts: { label: string; exclude?: readonly string[] }): {
+  specs: AssistantToolSpec[];
+  call(name: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }>;
+} {
+  const registry = currentRegistry();
+  if (!registry) throw new Error("No workflow registry yet — the assistant's tools need a booted server");
+  const identity: McpIdentity = { scope: "full", label: opts.label, tables: null, audiences: ["assistant"] };
+  const all = tools(registry).filter((t) => !opts.exclude?.includes(t.name));
+  const byName = new Map(all.map((t) => [t.name, t]));
+  return {
+    specs: all.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
+    async call(name, args) {
+      const tool = byName.get(name);
+      if (!tool) return { text: `Unknown tool "${name}"`, isError: true };
+      return callTool(tool, args, identity);
+    },
+  };
+}
+
 const rpcError = (id: Rpc["id"], code: number, message: string) => ({
   jsonrpc: "2.0" as const,
   id: id ?? null,
@@ -2416,19 +2474,9 @@ export function createAssistantMcpRouter(registry: Registry): Hono<{ Variables: 
         const name = String(params?.["name"] ?? "");
         const tool = byName.get(name);
         if (!tool) return rpcError(id, -32602, `Unknown tool "${name}"`);
-        if (tool.scope === "write" && identity.scope !== "full") {
-          return result(`"${name}" needs a full-scope token. This one ("${identity.label}") is read-only.`, true);
-        }
         const args = (params?.["arguments"] as Record<string, unknown> | undefined) ?? {};
-        try {
-          return result(await tool.run(args, identity));
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          // The tool name and the refusal, never the arguments: those are
-          // somebody's messages, and this log line is stdout.
-          log.warn(`MCP assistant tool ${name} refused: ${message.slice(0, 200)}`);
-          return result(message, true);
-        }
+        const out = await callTool(tool, args, identity);
+        return result(out.text, out.isError);
       }
       default:
         return isNotification ? null : rpcError(id, -32601, `Unknown method "${method}"`);

@@ -30,6 +30,7 @@ import {
   BRAIN_TITLE,
   webhookSecret,
 } from "./_bot.ts";
+import { answerLive, type LiveResult } from "./_live.ts";
 import { fireAssistant } from "./_routine.ts";
 
 /**
@@ -66,6 +67,13 @@ import { fireAssistant } from "./_routine.ts";
  *              it wrong).
  *   any other message    is a note to the assistant, filed as an answered
  *              "question" so its next run reads it.
+ *
+ * **Live Maria answers notes and draft comments in seconds** (_live.ts):
+ * the note is filed as above, then answered inside this run with the
+ * assistant's own tools, threaded under your message, and closed so the
+ * hourly run does not answer it twice. With no API key, past the day's cap,
+ * or when she cannot finish in time, the routine is started instead, as it
+ * always was, and the reply says which.
  *
  * **Every message gets a reply.** A card edited a screen above is not one:
  * what you see after swiping to reply is whether anything heard you.
@@ -140,7 +148,8 @@ export default defineWorkflow({
   }),
   onOverlap: "queue",
   retries: 0,
-  timeoutMs: 60_000,
+  // Live Maria answers inside the run, in up to a minute.
+  timeoutMs: 120_000,
 
   async run(ctx) {
     const u = ctx.input as Update;
@@ -399,17 +408,41 @@ async function note(ctx: Ctx, text: string, messageId: number, about: Row | null
     },
     { writtenBy: ctx.workflow },
   );
+  const api = botApi(ctx, bot);
+  const live = await answerLive(ctx, api, {
+    messageId,
+    note: row,
+    task:
+      `His note (id ${row.id}): ${quoted}\n> ${text.replace(/\n/g, "\n> ")}` +
+      (about?.chat_key ? `\nIt is about chat ${about.chat_key}.` : "") +
+      (about?.task_id ? `\nIt is about To Do task ${about.task_id}.` : ""),
+  });
+  if (live.answered) return { note: row.id, about: about?.id ?? null, live };
+
   const fired = await fireAssistant(
     ctx,
     routineToken(),
     "The user sent you a note. Read `questions`, act on it, and answer him with `brief` (reply_to the note).",
   );
-  await botApi(ctx, bot).reply(messageId, heard(fired));
-  return { note: row.id, about: about?.id ?? null, fired };
+  await api.reply(messageId, heard(fired, live));
+  return { note: row.id, about: about?.id ?? null, live, fired };
+}
+
+/** Why live Maria did not answer, in a few words, when it is worth saying. */
+function notLive(live: LiveResult | null): string {
+  if (!live || live.answered) return "";
+  if (live.why === "cap") return " (I've used up today's instant answers.)";
+  if (live.why === "slow") return " (That needs more than a quick answer.)";
+  if (live.why === "failed" || live.why === "refused" || live.why === "empty") return " (I couldn't answer instantly.)";
+  return "";
 }
 
 /** What you are told after a message: whether the assistant is already on it. */
-function heard(fired: Awaited<ReturnType<typeof fireAssistant>>): string {
+function heard(fired: Awaited<ReturnType<typeof fireAssistant>>, live: LiveResult | null = null): string {
+  return heardBase(fired) + notLive(live);
+}
+
+function heardBase(fired: Awaited<ReturnType<typeof fireAssistant>>): string {
   if (fired === "fired") return "Got it — on it now.";
   // Owed, not dropped: deliver-cards fires it once the cooldown is over.
   if (fired === "cooling down") return "Got it — I'll start on it within a couple of minutes.";
@@ -438,6 +471,16 @@ async function comment(ctx: Ctx, d: Row, text: string, messageId: number) {
   const feedback = d.status === "revise" && d.feedback ? `${d.feedback}\n${text}` : text;
   const row = drafts.update(String(d.id), { status: "revise", feedback }, { writtenBy: ctx.workflow });
   if (d.card_id) await api.edit(String(d.card_id), draftOutcome(row, "revise"));
+  const live = await answerLive(ctx, api, {
+    messageId,
+    note: null,
+    writes: true,
+    task:
+      `He replied to the card of draft ${d.id} (for chat ${d.chat_key}), asking for a change:\n> ${feedback.replace(/\n/g, "\n> ")}\n` +
+      `Revise it now: thread the chat, then draft_reply with replaces "${d.id}". Its new card reaches him within a minute. ` +
+      "Answer him in one line saying what you changed. (Learning from the comment is the hourly run's — it sees the replaced draft.)",
+  });
+  if (live.answered) return { draft: d.id, outcome: "revise", live };
   const fired = await fireAssistant(
     ctx,
     routineToken(),
@@ -445,11 +488,11 @@ async function comment(ctx: Ctx, d: Row, text: string, messageId: number) {
   );
   await api.reply(
     messageId,
-    fired === "fired" || fired === "cooling down"
+    (fired === "fired" || fired === "cooling down"
       ? "Got it — a new version is coming."
-      : "Got it — I'll send a new version on my next run (hourly, 08:00–23:00).",
+      : "Got it — I'll send a new version on my next run (hourly, 08:00–23:00).") + notLive(live),
   );
-  return { draft: d.id, outcome: "revise", fired };
+  return { draft: d.id, outcome: "revise", live, fired };
 }
 
 /**

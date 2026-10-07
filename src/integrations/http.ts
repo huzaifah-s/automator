@@ -16,6 +16,13 @@ export interface HttpOptions {
    * talking, and it is what a failure is debugged from.
    */
   private?: boolean;
+  /**
+   * Keep the *request* body off the run page as well, recorded as its size —
+   * for a send whose body is somebody's words, like the assistant's answer
+   * on Telegram, which can quote a chat. Errors are still recorded with
+   * their response; the request stays withheld.
+   */
+  privateRequest?: boolean;
 }
 
 /** One page, as `next` sees it. */
@@ -172,7 +179,7 @@ export function createHttp(runSignal: AbortSignal, record?: CallRecorder): HttpC
             url: target,
             status: res.status,
             durationMs: Date.now() - startedAt,
-            request: body,
+            request: opts.privateRequest ? withheld(body) : body,
             response: text,
           });
           const err = new HttpError(res.status, target, text);
@@ -190,7 +197,7 @@ export function createHttp(runSignal: AbortSignal, record?: CallRecorder): HttpC
           url: target,
           status: res.status,
           durationMs: Date.now() - startedAt,
-          request: body,
+          request: opts.privateRequest ? withheld(body) : body,
           response: opts.private ? withheld(parsed) : parsed,
         });
         return { body: parsed, status: res.status, headers: res.headers, url: res.url || target };
@@ -204,7 +211,7 @@ export function createHttp(runSignal: AbortSignal, record?: CallRecorder): HttpC
           url: target,
           status: null,
           durationMs: Date.now() - startedAt,
-          request: body,
+          request: opts.privateRequest ? withheld(body) : body,
           response: lastError.message,
         });
         if (attempt >= maxAttempts) throw lastError;

@@ -312,6 +312,23 @@ routine connects through. A change to a tool's name or meaning here usually
 needs a matching change to the playbook there — the tools and the playbook
 are one contract kept in two places.
 
+**Live Maria calls the endpoint's tools in-process, never a copy of them.**
+`workflows/personal-assistant/_live.ts` answers his notes and draft comments
+inside `personal-assistant-bot`'s run with a short Claude tool loop. Its
+tools come from `assistantTools()` in `mcp-assistant.ts`, which runs each one
+through `callTool` — the same function the endpoint's `tools/call` uses — so
+a refusal, a scope check or a new rule applies to both or to neither. Do not
+give it a tool of its own; add it to the endpoint. It has no send tool and
+no shell, for the same reasons as the routine. What it stores is counts:
+the run's result, its log lines (tool names only) and its Telegram answer,
+sent with `privateRequest` so the run page records the body's size, not the
+words. A day's messages and tokens are capped in its `ctx.state`
+(`ASSISTANT_LIVE_MAX_MESSAGES`, `ASSISTANT_LIVE_MAX_TOKENS`); past the cap,
+with no `ANTHROPIC_API_KEY`, or on any failure it sends nothing and the bot
+starts the routine as before. A note it answered is closed, which is what
+stops the hourly run answering it twice — keep that if you change how it
+replies.
+
 **The scheduled assistant has no shell.** The routine's `allowed_tools` is
 the `assistant` MCP server and nothing else, and the playbook gets the time
 from the `now` tool rather than `date`. Every message it reads is text a

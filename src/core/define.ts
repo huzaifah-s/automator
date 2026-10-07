@@ -288,6 +288,9 @@ export type { LinkResult } from "./chat-link.ts";
 /** Whether the assistant is getting better, in numbers. See src/core/scorecard.ts. */
 export { SCORECARD_CRON, scorecard, scorecardMarks, scorecardPeriod, scorecardSlots } from "./scorecard.ts";
 export type { Area, CountLine, Headline, Scorecard, ScorecardSpan, ScorecardWhich } from "./scorecard.ts";
+/** The assistant's MCP tools, called in-process by live Maria. See src/server/mcp-assistant.ts. */
+export { assistantTools } from "../server/mcp-assistant.ts";
+export type { AssistantToolSpec } from "../server/mcp-assistant.ts";
 export type { OAuthConfig, OAuthCredential, TokenStatus } from "../integrations/oauth.ts";
 export type {
   HttpOptions,

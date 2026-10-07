@@ -25,8 +25,8 @@ import { rich, taskLinks, type botApi } from "./_bot.ts";
  * server — /mcp/assistant on 127.0.0.1, with a token this process minted in
  * memory (`liveConnection`). That token is limited to the assistant's tools
  * minus the hourly run's own — `digest`, `log_run`, `outcomes` (learning
- * from drafts is the sweep's), `ask` (she is talking to you already) and
- * `brief` (her answer *is* the reply) — and the endpoint enforces the limit,
+ * from drafts is the sweep's), `scorecard` (so is its lesson), `ask` (she
+ * is talking to you already) and `brief` (her answer *is* the reply) — and the endpoint enforces the limit,
  * not just the CLI. Same functions, same refusals, rows written by
  * "live Maria".
  *
@@ -57,7 +57,7 @@ import { rich, taskLinks, type botApi } from "./_bot.ts";
 const SONNET = "claude-sonnet-5-5";
 const OPUS = "claude-opus-5-5";
 const LABEL = "live Maria";
-const EXCLUDE = ["digest", "log_run", "outcomes", "ask", "brief"] as const;
+const EXCLUDE = ["digest", "log_run", "outcomes", "ask", "brief", "scorecard"] as const;
 const TZ = process.env.ASSISTANT_TZ ?? "Asia/Kuala_Lumpur";
 /** The CLI, installed in the image (Dockerfile). */
 const CLAUDE = process.env.CLAUDE_CODE_BIN ?? "claude";
@@ -84,7 +84,7 @@ Rules that always apply:
 7. Notion is always English: task titles and task notes. A chat draft matches that chat's language and tone.
 8. Whenever you mention a chat, say which app (WhatsApp or Telegram) and whether it is a group.
 9. You may change or trash only tasks you created, and you never mark a task done.
-10. Do what he asks with your tools, then say it is done. If it needs more than a minute of work, do the first part and say the rest comes on the next run.
+10. Do what he asks and nothing else — he is waiting. The hourly run's housekeeping (the scorecard lesson, sorting new chats, learning from finished drafts) is not yours unless he asks for it. Do what he asks with your tools, then say it is done. If it needs more than a minute of work, do the first part and say the rest comes on the next run.
 11. He may reply to a card; his message then quotes it. The note's id is given — close_question it once you have acted, unless you are leaving it for the next run.
 
 Your reply is read on a phone. One-line answer first, then short lines. Marks: "# Heading" on its own line, "- item" bullets, "> quoted words" for what someone wrote, *bold*, _italic_, [[Task title]] for a To Do task. A blank line between groups, no paragraph over two lines, no greeting and no sign-off. Under 1200 characters unless he asked for a list.`;
@@ -169,7 +169,8 @@ export async function answerLive(
   const box = assistantTools({ label: LABEL, exclude: EXCLUDE });
   const read = async (name: string) => (await box.call(name, {})).text;
   const prompt = [
-    `## Now\n${await read("now")}`,
+    // `now` also nags about the scorecard lesson, which is the hourly run's.
+    `## Now\n${(await read("now")).split("\n").filter((l) => !l.startsWith("A new scorecard is out")).join("\n")}`,
     `## Lessons — how he wants things done\n${await read("lessons")}`,
     `## Brain — what is true about him and his world\n${await read("brain")}`,
     `## Loops — what is in flight\n${await read("loops")}`,

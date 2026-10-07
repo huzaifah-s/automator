@@ -21,7 +21,7 @@ and deployed, tick its box here.
 
 - [x] **01 · Push her latest playbook.** 5 min. Chat (needs your OK to push).
       She's running yesterday's rules; this is the cheapest fix of all.
-- [ ] **02 · One person = one chat.** ~2 h. Chat.
+- [x] **02 · One person = one chat.** ~2 h. Chat.
       Merge hidden WhatsApp ids (`@lid`) with the real number, so lessons and
       history follow the person.
 - [ ] **03 · Give her a brain.** ~3 h. Chat, then a seeding pass.

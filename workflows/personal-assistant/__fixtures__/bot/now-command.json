@@ -1,0 +1,15 @@
+{
+  "expect": "run",
+  "note": "/now from the bot's menu: answered from the tables on the spot.",
+  "body": {
+    "update_id": 100000106,
+    "message": {
+      "message_id": 51,
+      "from": { "id": 100000001, "is_bot": false, "first_name": "Test" },
+      "chat": { "id": 100000001, "first_name": "Test", "type": "private" },
+      "date": 1767225720,
+      "text": "/now",
+      "entities": [{ "offset": 0, "length": 4, "type": "bot_command" }]
+    }
+  }
+}

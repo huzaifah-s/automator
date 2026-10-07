@@ -45,6 +45,11 @@ export default defineTable({
     feedback: text({ nullable: true, label: "Your comments", help: "What to change, from the card." }),
     reason: text({ nullable: true, label: "Withdrawn because", help: "The assistant's reason, when it took the draft back." }),
     revision_of: text({ nullable: true, label: "Revision of", help: "The draft this one replaces." }),
+    chat_url: text({
+      nullable: true,
+      label: "Chat link",
+      help: "Opens the conversation from the card: wa.me for a WhatsApp number, t.me/c for a Telegram group.",
+    }),
     sent_at: datetime({ nullable: true, label: "Sent" }),
     error: text({ nullable: true, label: "Error", help: "Why sending failed." }),
     card_id: text({

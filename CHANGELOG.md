@@ -43,6 +43,27 @@ improvise, so both moved into code.
 - **Closing an open question drops it**, and its card says it is no longer
   needed, instead of waiting for an answer forever.
 
+Then four more he agreed to the same night:
+
+- **Questions expire after two days.** `deliver-cards` closes them with
+  `expired_at`; the card says so, and the next digest lists them once.
+  *Considered:* reminding him instead. A question nobody answered in two days
+  was not worth his attention, and a reminder makes it two cards.
+- **Sunday lessons card** (`personal-assistant-lessons-review`). The
+  assistant turned "show me their texts" into "say nothing about hidden
+  numbers" — a lesson it would have followed forever, visible only in the
+  table. Each lesson now gets a 🗑 (↩ to undo). The card carries its lesson
+  ids in its own buttons, so the bot redraws it without storing which card
+  showed what.
+- **"Open chat" on a draft**, where a link works: wa.me for a number, t.me/c
+  for a Telegram supergroup. `tg://user` was left out — Telegram refuses the
+  whole message when the person's privacy settings refuse the button.
+- **`/now`** answers from the tables at once. *Considered:* firing the
+  assistant for it. A run takes a minute or two and can say more, but "what
+  needs me" is in the tables already; the instant answer is the point.
+- A reply to a card with no row behind it (the lessons card) now quotes that
+  card's text in the note, so the assistant knows what it is about.
+
 ### Maria can fix and trash her own tasks, starts on time, and sorts chats on one card
 
 All four came from one afternoon of messages to the bot. Maria made a task, and

@@ -148,6 +148,7 @@ export function botApi(ctx: Pick<Ctx, "http"> & Partial<Pick<Ctx, "log">>, bot: 
           chat_id: owner(bot),
           text: html,
           parse_mode: "HTML",
+          link_preview_options: { is_disabled: true },
           reply_parameters: { message_id: toMessageId, allow_sending_without_reply: true },
         },
         0,
@@ -165,6 +166,11 @@ export function botApi(ctx: Pick<Ctx, "http"> & Partial<Pick<Ctx, "log">>, bot: 
 
     async deleteWebhook(): Promise<void> {
       await call("deleteWebhook", {});
+    },
+
+    /** The menu Telegram shows beside the message box. */
+    async setCommands(commands: Array<{ command: string; description: string }>): Promise<void> {
+      await call("setMyCommands", { commands });
     },
   };
 }
@@ -264,12 +270,18 @@ const shown = (text: unknown) => {
   return t.length > 3300 ? `${t.slice(0, 3300)}… (${t.length - 3300} more characters — full text in the drafts table)` : t;
 };
 
-/** The buttons under an open draft. `d:<id>:<action>` stays well inside Telegram's 64 bytes. */
-export const draftButtons = (id: string): Button[][] => [
+/**
+ * The buttons under an open draft. `d:<id>:<action>` stays well inside
+ * Telegram's 64 bytes. `chatUrl` opens the conversation itself, when the chat
+ * has a link at all (see `chatUrl` in the endpoint) — to read more than the
+ * card quotes, or to answer by hand.
+ */
+export const draftButtons = (id: string, chatUrl?: unknown): Button[][] => [
   [
     { text: "✅ Send", callback_data: `d:${id}:send` },
     { text: "Skip", callback_data: `d:${id}:skip` },
   ],
+  ...(typeof chatUrl === "string" && /^https:\/\//.test(chatUrl) ? [[{ text: "💬 Open chat", url: chatUrl }]] : []),
 ];
 
 /**
@@ -355,11 +367,22 @@ export function questionOutcome(q: Row, about?: string | null, links?: TaskLinks
     `❓ ${rich(String(q.question), links)}`,
     about ? `<i>About ${esc(about)}</i>` : null,
     "",
-    q.answer ? `<b>Answer:</b> ${esc(String(q.answer))}` : "🗑 <i>No longer needed — I dropped this question.</i>",
+    q.answer
+      ? `<b>Answer:</b> ${esc(String(q.answer))}`
+      : q.expired_at
+        ? `⌛ <i>Expired — no answer in ${EXPIRE_DAYS} days. Reply to this message if it still matters.</i>`
+        : "🗑 <i>No longer needed — I dropped this question.</i>",
   ]
     .filter((l) => l !== null)
     .join("\n");
 }
+
+/**
+ * How long a question card waits for an answer. After that it is closed as
+ * expired — its card says so, and the next digest mentions it once — rather
+ * than sitting open, unanswerable in practice, above a day of newer cards.
+ */
+export const EXPIRE_DAYS = 2;
 
 /* --------------------------------------------------- chats to sort, batched */
 
@@ -396,7 +419,8 @@ export function batchCard(
   const open = qs.filter((q) => q.status === "open");
   const lines = qs.map((q, i) => {
     const head = `<b>${i + 1}.</b> ${esc(aboutOf(q) ?? String(q.chat_key))}`;
-    const status = q.status === "open" ? "" : ` — <b>${esc(String(q.answer ?? "dropped"))}</b>`;
+    const status =
+      q.status === "open" ? "" : ` — <b>${esc(String(q.answer ?? (q.expired_at ? "expired" : "dropped")))}</b>`;
     const asked = String(q.question).replace(/\s+/g, " ");
     // Eight of these and the card's own lines stay inside Telegram's 4096.
     const said = q.quote && q.status === "open" ? `\n${quoted(clipLines(String(q.quote), 160))}` : "";
@@ -458,3 +482,105 @@ export const updateCard = (u: Row, links?: TaskLinks) => {
   const body = rich(String(u.question), links);
   return /^\s*(🌅|🌙|#)/.test(String(u.question)) ? body : `🗒 ${body}`;
 };
+
+/* ------------------------------------------------------- lessons, weekly */
+
+/** Lesson buttons per row: "🗑 1"… fits four across a phone. */
+const LESSON_ROW = 4;
+/** A card past this is a wall; the newest are the ones worth checking. */
+export const LESSONS_MAX = 15;
+
+/**
+ * "What I learned this week": every lesson on the card, numbered, with a
+ * button each that retires it — or, once retired (struck through), brings it
+ * back. `l:<id>:t` toggles, so a mistaken tap is one more tap to undo, and
+ * the card is drawn from the same list every time.
+ */
+export function lessonsCard(
+  lessons: Row[],
+  whereOf: (chatKey: string) => string,
+): { html: string; buttons: Button[][] } {
+  const lines = lessons.map((l, i) => {
+    const where = l.chat_key ? ` <i>(${esc(whereOf(String(l.chat_key)))})</i>` : "";
+    // Lessons are at most 300 characters; fifteen of those would pass
+    // Telegram's 4096, so each is cut on the card (the table has it whole).
+    const said = String(l.lesson);
+    const text = `${esc(said.length > 200 ? `${said.slice(0, 200)}…` : said)}${where}`;
+    return `<b>${i + 1}.</b> ${l.retired ? `<s>${text}</s>` : text}`;
+  });
+  const html = [
+    "🧠 <b>What I learned this week</b>",
+    "<i>Tap 🗑 to make me forget one — or reply to this card to reword it.</i>",
+    "",
+    lines.join("\n\n"),
+  ].join("\n");
+  const buttons: Button[][] = [];
+  lessons.forEach((l, i) => {
+    if (i % LESSON_ROW === 0) buttons.push([]);
+    buttons.at(-1)!.push({ text: `${l.retired ? "↩" : "🗑"} ${i + 1}`, callback_data: `l:${l.id}:t` });
+  });
+  return { html, buttons };
+}
+
+/** The lesson ids a lessons card carries, in order — read back from its own buttons. */
+export function lessonIds(markup: unknown): string[] {
+  const rows = (markup as { inline_keyboard?: Array<Array<{ callback_data?: string }>> } | undefined)?.inline_keyboard;
+  return (rows ?? [])
+    .flat()
+    .map((b) => b.callback_data?.match(/^l:([^:]+):t$/)?.[1])
+    .filter((id): id is string => Boolean(id));
+}
+
+/* -------------------------------------------------------------------- /now */
+
+const NOW_CAP = 5;
+
+/**
+ * What needs you right now, from the tables alone: drafts waiting for Send,
+ * the assistant's open questions, and To Do tasks overdue or due today. The
+ * same layout as a digest, without a run of the assistant — so it answers at
+ * once, and says nothing the tables do not.
+ */
+export function nowCard(ctx: Pick<Ctx, "table">): { html: string; items: number } {
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(new Date());
+  const people = new Map(ctx.table("people").query({ limit: 1000 }).map((p) => [String(p.chat_key), p]));
+  const tasks = ctx.table("tasks").query({ limit: 1000 });
+  const titles = new Map(tasks.map((t) => [String(t.page_id), String(t.title)]));
+  const where = (key: unknown) => chatLabel(String(key), people.get(String(key))).replace(" · ", " (") + ")";
+  const one = (s: unknown, max: number) => {
+    const t = String(s ?? "").replace(/\s+/g, " ").replace(/\*/g, "").trim();
+    return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+  };
+
+  const drafts = ctx
+    .table("drafts")
+    .query({ limit: 200 })
+    .filter((d) => d.status === "pending" || d.status === "failed")
+    .map((d) => `- ${where(d.chat_key)}: ${one(d.why ?? d.text, 90)}${d.status === "failed" ? " — failed to send" : ""}`);
+  const asked = ctx
+    .table("questions")
+    .query({ where: [{ column: "status", op: "=", value: "open" }], limit: 200 })
+    .filter((q) => (q.kind ?? "question") === "question")
+    .map((q) => {
+      const about = q.chat_key ? `${where(q.chat_key)}: ` : q.task_id ? `[[${titles.get(String(q.task_id)) ?? "a task"}]]: ` : "";
+      return `- ${about}${one(q.question, 90)}`;
+    });
+  const due = (t: Row) => String(t.due ?? "").slice(0, 10);
+  const open = tasks.filter((t) => t.status !== "KIV" && due(t));
+  const overdue = open.filter((t) => due(t) < today).sort((a, b) => due(a).localeCompare(due(b)));
+  const dueToday = open.filter((t) => due(t) === today);
+
+  const section = (title: string, lines: string[]) =>
+    lines.length
+      ? `# ${title}\n${lines.slice(0, NOW_CAP).join("\n")}${lines.length > NOW_CAP ? `\n_+${lines.length - NOW_CAP} more_` : ""}`
+      : null;
+  const blocks = [
+    section("✉️ Drafts waiting for Send", drafts),
+    section("❓ I asked you", asked),
+    section("⏰ Overdue", overdue.map((t) => `- [[${t.title}]]`)),
+    section("📅 Due today", dueToday.map((t) => `- [[${t.title}]]`)),
+  ].filter((b): b is string => b !== null);
+  const items = drafts.length + asked.length + overdue.length + dueToday.length;
+  const head = items ? `*Right now* — ${items} thing${items === 1 ? "" : "s"}` : "*Right now* — nothing needs you. 🎉";
+  return { html: rich([head, ...blocks].join("\n\n"), taskLinks(tasks)), items };
+}

@@ -205,6 +205,24 @@ function quoteFor(channel: ChatChannel, chat: string, replyTo?: string): string 
   return theirs.length ? theirs.slice(-2).map(said).join("\n") : null;
 }
 
+/**
+ * A link that opens the chat on his phone, for the "Open chat" button on a
+ * draft — or null where there is none that works: wa.me for a WhatsApp
+ * number; a Telegram supergroup's newest message, which opens for a member.
+ * Not a WhatsApp group (that takes an invite code), a hidden number, or a
+ * Telegram person — `tg://user` fails the whole card when their privacy
+ * settings refuse it.
+ */
+function chatUrl(channel: ChatChannel, chat: string): string | null {
+  if (channel === "whatsapp") {
+    const n = chat.match(/^(\d+)@s\.whatsapp\.net$/)?.[1];
+    return n ? `https://wa.me/${n}` : null;
+  }
+  const group = chat.match(/^-100(\d+)$/)?.[1];
+  const newest = group ? chatThread(channel, chat, 1).at(-1) : undefined;
+  return group && newest && /^\d+$/.test(newest.id) ? `https://t.me/c/${group}/${newest.id}` : null;
+}
+
 /* ------------------------------------------------------------- arguments */
 
 function str(args: Record<string, unknown>, key: string): string | undefined {
@@ -666,6 +684,7 @@ function tools(registry: Registry): Tool[] {
             why: str(args, "why") ?? null,
             reply_to: str(args, "reply_to") ?? null,
             quote: quoteFor(channel, chat, str(args, "reply_to")),
+            chat_url: chatUrl(channel, chat),
             revision_of: previous ? String(previous.id) : null,
           },
           { writtenBy: identity.label },
@@ -1159,7 +1178,29 @@ function tools(registry: Registry): Tool[] {
           }
           blocks.push(`# ${sec.title}\n${shown.join("\n")}`);
         }
-        if (!items) blocks.push("All clear — nothing needs you.");
+        // Questions that expired unanswered since the last digest, said once:
+        // the card already says so, but a card from two days ago is not read.
+        const last = table("questions")
+          .query({ limit: 300 })
+          .filter((r) => kindOf(r) === "update" && /^(🌅|🌙) \*|^\[(morning|night) digest\]/.test(String(r.question)))
+          .reduce((max, r) => Math.max(max, Number(r.created_at)), now - 24 * 3_600_000);
+        const people = peopleByKey();
+        const tasks = new Map(table("tasks").query({ limit: 1000 }).map((t) => [String(t.page_id), String(t.title)]));
+        const expired = table("questions")
+          .query({ limit: 300 })
+          .filter((q) => Number(q.expired_at) > last)
+          .map((q) => {
+            const who = q.chat_key
+              ? String(people.get(String(q.chat_key))?.name ?? q.chat_key)
+              : q.task_id
+                ? `[[${tasks.get(String(q.task_id)) ?? "a task"}]]`
+                : null;
+            return `- ${who ? `${who}: ` : ""}${line(String(q.question).replace(/\*/g, ""), 90)}`;
+          });
+        if (expired.length) {
+          blocks.push(`# ⌛ Expired, no answer\n${expired.slice(0, DIGEST_CAP).join("\n")}`);
+        }
+        if (!items && !expired.length) blocks.push("All clear — nothing needs you.");
         const text = blocks.join("\n\n");
         const { row } = table("questions").insert({ kind: "update", question: text }, { writtenBy: identity.label });
         return `The ${kind} digest (${items} item(s)) is queued as ${row.id}; it reaches him within a minute.`;

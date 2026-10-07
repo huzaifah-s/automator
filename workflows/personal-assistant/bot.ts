@@ -17,8 +17,11 @@ import {
   draftButtons,
   draftOutcome,
   esc,
+  lessonIds,
+  lessonsCard,
   owner,
   questionOutcome,
+  nowCard,
   webhookSecret,
 } from "./_bot.ts";
 import { fireAssistant } from "./_routine.ts";
@@ -43,6 +46,9 @@ import { fireAssistant } from "./_routine.ts";
  *              asking back, which it answers under your message. A bare
  *              always / normal / ignore is the one reply taken as the answer
  *              here and now.
+ *   🗑 / ↩ on the weekly lessons card    retires a lesson, or brings it back.
+ *   /now       what needs you right now, read from the tables on the spot —
+ *              no run of the assistant, so no wait.
  *   any other message    is a note to the assistant, filed as an answered
  *              "question" so its next run reads it.
  *
@@ -81,7 +87,7 @@ const update = z.looseObject({
       text: z.string().optional(),
       from: z.looseObject({ id: z.number() }).optional(),
       chat: z.looseObject({ id: z.number() }),
-      reply_to_message: z.looseObject({ message_id: z.number() }).optional(),
+      reply_to_message: z.looseObject({ message_id: z.number(), text: z.string().optional() }).optional(),
     })
     .optional(),
   callback_query: z
@@ -89,7 +95,7 @@ const update = z.looseObject({
       id: z.string(),
       from: z.looseObject({ id: z.number() }),
       data: z.string().optional(),
-      message: z.looseObject({ message_id: z.number() }).optional(),
+      message: z.looseObject({ message_id: z.number(), reply_markup: z.unknown().optional() }).optional(),
     })
     .optional(),
 });
@@ -166,7 +172,7 @@ async function onButton(ctx: Ctx, cb: NonNullable<Update["callback_query"]>) {
       const message = String((err as Error)?.message ?? err).slice(0, 300);
       const row = drafts.update(id, { status: "failed", error: message }, { writtenBy: ctx.workflow });
       if (d.card_id) {
-        await api.edit(String(d.card_id), draftOutcome(row, "failed"), draftButtons(id));
+        await api.edit(String(d.card_id), draftOutcome(row, "failed"), draftButtons(id, d.chat_url));
       }
       await api.answer(cb.id, "Could not send — see the card.");
       ctx.log.warn(`Draft ${id} could not be sent: ${message}`);
@@ -207,6 +213,28 @@ async function onButton(ctx: Ctx, cb: NonNullable<Update["callback_query"]>) {
     return { question: id, outcome: "answered", fired };
   }
 
+  if (kind === "l" && id && action === "t") {
+    const lessons = ctx.table("lessons");
+    const l = lessons.get(id);
+    if (!l) {
+      await api.answer(cb.id, "That lesson no longer exists.");
+      return { lesson: id, outcome: "missing" };
+    }
+    const retired = !l.retired;
+    lessons.update(id, { retired }, { writtenBy: ctx.workflow });
+    // The card's own buttons say which lessons it shows, in which order.
+    const card = cb.message;
+    if (card) {
+      const shown = lessonIds(card.reply_markup)
+        .map((lid) => lessons.get(lid))
+        .filter((r): r is Row => Boolean(r));
+      const { html, buttons } = lessonsCard(shown, (key) => chatLabel(key, personFor(ctx, key)));
+      await api.edit(card.message_id, html, buttons);
+    }
+    await api.answer(cb.id, retired ? "Forgotten — I won't do that any more." : "Restored.");
+    return { lesson: id, outcome: retired ? "retired" : "restored" };
+  }
+
   await api.answer(cb.id);
   return { ignored: "unknown button" };
 }
@@ -245,9 +273,16 @@ async function onMessage(ctx: Ctx, m: NonNullable<Update["message"]>) {
         "• <b>Send</b> or <b>Skip</b> a draft with its buttons.\n" +
         "• <b>Reply to a draft</b> to say what to change — a new version follows.\n" +
         "• <b>Reply to a question</b>, or tap an option, to answer it.\n" +
+        "• <b>/now</b> shows what needs you right now.\n" +
         "• Anything else you send me is a note I read on my next run.",
     );
     return { outcome: "help" };
+  }
+
+  if (/^\/now(@\w+)?$/i.test(text)) {
+    const { html, items } = nowCard(ctx);
+    await api.reply(m.message_id, html);
+    return { outcome: "now", items };
   }
 
   const replied = m.reply_to_message?.message_id;
@@ -275,6 +310,10 @@ async function onMessage(ctx: Ctx, m: NonNullable<Update["message"]>) {
       }
     }
     if (q) return note(ctx, text, m.message_id, q);
+    // A card with no row behind it — the weekly lessons, a /now answer —
+    // is still what the reply is about, so it is quoted from Telegram.
+    const shown = m.reply_to_message?.text?.replace(/\s+/g, " ").trim();
+    if (shown) return note(ctx, text, m.message_id, null, `(your reply to: “${shown.slice(0, 600)}”)`);
   }
 
   return note(ctx, text, m.message_id, null);

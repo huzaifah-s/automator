@@ -2,6 +2,7 @@ import { z } from "zod";
 import { cron, defineCredential, defineSecrets, defineWorkflow, type Row } from "../../src/core/define.ts";
 import {
   BATCH_MAX,
+  EXPIRE_DAYS,
   batchCard,
   botApi,
   byAsked,
@@ -45,6 +46,12 @@ import { firePending } from "./_routine.ts";
  */
 
 const bot = defineCredential("telegram", "maria");
+const COMMANDS = [
+  { command: "now", description: "What needs me right now" },
+  { command: "help", description: "How the cards work" },
+];
+/** Bump when COMMANDS changes, and the next run sets them again. */
+const COMMANDS_VERSION = 1;
 /** Optional, as in bot.ts: without it there are no early starts to make. */
 const routine = defineSecrets({ ASSISTANT_ROUTINE_TOKEN: z.string().min(20).optional() });
 
@@ -89,7 +96,7 @@ export default defineWorkflow({
         const previous: Row | null = d.revision_of ? drafts.get(String(d.revision_of)) : null;
         const cardId = await api.send(
           draftCard(d, previous?.feedback as string | null, people.get(String(d.chat_key))),
-          draftButtons(String(d.id)),
+          draftButtons(String(d.id), d.chat_url),
         );
         drafts.update(String(d.id), { card_id: String(cardId) }, { writtenBy: ctx.workflow });
         // The old card's buttons go, so one reply never has two live Sends.
@@ -139,6 +146,20 @@ export default defineWorkflow({
       posted++;
     }
 
+    // Questions nobody answered in EXPIRE_DAYS close themselves: the card
+    // says so (redrawn just below), and the next digest says it once.
+    const stale = Date.now() - EXPIRE_DAYS * 24 * 3_600_000;
+    const expired = questions
+      .query({ where: [{ column: "status", op: "=", value: "open" }], limit: 200 })
+      .filter((q) => (q.kind ?? "question") === "question" && q.card_id && Number(q.created_at) < stale);
+    for (const q of expired) {
+      questions.update(
+        String(q.id),
+        { status: "done", expired_at: Date.now(), card_outdated: true },
+        { writtenBy: ctx.workflow },
+      );
+    }
+
     // Answers the assistant recognised in a reply you typed: the card it
     // answers is rewritten to show it, and loses its buttons, the same as a
     // tap would have done.
@@ -171,6 +192,13 @@ export default defineWorkflow({
       });
     }
 
+    // The bot's menu, set once per version of it: /now is easier tapped
+    // than remembered.
+    if ((await ctx.state.get<number>("commands")) !== COMMANDS_VERSION) {
+      await ctx.step("commands", () => api.setCommands(COMMANDS));
+      await ctx.state.set("commands", COMMANDS_VERSION);
+    }
+
     const fired = await ctx.step("owed start", () => firePending(ctx, routine.ASSISTANT_ROUTINE_TOKEN ?? ""));
 
     return {
@@ -180,6 +208,7 @@ export default defineWorkflow({
       updates: updates.length,
       posted,
       cardsUpdated: outdated.length + withdrawn.length,
+      expired: expired.length,
     };
   },
 });

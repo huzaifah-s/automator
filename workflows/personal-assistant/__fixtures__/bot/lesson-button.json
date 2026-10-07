@@ -1,0 +1,28 @@
+{
+  "expect": "run",
+  "note": "Tapping 🗑 on the weekly lessons card: l:<lesson id>:t, with the card's own buttons (which list its lessons) in message.reply_markup.",
+  "body": {
+    "update_id": 100000105,
+    "callback_query": {
+      "id": "1000000000000000105",
+      "from": { "id": 100000001, "is_bot": false, "first_name": "Test" },
+      "message": {
+        "message_id": 50,
+        "from": { "id": 200000001, "is_bot": true, "first_name": "Assistant", "username": "contoh_assistant_bot" },
+        "chat": { "id": 100000001, "first_name": "Test", "type": "private" },
+        "date": 1767225600,
+        "text": "🧠 What I learned this week",
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              { "text": "🗑 1", "callback_data": "l:0abc000000000a1:t" },
+              { "text": "🗑 2", "callback_data": "l:0abc000000000a2:t" }
+            ]
+          ]
+        }
+      },
+      "chat_instance": "-1000000000000000001",
+      "data": "l:0abc000000000a1:t"
+    }
+  }
+}

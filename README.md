@@ -488,11 +488,20 @@ back:
 |---|---|
 | **✅ Send** | Sent from your own WhatsApp or Telegram, exactly as drafted; the card says when |
 | **Skip** | Closed; nothing is sent |
+| **💬 Open chat** | Opens the conversation — on a draft to a WhatsApp number (wa.me) or a Telegram supergroup (t.me/c); there is no working link for a WhatsApp group, a hidden number or a Telegram person |
 | Reply to a draft card | Your words go in `feedback`, the draft goes to `revise`, and the assistant writes a new version — whose card says what you asked for, while the old card's buttons are removed |
 | Tap an option on a question card | The answer — always / normal / ignore is applied to `people` at once |
 | Tap a numbered button on the "How important are these chats?" card | The same, for that chat; the card is redrawn with the answer and keeps buttons only for the chats still open |
 | Reply to a question card, a digest or an answered card | A note about that card (on the chats card, it lists every chat on it, and even a bare `normal` is left to the assistant to place). The assistant decides whether it answers the question (`answer_question`, and the card is rewritten) or asks something back (answered under your message) — by meaning, not by a "?". A bare `always` / `normal` / `ignore` is applied at once, like a tap |
+| `/now` (also in the bot's menu) | What needs you right now — drafts waiting, open questions, overdue and due-today tasks — read from the tables on the spot, without waiting for a run |
+| 🗑 / ↩ on the Sunday lessons card | Retires that lesson, or brings it back; replying to the card is a note asking to reword one |
 | Any other message | A note the assistant reads on its next run, and answers under your message |
+
+A question unanswered for two days expires: its card says so and loses its
+buttons, and the next digest lists it once under "Expired, no answer".
+`personal-assistant-lessons-review` posts the week's new lessons every Sunday
+at 20:00, one 🗑 button each — the assistant follows every lesson it writes,
+so one drawn the wrong way is worth seeing.
 
 Two or more "how important is this chat?" questions from the same minute
 arrive as one card — up to eight chats, each with its own numbered row of

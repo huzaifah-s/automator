@@ -49,6 +49,11 @@ export default defineTable({
     answer: text({ nullable: true, label: "Answer" }),
     status: enumOf(["open", "answered", "done"], { default: "open", label: "Status" }),
     answered_at: datetime({ nullable: true, label: "Answered" }),
+    expired_at: datetime({
+      nullable: true,
+      label: "Expired",
+      help: "question: closed unanswered after two days on its card. The next digest mentions it once.",
+    }),
     card_id: text({
       nullable: true,
       label: "Card",

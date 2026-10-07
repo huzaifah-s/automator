@@ -24,10 +24,10 @@ and deployed, tick its box here.
 - [x] **02 · One person = one chat.** ~2 h. Chat.
       Merge hidden WhatsApp ids (`@lid`) with the real number, so lessons and
       history follow the person.
-- [ ] **03 · Give her a brain.** ~3 h. Chat, then a seeding pass.
+- [x] **03 · Give her a brain.** ~3 h. Chat, then a seeding pass.
       Who you are, your work, projects and people, and what's still open,
       read every run and kept up to date by her.
-- [ ] **04 · Decide, don't ask.** ~2 h. Chat.
+- [x] **04 · Decide, don't ask.** ~2 h. Chat.
       She sorts new chats herself and sends one "here's what I did" card.
       There's a question budget, and every question has to be answerable from
       the card alone.
@@ -35,11 +35,12 @@ and deployed, tick its box here.
       Claude account, then a chat.
       Real free times instead of "let me check my schedule", plus Gmail drafts
       and meeting prep.
-- [ ] **06 · Weekly scorecard.** ~2 h. Chat.
-      Numbers every Sunday that show whether she's actually getting better.
-      She reads them too.
-- [ ] **07 · Live Maria.** About half a day. Chat.
-      She answers your messages in seconds instead of minutes.
+- [ ] **06 · Scorecard, twice a week.** ~2 h. Chat.
+      Numbers every Wednesday and Sunday that show whether she's actually
+      getting better. She reads them too.
+- [x] **07 · Live Maria.** About half a day. Chat.
+      She answers your messages in seconds instead of minutes — Claude Code
+      on your subscription (`CLAUDE_CODE_OAUTH_TOKEN`, optional `_2`).
 
 03 makes 04 better (she sorts using the brain), and 05 needs 03 (meeting
 prep needs to know your projects). The rest can go in any order after 01.

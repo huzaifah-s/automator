@@ -280,6 +280,34 @@ the same: somewhere the routine reads it back until it has been turned into a
 lesson. The user asked for an assistant that keeps improving, and that is the
 mechanism.
 
+**The assistant writes on To Do tasks and never finishes them, and that is
+enforced by absence too.** `task_note` appends one callout to the end of a
+page through `personal-assistant-task-note` and has no way to change a
+property, edit a block or archive anything; there is no tool that sets a
+status. A note is only accepted for a page in the `tasks` mirror — the same
+rule as drafts and `people` — so a page id handed to the model in a message
+cannot become somewhere it writes. Do not add "mark done" because a task
+looked finished; completing tasks is a separate decision the user has not
+taken yet.
+
+**`sync-tasks` decides what you did to a note, not the model.** It reads each
+callout back and compares it, rendered by `blocksText`, with what `task-note`
+rendered from the blocks it built — the same function on both sides, which
+is what makes an untouched note compare equal. Change one side of
+`textBlocks`/`blocksText` and every note on every page reads as "edited".
+Two more traps in the same place: Notion rounds `last_edited_time` to the
+minute, so a page is re-read whenever its edit time is within a minute of
+the last read, not when the timestamp moves; and "who edited" is
+`last_edited_by` against the integration's own bot user, which is also who
+`create-task`, `todo-repeat` and the notes edit as — none of that may ever
+read as the user's feedback. A callout missing from a page cut at
+`MAX_BLOCKS` is not "removed"; `readBlocks` says when it cut.
+
+**`MARIA_MARK` and `todo-repeat`'s `ASSISTANT_NOTE` are one string in two
+folders.** A repeating task's next copy leaves out callouts that start with
+it. Change one without the other and every monthly task collects empty
+"Maria ·" callouts — `copyBlocks` copies a callout without its children.
+
 **The routine is started early at most every two minutes, never retried.**
 `_routine.ts`: the fire endpoint has no idempotency key, so a retry after a
 lost reply is a second session working the same drafts. The fire text names a

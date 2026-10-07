@@ -11,6 +11,7 @@ import {
 import {
   botApi,
   chatLabel,
+  taskLabel,
   draftButtons,
   draftOutcome,
   esc,
@@ -290,6 +291,7 @@ async function note(ctx: Ctx, text: string, messageId: number, about: Row | null
       question: quoted,
       answer: text,
       chat_key: about?.chat_key ?? null,
+      task_id: about?.task_id ?? null,
       reply_to: about ? String(about.id) : null,
       status: "answered",
       answered_at: Date.now(),
@@ -381,8 +383,10 @@ function applyPriority(ctx: Ctx, q: Row): string | null {
   return value;
 }
 
-/** Which chat a question is about, and in which app. */
+/** Which chat a question is about, and in which app — or which To Do task. */
 function about(ctx: Ctx, q: Row): string | null {
-  if (!q.chat_key) return null;
-  return chatLabel(String(q.chat_key), personFor(ctx, q.chat_key));
+  if (q.chat_key) return chatLabel(String(q.chat_key), personFor(ctx, q.chat_key));
+  if (!q.task_id) return null;
+  const task = ctx.table("tasks").query({ where: [{ column: "page_id", op: "=", value: q.task_id }], limit: 1 })[0];
+  return taskLabel(task?.title);
 }

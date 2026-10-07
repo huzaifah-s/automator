@@ -8,8 +8,8 @@ import { defineTable, int, text } from "../../src/core/define.ts";
  * written by the `log_run` tool at the end of every run.
  *
  * The numbers are counted by the runner, not reported by the model: chats
- * waiting at the moment the run logged, and drafts, questions, lessons and
- * tasks made since the previous entry. A model that misremembers what it did
+ * waiting at the moment the run logged, and drafts, questions, lessons,
+ * tasks and task notes made since the previous entry. A model that misremembers what it did
  * cannot make this table say otherwise. `summary` is the model's own account,
  * which is where "no tasks: nothing was promised" lives.
  */
@@ -17,7 +17,7 @@ export default defineTable({
   name: "run_log",
   description:
     "What each assistant run did. Counts are measured by the runner (waiting at the end of the " +
-    "run; drafts, questions, lessons and tasks since the previous entry); summary is the " +
+    "run; drafts, questions, lessons, tasks and task notes since the previous entry); summary is the " +
     "assistant's own account of why.",
 
   columns: {
@@ -33,6 +33,7 @@ export default defineTable({
     questions: int({ default: 0, label: "Questions" }),
     lessons: int({ default: 0, label: "Lessons" }),
     tasks: int({ default: 0, label: "Tasks" }),
+    task_notes: int({ default: 0, label: "Task notes", help: "Notes written on To Do tasks." }),
     problems: text({ nullable: true, label: "Problems", help: "Anything that failed or got in the way." }),
   },
 

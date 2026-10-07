@@ -36,6 +36,11 @@ export default defineTable({
       label: "About chat",
       help: "channel:id, when the question is about one chat.",
     }),
+    task_id: text({
+      nullable: true,
+      label: "About task",
+      help: "The Notion page id, when the question is about one To Do task.",
+    }),
     answer: text({ nullable: true, label: "Answer" }),
     status: enumOf(["open", "answered", "done"], { default: "open", label: "Status" }),
     answered_at: datetime({ nullable: true, label: "Answered" }),

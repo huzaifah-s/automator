@@ -184,6 +184,11 @@ export function chatLabel(chatKey: string, person?: Row | null): string {
   return `${name} · ${chatWhere(chatKey, person)}`;
 }
 
+/** "Renew road tax · Notion To Do" — a question about a task, not a chat. */
+export function taskLabel(title: unknown): string {
+  return `${title ? `“${String(title)}”` : "a task"} · Notion To Do`;
+}
+
 /** "WhatsApp", "Telegram group" — the app, and the kind of chat when it is not one person. */
 export function chatWhere(chatKey: string, person?: Row | null): string {
   const kind = person?.kind && person.kind !== "person" ? ` ${person.kind}` : "";
@@ -257,7 +262,7 @@ export function questionButtons(q: Row): Button[][] | undefined {
   return rows;
 }
 
-/** `about` is a chatLabel — which chat, and in which app. */
+/** `about` is a chatLabel (which chat, in which app) or a taskLabel (which To Do task). */
 export function questionCard(q: Row, about?: string | null): string {
   const options = Array.isArray(q.options) ? q.options : [];
   return [

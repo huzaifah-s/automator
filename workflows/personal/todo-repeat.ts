@@ -296,10 +296,21 @@ const COPYABLE = new Set([
   "divider",
 ]);
 
+/**
+ * How the assistant's notes start (`MARIA_MARK` in
+ * workflows/personal-assistant/_notion.ts — keep the two in step). Its notes
+ * are about this month's copy, so the next one starts without them.
+ */
+const ASSISTANT_NOTE = "Maria ·";
+
 function copyBlocks(blocks: Block[]): { children: unknown[]; dropped: number } {
   const children: unknown[] = [];
   let dropped = 0;
   for (const b of blocks) {
+    const text = ((b[b.type] as { rich_text?: RichText[] } | undefined)?.rich_text ?? [])
+      .map((t) => t.plain_text ?? "")
+      .join("");
+    if (b.type === "callout" && text.startsWith(ASSISTANT_NOTE)) continue;
     if (!COPYABLE.has(b.type)) {
       dropped++;
       continue;

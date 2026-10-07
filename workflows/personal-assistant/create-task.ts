@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { defineCredential, defineWorkflow, manual, type Ctx } from "../../src/core/define.ts";
+import { CATEGORY, DATABASE_TITLE, DUE, STATUS, dataSourceId, headers as notionHeaders } from "./_notion.ts";
 
 /**
  * Personal assistant — adds a task to the Notion "To Do" database.
@@ -23,15 +24,7 @@ import { defineCredential, defineWorkflow, manual, type Ctx } from "../../src/co
  */
 
 const notion = defineCredential("notion", "huzaifah-notion");
-/** Search only, the same lookup as todo-repeat. */
-const NOTION_VERSION = "2022-06-28";
-/** Data sources and templates — everything after the lookup. */
-const TEMPLATE_VERSION = "2026-03-11";
 const TIMEZONE = "Asia/Kuala_Lumpur";
-const DATABASE_TITLE = "To Do";
-const STATUS = "Status";
-const DUE = "Due Date";
-const CATEGORY = "Category";
 const SAME_TASK_SECONDS = 7 * 86_400;
 
 const input = z.object({
@@ -47,10 +40,7 @@ type Prop = { type: string; [k: string]: unknown };
 type Database = { id: string; properties: Record<string, Prop> };
 type Template = { id: string; name: string; blocks: number };
 
-const headers = (version = TEMPLATE_VERSION) => ({
-  authorization: `Bearer ${notion.token}`,
-  "notion-version": version,
-});
+const headers = () => notionHeaders(notion.token);
 
 export default defineWorkflow({
   name: "personal-assistant-create-task",
@@ -74,18 +64,11 @@ export default defineWorkflow({
 
     // Since 2025-09-03 the columns belong to the database's data source, not
     // the database, and a page is made in the data source.
-    const db = await ctx.step("read database", async () => {
-      const id = await databaseId(ctx);
-      const database = await ctx.http.get<{ data_sources: Array<{ id: string }> }>(
-        `https://api.notion.com/v1/databases/${id}`,
-        { headers: headers() },
-      );
-      const source = database.data_sources[0];
-      if (!source) throw new Error(`The ${DATABASE_TITLE} database has no data source`);
-      return ctx.http.get<Database>(`https://api.notion.com/v1/data_sources/${source.id}`, {
+    const db = await ctx.step("read database", async () =>
+      ctx.http.get<Database>(`https://api.notion.com/v1/data_sources/${await dataSourceId(ctx, notion.token)}`, {
         headers: headers(),
-      });
-    });
+      }),
+    );
 
     const template = await ctx.step("read template", () => defaultTemplate(ctx, db.id));
 
@@ -153,36 +136,6 @@ export default defineWorkflow({
     return { url: page?.url, created: true };
   },
 });
-
-/** Same lookup as todo-repeat: pinned by variable, else found by title once. */
-async function databaseId(ctx: Ctx): Promise<string> {
-  const pinned = process.env.TODO_NOTION_DATABASE_ID;
-  if (pinned) return pinned;
-  const cached = await ctx.state.get<string>("database");
-  if (cached) return cached;
-
-  const found = await ctx.http.post<{
-    results: Array<{ id: string; title?: Array<{ plain_text?: string }> }>;
-  }>(
-    "https://api.notion.com/v1/search",
-    { query: DATABASE_TITLE, filter: { property: "object", value: "database" }, page_size: 50 },
-    { headers: headers(NOTION_VERSION) },
-  );
-  const exact = found.results.filter(
-    (db) =>
-      (db.title ?? []).map((t) => t.plain_text ?? "").join("").trim().toLowerCase() ===
-      DATABASE_TITLE.toLowerCase(),
-  );
-  if (exact.length !== 1) {
-    throw new Error(
-      exact.length === 0
-        ? `No database called "${DATABASE_TITLE}" is shared with the Notion / huzaifah-notion integration`
-        : `${exact.length} databases are called "${DATABASE_TITLE}" — set TODO_NOTION_DATABASE_ID to say which`,
-    );
-  }
-  await ctx.state.set("database", exact[0]!.id);
-  return exact[0]!.id;
-}
 
 /**
  * The data source's default template and how many top-level blocks it has, or

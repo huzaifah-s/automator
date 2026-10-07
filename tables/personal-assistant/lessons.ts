@@ -6,8 +6,8 @@ import { bool, defineTable, enumOf, text } from "../../src/core/define.ts";
  * Every comment on a draft, every skip, every draft sent unchanged and every
  * answer is evidence about how you want things done. The assistant reads all
  * active lessons at the start of every run and writes new ones as it works
- * through the evidence (`drafts.learned` marks what has been worked through),
- * so a correction is made once rather than every hour.
+ * through the evidence (`drafts.learned` and `task_work.learned` mark what has
+ * been worked through), so a correction is made once rather than every hour.
  *
  * A lesson is either general ("keep replies short, no greetings") or about
  * one chat ("Ali: always BM, call him Encik Ali"). Facts about a person —
@@ -29,9 +29,11 @@ export default defineTable({
       label: "Chat",
       help: "channel:id when it is about one chat. Empty means everywhere.",
     }),
-    source: enumOf(["comment", "skip", "sent", "answer", "you"], {
+    source: enumOf(["comment", "skip", "sent", "answer", "you", "task"], {
       label: "Learned from",
-      help: "comment: you asked for a change. skip: you skipped a draft. sent: you sent it unchanged. answer: a question. you: you said so directly.",
+      help:
+        "comment: you asked for a change. skip: you skipped a draft. sent: you sent it unchanged. " +
+        "answer: a question. you: you said so directly. task: what you did to its note on a To Do task.",
     }),
     evidence: text({
       nullable: true,

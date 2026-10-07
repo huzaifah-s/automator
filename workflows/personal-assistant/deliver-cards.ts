@@ -8,6 +8,7 @@ import {
   questionButtons,
   questionCard,
   questionOutcome,
+  taskLabel,
   updateCard,
 } from "./_bot.ts";
 
@@ -43,6 +44,14 @@ export default defineWorkflow({
     const drafts = ctx.table("drafts");
     const questions = ctx.table("questions");
     const people = new Map(ctx.table("people").query({ limit: 1000 }).map((p) => [String(p.chat_key), p]));
+    const tasks = new Map(ctx.table("tasks").query({ limit: 1000 }).map((t) => [String(t.page_id), t.title]));
+    /** Which chat — and in which app — or which To Do task a question is about. */
+    const aboutOf = (q: Row): string | null =>
+      q.chat_key
+        ? chatLabel(String(q.chat_key), people.get(String(q.chat_key)))
+        : q.task_id
+          ? taskLabel(tasks.get(String(q.task_id)))
+          : null;
 
     const newDrafts = drafts
       .query({ where: [{ column: "card_id", op: "is null" }], limit: 20 })
@@ -73,8 +82,7 @@ export default defineWorkflow({
     }
     for (const q of [...newQuestions].reverse()) {
       await ctx.step(`question ${q.id}`, async () => {
-        const about = q.chat_key ? chatLabel(String(q.chat_key), people.get(String(q.chat_key))) : null;
-        const cardId = await api.send(questionCard(q, about), questionButtons(q));
+        const cardId = await api.send(questionCard(q, aboutOf(q)), questionButtons(q));
         questions.update(String(q.id), { card_id: String(cardId) }, { writtenBy: ctx.workflow });
       });
       posted++;
@@ -99,8 +107,7 @@ export default defineWorkflow({
     const outdated = questions.query({ limit: 200 }).filter((q) => q.card_outdated && q.card_id);
     for (const q of outdated) {
       await ctx.step(`answered ${q.id}`, async () => {
-        const about = q.chat_key ? chatLabel(String(q.chat_key), people.get(String(q.chat_key))) : null;
-        await api.edit(String(q.card_id), questionOutcome(q, about));
+        await api.edit(String(q.card_id), questionOutcome(q, aboutOf(q)));
         questions.update(String(q.id), { card_outdated: false }, { writtenBy: ctx.workflow });
       });
     }

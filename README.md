@@ -408,7 +408,7 @@ WhatsApp broadcast lists and channels, and always Telegram's service account
 ### The assistant's endpoint
 
 `/mcp/assistant` is what a scheduled Claude connects to: the chat log, the
-three `tables/personal-assistant/` tables, and the Notion To Do list. It needs
+`tables/personal-assistant/` tables, and the Notion To Do list. It needs
 its own token — on the MCP tab, **Create token → Personal assistant**, full
 access — and refuses the operations and data-table ones, as they refuse it.
 
@@ -420,7 +420,9 @@ access — and refuses the operations and data-table ones, as they refuse it.
 | `drafts` / `draft_reply` | Replies waiting for approval; a new one, or a revision |
 | `questions` / `ask` / `answer_question` / `close_question` | Asking you something, recording an answer you typed, and acting on it |
 | `create_task` | A task in the Notion To Do database, through the `personal-assistant-create-task` workflow |
-| `lessons` / `outcomes` / `learn` | What you have taught it; drafts that ended and are not learned from yet; recording a lesson |
+| `todo` / `task` | Your open To Do tasks, most urgent first; one task with its page text, the assistant's notes on it and its questions about it |
+| `task_note` | Writes the assistant's work on a task's page — a draft, a plan, its questions, your answer — through `personal-assistant-task-note` |
+| `lessons` / `outcomes` / `learn` | What you have taught it; drafts that ended and task notes you reacted to that are not learned from yet; recording a lesson |
 | `brief` | An update to you — the morning and night digests, or an answer threaded under your note (`reply_to`) |
 | `now` | Your local time, and whether a digest is due and already sent |
 | `log_run` | Called last every run: a row in `run_log` with its own account of what it did and why, and counts the runner measures itself |
@@ -439,6 +441,26 @@ The page is made from the database's **default template** (marked "Default"
 in Notion's template menu), so it gets that template's icon and content;
 notes and the source are added below them. With no default template the
 page is made plain.
+
+### The To Do list
+
+`personal-assistant-sync-tasks` mirrors every task that is not Done into the
+`tasks` table every ten minutes — properties, and the text of any page that
+changed — so the assistant reads its list from SQLite rather than calling
+Notion twenty times an hour. Edit tasks in Notion; the table is overwritten.
+
+The assistant works on up to three tasks a run: it writes the email, outline
+or plan a task needs, asks you (a Telegram card that names the task) what only
+you know, drafts the WhatsApp or Telegram message a task is about, and writes
+your answers down on the page. Each note is a grey **🤖 Maria · 7 Oct 14:05 ·
+Draft** callout added at the end of the page. It never changes a task's
+status, due date or anything already on the page — finishing a task is yours.
+
+**Correct it in Notion.** Edit its note, delete it, or write on the page, and
+the next sync records what you did (`task_work`); the assistant turns it into
+a lesson on its next run, the same as a comment on a draft. Marking the task
+Done or KIV after a note is recorded too. A repeating task's next copy starts
+without the assistant's notes (`todo-repeat` leaves them out).
 
 ### The approval bot
 
@@ -484,8 +506,9 @@ of the runner, and the agent never sees this code. It is given the
 assistant's tools and nothing else: no shell, no file edits.
 
 **It learns.** Every draft that ends — sent as written, skipped, or replaced
-after your comment — is listed by `outcomes` until the assistant has turned it
-into a lesson with `learn` (or decided there is none). Lessons are rows in
+after your comment — and every task note you edited or deleted is listed by
+`outcomes` until the assistant has turned it into a lesson with `learn` (or
+decided there is none). Lessons are rows in
 `tables/personal-assistant/lessons.ts`, read at the start of every run, and
 yours to edit or retire on the Tables tab. Replying to a card you already
 sent or skipped records the reason, which is exactly what it learns from.

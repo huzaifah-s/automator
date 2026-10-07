@@ -165,6 +165,28 @@ export interface McpIdentity {
    * minted for.
    */
   audiences: McpAudience[];
+  /**
+   * The only tools this identity may list or call, when set. Only an
+   * in-process token has one (`mintProcessToken`): live Maria is given the
+   * assistant's tools minus the hourly run's own.
+   */
+  tools?: readonly string[];
+}
+
+/** Tokens minted by this process for itself, by digest. Never stored, gone on restart. */
+const processTokens = new Map<string, McpIdentity>();
+
+/**
+ * A token for a client this process starts itself and talks to over
+ * 127.0.0.1 — live Maria's Claude Code, which reaches /mcp/assistant like the
+ * routine does. Kept in memory only: nothing to leak from the database or
+ * the dashboard, nothing to rotate, and it dies with the process. Not shown
+ * on the MCP tab, because it is not anybody's to manage.
+ */
+export function mintProcessToken(identity: Omit<McpIdentity, "id">): string {
+  const token = randomBytes(32).toString("hex");
+  processTokens.set(digest(token), identity);
+  return token;
 }
 
 /**
@@ -214,6 +236,9 @@ export function identify(presented: string): McpIdentity | null {
     };
   }
 
+  const own = processTokens.get(digest(presented));
+  if (own) return own;
+
   const row = store.mcpTokenByHash(digest(presented));
   if (!row) return null;
   return {
@@ -235,7 +260,7 @@ export function noteUse(identity: McpIdentity, client: string | null): void {
 
 /** Whether anything at all can authenticate — the endpoint is closed if not. */
 export function mcpEnabled(): boolean {
-  return Boolean(process.env.MCP_TOKEN) || store.mcpTokenCount() > 0;
+  return Boolean(process.env.MCP_TOKEN) || processTokens.size > 0 || store.mcpTokenCount() > 0;
 }
 
 /**

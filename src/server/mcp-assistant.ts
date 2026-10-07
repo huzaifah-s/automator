@@ -87,6 +87,7 @@ import {
   identify,
   mayUseEndpoint,
   mcpEnabled,
+  mintProcessToken,
   noteUse,
   wrongEndpoint,
   type McpIdentity,
@@ -2344,6 +2345,28 @@ async function callTool(
   }
 }
 
+let liveToken: { token: string; tools: string[] } | undefined;
+
+/**
+ * How live Maria's Claude Code reaches this endpoint: over 127.0.0.1, with a
+ * token minted in memory for this process (`mintProcessToken`) and limited
+ * to the assistant's tools minus `exclude` — the limit is enforced here, by
+ * `tools/list` and `tools/call`, not only by the CLI's allow-list. Minted
+ * once per process; a restart makes a new one.
+ */
+export function liveConnection(label: string, exclude: readonly string[]): { url: string; token: string; tools: string[] } {
+  if (!liveToken) {
+    const registry = currentRegistry();
+    if (!registry) throw new Error("No workflow registry yet — live Maria needs a booted server");
+    const names = tools(registry).map((t) => t.name).filter((n) => !exclude.includes(n));
+    liveToken = {
+      tools: names,
+      token: mintProcessToken({ scope: "full", label, tables: null, audiences: ["assistant"], tools: names }),
+    };
+  }
+  return { url: `http://127.0.0.1:${process.env.PORT ?? 3000}/mcp/assistant`, ...liveToken };
+}
+
 /** One tool as a model sees it. */
 export interface AssistantToolSpec {
   name: string;
@@ -2429,7 +2452,9 @@ export function createAssistantMcpRouter(registry: Registry): Hono<{ Variables: 
   });
 
   const visibleTo = (identity: McpIdentity) =>
-    identity.scope === "full" ? all : all.filter((t) => t.scope === "read");
+    (identity.scope === "full" ? all : all.filter((t) => t.scope === "read")).filter(
+      (t) => !identity.tools || identity.tools.includes(t.name),
+    );
 
   async function dispatch(msg: Rpc, identity: McpIdentity): Promise<object | null> {
     const { id, method, params } = msg;
@@ -2473,7 +2498,9 @@ export function createAssistantMcpRouter(registry: Registry): Hono<{ Variables: 
       case "tools/call": {
         const name = String(params?.["name"] ?? "");
         const tool = byName.get(name);
-        if (!tool) return rpcError(id, -32602, `Unknown tool "${name}"`);
+        if (!tool || (identity.tools && !identity.tools.includes(name))) {
+          return rpcError(id, -32602, `Unknown tool "${name}"`);
+        }
         const args = (params?.["arguments"] as Record<string, unknown> | undefined) ?? {};
         const out = await callTool(tool, args, identity);
         return result(out.text, out.isError);

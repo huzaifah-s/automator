@@ -312,22 +312,25 @@ routine connects through. A change to a tool's name or meaning here usually
 needs a matching change to the playbook there — the tools and the playbook
 are one contract kept in two places.
 
-**Live Maria calls the endpoint's tools in-process, never a copy of them.**
+**Live Maria is Claude Code on his subscription, reaching the same endpoint.**
 `workflows/personal-assistant/_live.ts` answers his notes and draft comments
-inside `personal-assistant-bot`'s run with a short Claude tool loop. Its
-tools come from `assistantTools()` in `mcp-assistant.ts`, which runs each one
-through `callTool` — the same function the endpoint's `tools/call` uses — so
-a refusal, a scope check or a new rule applies to both or to neither. Do not
-give it a tool of its own; add it to the endpoint. It has no send tool and
-no shell, for the same reasons as the routine. What it stores is counts:
-the run's result, its log lines (tool names only) and its Telegram answer,
-sent with `privateRequest` so the run page records the body's size, not the
-words. A day's messages and tokens are capped in its `ctx.state`
+inside `personal-assistant-bot`'s run by spawning the Claude Code CLI
+headless, signed in with the optional secret `CLAUDE_CODE_OAUTH_TOKEN` (from
+`claude setup-token`) — no API key. Its tools are /mcp/assistant itself, on
+127.0.0.1, with a token `mintProcessToken` keeps in memory (never stored,
+gone on restart) and limited by `McpIdentity.tools`, which the endpoint
+enforces on `tools/list` and `tools/call`. Do not give it a tool of its
+own; add it to the endpoint. The CLI is started with `--tools ""`,
+`--strict-mcp-config`, `--permission-mode dontAsk`, an empty home and an
+environment of a handful of variables: **never pass it `process.env`**,
+which holds every secret this server has, and never let it have a shell —
+the same reason the routine has none. What it stores is counts: the run's
+result, log lines with tool names only, and its Telegram answer sent with
+`privateRequest`. A day's messages and tokens are capped in its `ctx.state`
 (`ASSISTANT_LIVE_MAX_MESSAGES`, `ASSISTANT_LIVE_MAX_TOKENS`); past the cap,
-with no `ANTHROPIC_API_KEY`, or on any failure it sends nothing and the bot
-starts the routine as before. A note it answered is closed, which is what
-stops the hourly run answering it twice — keep that if you change how it
-replies.
+with no token, in a practice run (where the spawn is held back), or on any
+failure it sends nothing and the bot starts the routine as before. A note it
+answered is closed, which is what stops the hourly run answering it twice.
 
 **The scheduled assistant has no shell.** The routine's `allowed_tools` is
 the `assistant` MCP server and nothing else, and the playbook gets the time

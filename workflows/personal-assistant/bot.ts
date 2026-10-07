@@ -71,7 +71,7 @@ import { fireAssistant } from "./_routine.ts";
  * **Live Maria answers notes and draft comments in seconds** (_live.ts):
  * the note is filed as above, then answered inside this run with the
  * assistant's own tools, threaded under your message, and closed so the
- * hourly run does not answer it twice. With no API key, past the day's cap,
+ * hourly run does not answer it twice. With no Claude Code token, past the day's cap,
  * or when she cannot finish in time, the routine is started instead, as it
  * always was, and the reply says which.
  *
@@ -101,6 +101,13 @@ const telegramAccount = defineCredential("telegram_user", "huzaifah-telegram-use
  */
 const routine = defineSecrets({ ASSISTANT_ROUTINE_TOKEN: z.string().min(20).optional() });
 const routineToken = () => routine.ASSISTANT_ROUTINE_TOKEN ?? "";
+/**
+ * Optional: live Maria's Claude Code login, from `claude setup-token` on the
+ * account whose plan she runs on. Without it every message starts the
+ * routine, as before. Declared here so the redactor knows it.
+ */
+const claude = defineSecrets({ CLAUDE_CODE_OAUTH_TOKEN: z.string().min(20).optional() });
+const claudeToken = () => claude.CLAUDE_CODE_OAUTH_TOKEN ?? "";
 
 const update = z.looseObject({
   update_id: z.number().optional(),
@@ -409,7 +416,7 @@ async function note(ctx: Ctx, text: string, messageId: number, about: Row | null
     { writtenBy: ctx.workflow },
   );
   const api = botApi(ctx, bot);
-  const live = await answerLive(ctx, api, {
+  const live = await answerLive(ctx, api, claudeToken(), {
     messageId,
     note: row,
     task:
@@ -433,7 +440,7 @@ function notLive(live: LiveResult | null): string {
   if (!live || live.answered) return "";
   if (live.why === "cap") return " (I've used up today's instant answers.)";
   if (live.why === "slow") return " (That needs more than a quick answer.)";
-  if (live.why === "failed" || live.why === "refused" || live.why === "empty") return " (I couldn't answer instantly.)";
+  if (live.why === "failed" || live.why === "empty") return " (I couldn't answer instantly.)";
   return "";
 }
 
@@ -471,7 +478,7 @@ async function comment(ctx: Ctx, d: Row, text: string, messageId: number) {
   const feedback = d.status === "revise" && d.feedback ? `${d.feedback}\n${text}` : text;
   const row = drafts.update(String(d.id), { status: "revise", feedback }, { writtenBy: ctx.workflow });
   if (d.card_id) await api.edit(String(d.card_id), draftOutcome(row, "revise"));
-  const live = await answerLive(ctx, api, {
+  const live = await answerLive(ctx, api, claudeToken(), {
     messageId,
     note: null,
     writes: true,

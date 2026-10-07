@@ -11,6 +11,14 @@ WORKDIR /app
 # tini reaps zombies and forwards SIGTERM, so graceful shutdown actually works.
 RUN apk add --no-cache tini
 
+# Claude Code, which live Maria runs headless on his subscription
+# (workflows/personal-assistant/_live.ts). Pinned, because a new model can
+# need a newer CLI ("version 2.1.280 or newer is required") — bump it here.
+ARG CLAUDE_CODE_VERSION=2.1.285
+RUN apk add --no-cache nodejs npm libgcc libstdc++ \
+ && npm install -g --omit=dev @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
+ && npm cache clean --force
+
 # --chown on each COPY rather than a trailing `RUN chown -R`: the RUN form
 # rewrites every file and doubles node_modules into a second ~50MB layer.
 # `bun` is a pre-existing non-root user in the base image.

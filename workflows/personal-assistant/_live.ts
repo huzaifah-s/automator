@@ -1,43 +1,54 @@
-import type Anthropic from "@anthropic-ai/sdk";
-import { assistantTools, type Ctx, type Row } from "../../src/core/define.ts";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { assistantTools, holdBack, isPractice, liveConnection, type Ctx, type Row } from "../../src/core/define.ts";
 import { rich, taskLinks, type botApi } from "./_bot.ts";
 
 /**
  * Live Maria — the assistant answering your message in seconds, inside the
  * bot's own run, instead of starting the hourly routine and waiting minutes
- * for a cold start.
+ * for a cloud session to cold-start.
  *
- * ## Same tools, not a copy
+ * ## Claude Code on your subscription, not an API key
  *
- * The tools are the assistant endpoint's own (`assistantTools` in
- * src/server/mcp-assistant.ts), called in-process through the same
- * `callTool` the endpoint's `tools/call` uses — same permissions, same
- * refusals, same rows, written by "live Maria". In-process rather than the
- * Messages API's MCP connector pointed at /mcp/assistant: that would need a
- * second assistant token stored on this server and sent out with every
- * request, for a round trip back into the process that already has the
- * functions. Left out: `digest` and `log_run` (the hourly run's), `outcomes`
- * (learning from drafts is the sweep's job), `ask` (she is talking to you
- * already) and `brief` (her answer *is* the reply).
+ * Each message runs the Claude Code CLI headless (`claude -p`) in this
+ * container, signed in with `CLAUDE_CODE_OAUTH_TOKEN` — a token made once
+ * with `claude setup-token` on the account whose plan pays for it. No API
+ * key, no per-token bill; it counts against that account's usage limits.
+ *
+ * ## Same tools, over the same endpoint
+ *
+ * The CLI reaches the assistant's tools the way the routine does, as an MCP
+ * server — /mcp/assistant on 127.0.0.1, with a token this process minted in
+ * memory (`liveConnection`). That token is limited to the assistant's tools
+ * minus the hourly run's own — `digest`, `log_run`, `outcomes` (learning
+ * from drafts is the sweep's), `ask` (she is talking to you already) and
+ * `brief` (her answer *is* the reply) — and the endpoint enforces the limit,
+ * not just the CLI. Same functions, same refusals, rows written by
+ * "live Maria".
+ *
+ * The CLI is locked down to that: `--tools ""` (no shell, no files, no
+ * web), `--strict-mcp-config` (no other server), `--permission-mode
+ * dontAsk` (anything not allowed is refused, nobody to ask), an empty
+ * working directory and config directory (no CLAUDE.md, no settings, no
+ * hooks), and an environment of four variables — never this process's own,
+ * which holds every secret.
  *
  * ## What she knows
  *
  * The system prompt is the playbook's standing rules in short (the playbook
  * itself is in the routine's private repository, so this keeps its own copy
- * of the few that matter live — keep them in step), and stays byte-for-byte
- * the same so it is cached. Each message then opens with `now`, `lessons`,
- * `brain` and `loops` — the same tool output the routine starts a run with —
- * and your last few exchanges with her.
+ * of the few that matter live — keep them in step). Each message then opens
+ * with `now`, `lessons`, `brain` and `loops` — read in-process, the same
+ * output the routine starts a run with — and your last few exchanges.
  *
- * ## Safety, as the routine
+ * ## What is kept
  *
- * No send tool and no shell exist here either. Chat text arriving through
- * `thread` and `waiting` is data. Logs carry tool names and counts; the
- * answer goes to Telegram with its body kept off the run page
- * (`liveReply`), and what the run stores is counts. A day's messages and
- * tokens are capped in `ctx.state`; past the cap, or with no
- * `ANTHROPIC_API_KEY`, or on any failure, the caller falls back to starting
- * the routine, as before.
+ * Logs carry tool names and counts; the answer goes to Telegram with its
+ * body kept off the run page (`liveReply`); the run stores counts. A day's
+ * messages and tokens are capped in `ctx.state`. Past the cap, with no
+ * token, in a practice run, or on any failure, nothing is sent and the
+ * caller starts the routine, as before.
  */
 
 const SONNET = "claude-sonnet-5-5";
@@ -45,12 +56,11 @@ const OPUS = "claude-opus-5-5";
 const LABEL = "live Maria";
 const EXCLUDE = ["digest", "log_run", "outcomes", "ask", "brief"] as const;
 const TZ = process.env.ASSISTANT_TZ ?? "Asia/Kuala_Lumpur";
+/** The CLI, installed in the image (Dockerfile). */
+const CLAUDE = process.env.CLAUDE_CODE_BIN ?? "claude";
 
 /** The bot run times out at 120s; this leaves room to fall back and say so. */
-const DEADLINE_MS = 60_000;
-const MAX_TURNS = 12;
-/** One message that has read this much is going in circles. */
-const MESSAGE_TOKENS = 400_000;
+const DEADLINE_MS = 75_000;
 /** Telegram's limit is 4096 after the tags `rich` adds. */
 const REPLY_MAX = 3_500;
 const USAGE = "live:usage";
@@ -80,7 +90,7 @@ type Bot = ReturnType<typeof botApi>;
 
 export type LiveResult =
   | { answered: true; model: string; turns: number; tools: number; tokens: number; ms: number }
-  | { answered: false; why: "no key" | "cap" | "slow" | "refused" | "empty" | "failed"; turns?: number; tokens?: number };
+  | { answered: false; why: "no token" | "practice" | "cap" | "slow" | "empty" | "failed"; turns?: number; tokens?: number };
 
 interface Usage {
   day: string;
@@ -129,16 +139,32 @@ function recent(ctx: Pick<Ctx, "table">, skip: string | null): string {
 export async function answerLive(
   ctx: Ctx,
   api: Bot,
+  oauthToken: string,
   arrived: { messageId: number; task: string; note: Row | null; writes?: boolean },
 ): Promise<LiveResult> {
-  if (!process.env.ANTHROPIC_API_KEY) return { answered: false, why: "no key" };
+  // ASSISTANT_LIVE_LOGIN=1 is for a developer's machine: use the CLI's own
+  // login instead of a token. Never set it on the server.
+  const ownLogin = process.env.ASSISTANT_LIVE_LOGIN === "1";
+  if (!oauthToken && !ownLogin) return { answered: false, why: "no token" };
   const { usage, ok } = await budget(ctx);
   if (!ok) return { answered: false, why: "cap" };
+
+  const model = arrived.writes || WRITES.test(arrived.task) ? OPUS : SONNET;
+  const conn = liveConnection(LABEL, EXCLUDE);
+  if (isPractice()) {
+    holdBack({
+      method: "SPAWN",
+      url: `${CLAUDE} -p (live Maria, ${model})`,
+      body: { tools: conn.tools.length },
+      why: "starts Claude Code, which acts through the assistant's tools",
+    });
+    return { answered: false, why: "practice" };
+  }
 
   const started = Date.now();
   const box = assistantTools({ label: LABEL, exclude: EXCLUDE });
   const read = async (name: string) => (await box.call(name, {})).text;
-  const context = [
+  const prompt = [
     `## Now\n${await read("now")}`,
     `## Lessons — how he wants things done\n${await read("lessons")}`,
     `## Brain — what is true about him and his world\n${await read("brain")}`,
@@ -147,86 +173,107 @@ export async function answerLive(
     `## What just arrived\n${arrived.task}`,
   ].join("\n\n");
 
-  const model = arrived.writes || WRITES.test(arrived.task) ? OPUS : SONNET;
-  const tools = box.specs.map(
-    (t): Anthropic.Tool => ({
-      name: t.name,
-      description: t.description,
-      input_schema: t.inputSchema as Anthropic.Tool.InputSchema,
-    }),
+  // Its own empty home: no CLAUDE.md, settings or hooks to pick up, and the
+  // MCP config (which holds the in-memory token) readable by this user only.
+  const home = join(tmpdir(), "maria-live");
+  mkdirSync(join(home, ".claude"), { recursive: true, mode: 0o700 });
+  const mcpConfig = join(home, "mcp.json");
+  writeFileSync(
+    mcpConfig,
+    JSON.stringify({ mcpServers: { assistant: { type: "http", url: conn.url, headers: { Authorization: `Bearer ${conn.token}` } } } }),
+    { mode: 0o600 },
   );
-  const messages: Anthropic.MessageParam[] = [{ role: "user", content: context }];
+  const env: Record<string, string> = ownLogin
+    ? // A Mac keeps the login in the keychain, which needs who the user is.
+      Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "TMPDIR"].map((k) => [k, process.env[k] ?? ""]))
+    : {
+        PATH: process.env.PATH ?? "",
+        HOME: home,
+        CLAUDE_CONFIG_DIR: join(home, ".claude"),
+        CLAUDE_CODE_OAUTH_TOKEN: oauthToken,
+      };
+  env.DISABLE_AUTOUPDATER = "1";
+  env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
 
-  let turns = 0;
-  let calls = 0;
-  let tokens = 0;
-  let text = "";
+  const args = [
+    "-p",
+    "--output-format", "stream-json",
+    "--verbose",
+    "--model", model,
+    "--effort", "medium",
+    "--system-prompt", SYSTEM,
+    "--tools", "",
+    "--mcp-config", mcpConfig,
+    "--strict-mcp-config",
+    "--setting-sources", "project",
+    "--permission-mode", "dontAsk",
+    "--no-session-persistence",
+    // Last: it takes every argument after it.
+    "--allowedTools", ...conn.tools.map((n) => `mcp__assistant__${n}`),
+  ];
+
   let why: Exclude<LiveResult, { answered: true }>["why"] | null = null;
+  let text = "";
+  let turns = 0;
+  let tokens = 0;
   const used: string[] = [];
 
   await api.typing();
   const typing = setInterval(() => void api.typing(), 4_500);
+  let timedOut = false;
   try {
-    while (turns < MAX_TURNS) {
-      const left = DEADLINE_MS - (Date.now() - started);
-      if (left < 5_000 || tokens > MESSAGE_TOKENS) {
-        why = "slow";
-        break;
-      }
-      turns++;
-      const res = (await ctx.ai.clients.anthropic().beta.messages.create(
-        {
-          model,
-          max_tokens: 8_000,
-          // Tools render before the system prompt and neither changes between
-          // messages, so a breakpoint here caches both; the top-level one
-          // caches the conversation so far for the next turn of this loop.
-          system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
-          cache_control: { type: "ephemeral" },
-          tools,
-          messages,
-          output_config: { effort: "medium" },
-          // On a policy decline the API retries on a fallback model in the
-          // same call rather than leaving him with no answer.
-          betas: ["server-side-fallback-2026-07-01"],
-          fallbacks: "default",
-        } as any,
-        { signal: ctx.signal, timeout: left, maxRetries: 1 },
-      )) as unknown as Anthropic.Message;
+    const proc = Bun.spawn([CLAUDE, ...args], {
+      cwd: home,
+      env,
+      stdin: new Blob([prompt]),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const kill = () => proc.kill();
+    const timer = setTimeout(() => {
+      timedOut = true;
+      kill();
+    }, DEADLINE_MS);
+    ctx.signal.addEventListener("abort", kill, { once: true });
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    clearTimeout(timer);
+    ctx.signal.removeEventListener("abort", kill);
 
-      const u = res.usage;
-      tokens += u.input_tokens + u.output_tokens + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
-      if (res.stop_reason === "refusal") {
-        why = "refused";
-        break;
+    // One JSON object per line: assistant turns (for the tool names) and,
+    // last, the result.
+    let result: { subtype?: string; is_error?: boolean; result?: string; num_turns?: number; usage?: Record<string, number> } | null = null;
+    for (const raw of out.split("\n")) {
+      if (!raw.startsWith("{")) continue;
+      let msg: any;
+      try {
+        msg = JSON.parse(raw);
+      } catch {
+        continue;
       }
-      // Appended whole and unchanged: thinking blocks are only valid in the
-      // conversation that produced them.
-      messages.push({ role: "assistant", content: res.content as Anthropic.ContentBlockParam[] });
-      const uses = res.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
-      if (res.stop_reason !== "tool_use" || uses.length === 0) {
-        text = res.content
-          .filter((b): b is Anthropic.TextBlock => b.type === "text")
-          .map((b) => b.text)
-          .join("")
-          .trim();
-        break;
-      }
-      // All results in one message, in order — the tools share one database.
-      const results: Anthropic.ToolResultBlockParam[] = [];
-      for (const use of uses) {
-        const out = await box.call(use.name, (use.input ?? {}) as Record<string, unknown>);
-        used.push(out.isError ? `${use.name}✗` : use.name);
-        calls++;
-        results.push({ type: "tool_result", tool_use_id: use.id, content: out.text, ...(out.isError ? { is_error: true } : {}) });
-      }
-      messages.push({ role: "user", content: results });
+      if (msg.type === "assistant") {
+        for (const b of msg.message?.content ?? []) {
+          if (b?.type === "tool_use") used.push(String(b.name).replace(/^mcp__assistant__/, ""));
+        }
+      } else if (msg.type === "result") result = msg;
     }
-    if (!why && turns >= MAX_TURNS && !text) why = "slow";
-    if (!why && !text) why = "empty";
+    if (result) {
+      const u = result.usage ?? {};
+      tokens = (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
+      turns = result.num_turns ?? 0;
+    }
+    if (timedOut) why = "slow";
+    else if (!result || result.is_error || result.subtype !== "success") {
+      why = "failed";
+      // The CLI's own words ("Not logged in"), or its exit — never the prompt.
+      const said = result?.is_error ? String(result.result ?? "").slice(0, 120) : `exit ${proc.exitCode}`;
+      ctx.log.warn(`Live Maria could not answer: ${result?.subtype ?? "no result"} — ${said}`);
+    } else {
+      text = String(result.result ?? "").trim();
+      if (!text) why = "empty";
+    }
   } catch (err) {
-    // The API's error, not anybody's message: the request body is not in it.
-    ctx.log.warn(`Live Maria could not answer: ${String((err as Error)?.message).slice(0, 200)}`);
+    ctx.log.warn(`Live Maria could not start Claude Code: ${String((err as Error)?.message).slice(0, 160)}`);
     why = "failed";
   } finally {
     clearInterval(typing);
@@ -234,7 +281,10 @@ export async function answerLive(
   }
 
   // Tool names only: arguments and results are messages.
-  ctx.log.info(`Live Maria (${model}): ${turns} turn(s), tools ${used.join(", ") || "none"}, ${tokens} tokens${why ? `, gave up: ${why}` : ""}`);
+  ctx.log.info(
+    `Live Maria (${model}): ${turns} turn(s), tools ${used.join(", ") || "none"}, ${tokens} tokens, ${Date.now() - started}ms` +
+      (why ? `, gave up: ${why}` : ""),
+  );
   if (why) return { answered: false, why, turns, tokens };
 
   const shown = text.length > REPLY_MAX ? `${text.slice(0, REPLY_MAX)}…` : text;
@@ -256,5 +306,5 @@ export async function answerLive(
   if (arrived.note && ctx.table("questions").get(String(arrived.note.id))?.status !== "done") {
     ctx.table("questions").update(String(arrived.note.id), { status: "done" }, { writtenBy: LABEL });
   }
-  return { answered: true, model, turns, tools: calls, tokens, ms: Date.now() - started };
+  return { answered: true, model, turns, tools: used.length, tokens, ms: Date.now() - started };
 }

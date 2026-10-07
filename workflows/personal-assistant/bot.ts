@@ -433,10 +433,13 @@ const kindOf = (q: Row) => String(q.kind ?? "question");
 
 const PRIORITIES = new Set(["always", "normal", "ignore"]);
 
-const personFor = (ctx: Ctx, chatKey: unknown): Row | undefined =>
-  chatKey
-    ? ctx.table("people").query({ where: [{ column: "chat_key", op: "=", value: chatKey }], limit: 1 })[0]
-    : undefined;
+/** The chat's row — or, for a hidden id linked to a number, the number's, where everything lives. */
+function personFor(ctx: Ctx, chatKey: unknown): Row | undefined {
+  const byKey = (k: unknown) =>
+    ctx.table("people").query({ where: [{ column: "chat_key", op: "=", value: k }], limit: 1 })[0];
+  const row = chatKey ? byKey(chatKey) : undefined;
+  return row?.same_as ? (byKey(row.same_as) ?? row) : row;
+}
 
 /**
  * An answer that is exactly a priority, about one chat, goes straight into

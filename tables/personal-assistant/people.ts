@@ -10,6 +10,11 @@ import { defineTable, enumOf, text } from "../../src/core/define.ts";
  * written back here — so this table is the one place both sides edit, and
  * editing it on the dashboard is always allowed.
  *
+ * A WhatsApp person can arrive twice, as a phone number and as a hidden
+ * privacy id (`@lid`). Once the two are known to be one person, the `@lid`
+ * row keeps only `same_as`, pointing at the number's row, which holds
+ * everything else (src/core/chat-link.ts).
+ *
  * `notes` is the assistant's memory of the chat. The messages themselves are
  * forgotten after two weeks (see src/core/chat-log.ts); what is still going on
  * with somebody is kept here, short, where it can be read and corrected.
@@ -38,6 +43,13 @@ export default defineTable({
     chat_key: text({
       label: "Chat",
       help: "channel:id — the WhatsApp JID or Telegram chat id. Set by the sync; do not edit.",
+    }),
+    same_as: text({
+      nullable: true,
+      label: "Same as",
+      help:
+        "Set on a WhatsApp hidden id (@lid) that is the same person as a phone number: that " +
+        "chat's key. Its priority, notes and messages live there. See src/core/chat-link.ts.",
     }),
   },
 

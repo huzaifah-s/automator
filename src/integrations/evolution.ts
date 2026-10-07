@@ -488,9 +488,11 @@ const messageData = z
         /** The member who wrote it, in a group. */
         participant: z.string().optional(),
         /**
-         * The other half of a privacy `@lid` pair. Evolution swaps the two
-         * when it can, so `remoteJid` is the phone-number JID and this is
-         * the `@lid`; when it cannot, `remoteJid` is the `@lid`.
+         * The other half of a privacy `@lid` pair. A message can be filed
+         * under either: under the number, or under the `@lid` with the
+         * number here (on 2026-10-08, every message filed under a `@lid` that
+         * had a number at all carried it; none filed under a number carried
+         * the `@lid`).
          */
         remoteJidAlt: z.string().optional(),
         /** In a group, the author's phone-number JID when `participant` is a `@lid`. */
@@ -539,6 +541,12 @@ export interface EvolutionMessage {
   id: string;
   /** Where to send a reply: the person, or the group it was said in. */
   chat: string;
+  /**
+   * When `chat` is a person's privacy id (`…@lid`), their phone-number JID,
+   * if WhatsApp gave it with the message (`remoteJidAlt`) — the other half of
+   * the pair, for messages of yours as well as theirs. Undefined otherwise.
+   */
+  chatAlt: string | undefined;
   /**
    * The person's number, digits only, when WhatsApp disclosed it. Undefined
    * for a message this account sent.
@@ -621,8 +629,8 @@ function toMessage(data: unknown, own: boolean): EvolutionMessage | undefined {
   const isGroup = key.remoteJid.endsWith("@g.us");
   // A group's remoteJid is the group and the person is `participant`, which
   // can itself be a `@lid` with the number in `participantAlt` — Evolution does
-  // not swap those. Outside a group it already has: remoteJid is the number
-  // whenever WhatsApp disclosed one, and a `@lid` only when it did not.
+  // not swap those. Outside a group remoteJid is the number or the `@lid`,
+  // and when it is the `@lid` the number is usually in remoteJidAlt.
   const pick = (...jids: (string | undefined)[]) =>
     jids.find((j) => j?.endsWith("@s.whatsapp.net"));
   // Our own message in a DM is keyed by the *other* person's JID, so picking
@@ -654,6 +662,12 @@ function toMessage(data: unknown, own: boolean): EvolutionMessage | undefined {
   return {
     id: key.id,
     chat: key.remoteJid,
+    // Evolution files a conversation under the `@lid` when it could not swap
+    // in the number, and then usually still carries the number here.
+    chatAlt:
+      !isGroup && key.remoteJid.endsWith("@lid") && key.remoteJidAlt?.endsWith("@s.whatsapp.net")
+        ? key.remoteJidAlt
+        : undefined,
     from: person?.split("@")[0],
     // A stored message of ours carries our own name, or Evolution's "Você".
     name: outgoing ? undefined : (d.pushName ?? undefined),

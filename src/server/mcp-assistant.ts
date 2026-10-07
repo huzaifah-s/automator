@@ -53,6 +53,7 @@ import { Hono } from "hono";
 import { log } from "../core/logger.ts";
 import { chatMessage, chatThread, waitingChats, type ChatChannel, type StoredMessage } from "../core/chat-log.ts";
 import { table, type Row } from "../core/tables.ts";
+import { canonicalKey, linkChats } from "../core/chat-link.ts";
 import { runWorkflow } from "../core/runner.ts";
 import { store } from "../core/db.ts";
 import {
@@ -236,13 +237,21 @@ function num(args: Record<string, unknown>, key: string, fallback: number, max: 
   return Math.max(1, Math.min(Math.round(n), max));
 }
 
-/** `whatsapp:<jid>` or `telegram:<id>` — the people table's key. */
-function chatArg(args: Record<string, unknown>): { key: string; channel: ChatChannel; chat: string } {
-  const key = str(args, "chat");
+/**
+ * `whatsapp:<jid>` or `telegram:<id>` — the people table's key. A WhatsApp
+ * hidden id linked to a number comes back as the number, so every tool reads
+ * and writes one person in one place (src/core/chat-link.ts).
+ */
+function chatArg(
+  args: Record<string, unknown>,
+  name = "chat",
+): { key: string; channel: ChatChannel; chat: string } {
+  const given = str(args, name);
+  const key = given ? canonicalKey(given) : undefined;
   const m = key?.match(/^(whatsapp|telegram):(.+)$/);
   if (!m) {
     throw new Error(
-      "`chat` is a key like whatsapp:60120000000@s.whatsapp.net or telegram:-1001234567890, " +
+      `\`${name}\` is a key like whatsapp:60120000000@s.whatsapp.net or telegram:-1001234567890, ` +
         "as `waiting` and `people` print it",
     );
   }
@@ -260,8 +269,14 @@ function rowId(tableName: string, given: string | undefined): Row {
 
 /* ------------------------------------------------------------------ data */
 
+/** People rows by key, without the hidden ids linked to a number — those live there. */
 function peopleByKey(): Map<string, Row> {
-  return new Map(table("people").query({ limit: 1000 }).map((r) => [String(r.chat_key), r]));
+  return new Map(
+    table("people")
+      .query({ limit: 1000 })
+      .filter((r) => !r.same_as)
+      .map((r) => [String(r.chat_key), r]),
+  );
 }
 
 function openDrafts(): Map<string, Row> {
@@ -525,7 +540,9 @@ function tools(registry: Registry): Tool[] {
       run(args) {
         const filter = str(args, "filter") ?? "all";
         const search = str(args, "search");
-        let rows = table("people").query({ limit: 1000, ...(search ? { search } : {}) });
+        let rows = table("people")
+          .query({ limit: 1000, ...(search ? { search } : {}) })
+          .filter((r) => !r.same_as);
         if (filter === "unsorted") rows = rows.filter((r) => r.priority === null);
         else if (filter !== "all") rows = rows.filter((r) => r.priority === filter);
         return clip(
@@ -550,7 +567,8 @@ function tools(registry: Registry): Tool[] {
       description:
         "Sets a chat's priority (from the user's answer — not your own guess), replaces its notes, " +
         "or names it when the user told you who it is. Keep notes short: who they are, what is " +
-        "pending, what was promised.",
+        "pending, what was promised. same_as: when he says a WhatsApp hidden number is somebody " +
+        "already in people, pass that chat — the two become one person, kept under the phone number.",
       inputSchema: {
         type: "object",
         properties: {
@@ -561,14 +579,37 @@ function tools(registry: Registry): Tool[] {
             type: "string",
             description: "Who they are, when the user told you — for a chat named only by a number.",
           },
+          same_as: {
+            type: "string",
+            description:
+              "Another WhatsApp chat in people that is the same person — only from what he told you, " +
+              "never from a matching name.",
+          },
         },
         required: ["chat"],
         additionalProperties: false,
       },
       run(args, identity) {
-        const { key } = chatArg(args);
-        const person = peopleByKey().get(key);
+        let { key } = chatArg(args);
+        let person = peopleByKey().get(key);
         if (!person) throw new Error(`${key} is not in people`);
+        let linked = "";
+        if (args["same_as"] !== undefined) {
+          // Only a chat already in people, the same rule drafts follow: a
+          // number handed to the model in a message cannot become one.
+          const other = chatArg(args, "same_as");
+          const them = peopleByKey().get(other.key);
+          if (!them) throw new Error(`${other.key} is not in people — only two chats he has can be one person`);
+          const done = linkChats(key, other.key, identity.label);
+          key = done.canonical;
+          person = peopleByKey().get(key)!;
+          linked = done.linked
+            ? ` Linked: one person now, under ${key} — moved ${done.messages} message(s), ${done.lessons} lesson(s), ` +
+              `${done.questions} question(s), ${done.drafts} draft(s)` +
+              (done.withdrawn ? `; withdrew ${done.withdrawn} duplicate open draft(s)` : "") +
+              "."
+            : ` Already one person, under ${key}.`;
+        }
         const patch: Record<string, unknown> = {};
         const priority = str(args, "priority");
         if (priority !== undefined) {
@@ -585,9 +626,12 @@ function tools(registry: Registry): Tool[] {
           if (name.length > 80) throw new Error("name is at most 80 characters");
           patch.name = name;
         }
-        if (Object.keys(patch).length === 0) throw new Error("Nothing to change — pass priority, notes or name");
+        if (Object.keys(patch).length === 0) {
+          if (linked) return linked.trim();
+          throw new Error("Nothing to change — pass priority, notes, name or same_as");
+        }
         table("people").update(String(person.id), patch, { writtenBy: identity.label });
-        return `Updated ${person.name}: ${Object.keys(patch).join(", ")}.`;
+        return `Updated ${person.name}: ${Object.keys(patch).join(", ")}.${linked}`;
       },
     },
 

@@ -65,6 +65,7 @@ describe("evolutionMessage", () => {
     expect(evolutionMessage(envelope(dm))).toEqual({
       id: "3EB000000000000000A1",
       chat: "60120000000@s.whatsapp.net",
+      chatAlt: undefined,
       from: "60120000000",
       name: "Cikgu Contoh",
       isGroup: false,
@@ -108,6 +109,22 @@ describe("evolutionMessage", () => {
     const m = evolutionMessage(envelope(lid));
     expect(m?.chat).toBe("100000000000003@lid");
     expect(m?.from).toBeUndefined();
+    expect(m?.chatAlt).toBeUndefined();
+  });
+
+  test("a chat filed under a hidden id names its number when WhatsApp gave it", () => {
+    // What links the two halves of one person (src/core/chat-link.ts).
+    const paired = {
+      ...dm,
+      key: { ...dm.key, remoteJid: "100000000000004@lid", remoteJidAlt: "60120000004@s.whatsapp.net", addressingMode: "lid" },
+    };
+    const m = evolutionMessage(envelope(paired));
+    expect(m?.chat).toBe("100000000000004@lid");
+    expect(m?.chatAlt).toBe("60120000004@s.whatsapp.net");
+    expect(m?.from).toBe("60120000004");
+    // A group's remoteJidAlt is never a person's pair.
+    const group = { ...paired, key: { ...paired.key, remoteJid: "120363000000000000@g.us" } };
+    expect(evolutionMessage(envelope(group))?.chatAlt).toBeUndefined();
   });
 
   test("an image caption is the text, and a reply names what it replies to", () => {

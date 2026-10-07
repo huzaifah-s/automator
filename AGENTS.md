@@ -248,6 +248,18 @@ handed to the model inside a message cannot become a recipient. Its log lines
 carry the tool name and the refusal, never the arguments, which are messages.
 An `assistant` token is refused by `/mcp` and `/mcp/tables`, and theirs by it.
 
+**One WhatsApp person is one chat key, and links never come from names.**
+A person can arrive as a phone number and as a hidden privacy id (`@lid`).
+`src/core/chat-link.ts` links the two — the number is canonical, because
+replies go there — and moves the chat log, lessons, questions and drafts onto
+it; the `@lid` row keeps only `people.same_as`. Every tool takes either key
+because `chatArg` resolves it, so a new tool that reads a chat key from its
+arguments goes through `chatArg`, and a new reader of `people` skips rows
+with `same_as`. A link comes from Evolution (`chatAlt`, a message's
+`remoteJidAlt`) or from the user via `update_person same_as` between two
+chats already in `people` — never from a matching name, which is how a reply
+reaches the wrong person.
+
 **The bot acts only for the credential's chat id, one update at a time.**
 `personal-assistant-bot` drops anything not from the `maria`
 credential's Default chat id without replying (a reply confirms the bot is

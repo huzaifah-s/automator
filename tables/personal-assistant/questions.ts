@@ -58,6 +58,11 @@ export default defineTable({
         "note: the card you replied to. update: the note or question it answers, and its card " +
         "is threaded under that one.",
     }),
+    link: text({
+      nullable: true,
+      label: "Link",
+      help: "update: a page the card opens with a button — the task, for a task the assistant added.",
+    }),
     card_outdated: bool({
       default: false,
       label: "Card outdated",

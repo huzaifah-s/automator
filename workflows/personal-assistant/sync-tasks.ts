@@ -15,6 +15,7 @@ import {
   readBlocks,
   sameText,
   taskFields,
+  taskProps,
   type Block,
   type Page,
 } from "./_notion.ts";
@@ -116,6 +117,8 @@ export default defineWorkflow({
           blocks,
           complete,
           status: (row.status as string | null) ?? null,
+          props: taskProps(row.category as string | null, row.due as string | null),
+          byYou: row.edited_by === "you",
           youEditedPage: bodyChanged && row.edited_by === "you",
         });
       });
@@ -132,7 +135,15 @@ export default defineWorkflow({
             changed = judge(ctx, work, { deleted: true });
           } else if (page) {
             const { blocks, complete } = await readBlocks(ctx, token, pageId);
-            changed = judge(ctx, work, { blocks, complete, status: taskFields(page).status, youEditedPage: false });
+            const fields = taskFields(page);
+            changed = judge(ctx, work, {
+              blocks,
+              complete,
+              status: fields.status,
+              props: taskProps(fields.category, fields.due),
+              byYou: page.last_edited_by?.id !== bot,
+              youEditedPage: false,
+            });
           }
           // No page at all: it was moved somewhere the integration cannot
           // see. That says nothing about the note, so nothing is recorded.
@@ -191,31 +202,42 @@ async function pageOrNull(ctx: Ctx, token: string, id: string): Promise<Page | n
   }
 }
 
-/** Maria's recent notes on a page, newest first. */
+/** Maria's recent notes on a page, and its record of creating it, newest first. */
 function watched(ctx: Ctx, pageId: string): Row[] {
   const since = Date.now() - WATCH_DAYS * 86_400_000;
   return ctx
     .table("task_work")
     .query({ where: [{ column: "page_id", op: "=", value: pageId }], limit: 100 })
-    .filter((w) => w.block_id && Number(w.created_at) > since);
+    .filter((w) => (w.block_id || w.kind === "created") && Number(w.created_at) > since);
 }
 
 /** Block id → the label the assistant sees on its own note in the page text. */
-const labels = (work: Row[]) => new Map(work.map((w) => [String(w.block_id), String(w.id)]));
+const labels = (work: Row[]) => new Map(work.filter((w) => w.block_id).map((w) => [String(w.block_id), String(w.id)]));
 
 const clip = (text: string, max: number) =>
   text.length > max ? `${text.slice(0, max)}\n… (cut at ${max} characters)` : text;
 
 type Seen =
   | { deleted: true }
-  | { deleted?: false; blocks: Block[]; complete: boolean; status: string | null; youEditedPage: boolean };
+  | {
+      deleted?: false;
+      blocks: Block[];
+      complete: boolean;
+      status: string | null;
+      /** The task's category and due date, as `taskProps` writes them. */
+      props: string;
+      /** The page was last edited by a person, not by this integration. */
+      byYou: boolean;
+      youEditedPage: boolean;
+    };
 
 /**
  * Compares each of Maria's notes on a page with what the page says now, and
  * records an outcome on the ones you changed. Returns how many it set.
  *
  * One outcome per note per look, in order of how much it says: your edit to
- * the note itself, then its removal, then the task's status, then an edit
+ * the note itself (or, on a task it created, to the category or due date it
+ * set), then its removal, then the task's status, then an edit
  * elsewhere on the page — which goes on the newest note only, since that is
  * the one you were most likely answering. The last two never replace an
  * outcome still waiting to be learned from.
@@ -231,28 +253,43 @@ function judge(ctx: Ctx, work: Row[], seen: Seen): number {
     if (seen.deleted) {
       if (w.outcome !== "deleted") outcome = "deleted";
     } else {
-      const block = findBlock(seen.blocks, String(w.block_id));
-      if (!block || block.in_trash || block.archived) {
-        // Only from a page read whole: on a cut one it may just be further down.
-        if (seen.complete && w.outcome !== "removed") outcome = "removed";
+      if (w.kind === "created") {
+        // A task it created: the category and due date it chose, against
+        // what they are now.
+        // Only yours counts: Notion applying the database's template is an
+        // edit by the integration, and may fill in a property it left empty.
+        if (!sameText(seen.props, String(w.seen_text ?? w.text))) {
+          if (seen.byYou) {
+            outcome = "changed";
+            detail = seen.props;
+          }
+          patch.seen_text = seen.props;
+        }
       } else {
-        const now = blocksText(block.children ?? []);
-        if (!sameText(now, String(w.seen_text ?? w.text))) {
-          outcome = "edited";
-          detail = clip(now, DETAIL_MAX);
-          patch.seen_text = now;
+        const block = findBlock(seen.blocks, String(w.block_id));
+        if (!block || block.in_trash || block.archived) {
+          // Only from a page read whole: on a cut one it may just be further down.
+          if (seen.complete && w.outcome !== "removed") outcome = "removed";
+        } else {
+          const now = blocksText(block.children ?? []);
+          if (!sameText(now, String(w.seen_text ?? w.text))) {
+            outcome = "edited";
+            detail = clip(now, DETAIL_MAX);
+            patch.seen_text = now;
+          }
         }
       }
-      // A note you changed and the assistant has not learned from yet keeps
-      // that outcome: "Done" or "page changed" arriving before its next run
-      // must not overwrite the edit, which says far more.
+      // A correction the assistant has not learned from yet keeps its
+      // outcome: "Done" or "page changed" arriving before its next run must
+      // not overwrite an edit, which says far more.
       const pending = Boolean(w.outcome) && !w.learned;
       if (seen.status !== (w.seen_status ?? null)) {
         patch.seen_status = seen.status;
         if (!outcome && !pending && seen.status === "Done") outcome = "done";
         if (!outcome && !pending && seen.status === "KIV") outcome = "kiv";
       }
-      if (!outcome && i === 0 && seen.youEditedPage && !pending) outcome = "page_edited";
+      // Your writing on the page answers a note, not the task's creation.
+      if (!outcome && i === 0 && w.kind !== "created" && seen.youEditedPage && !pending) outcome = "page_edited";
     }
 
     if (outcome) {

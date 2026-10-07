@@ -420,6 +420,7 @@ access — and refuses the operations and data-table ones, as they refuse it.
 | `drafts` / `draft_reply` | Replies waiting for approval; a new one, or a revision |
 | `questions` / `ask` / `answer_question` / `close_question` | Asking you something, recording an answer you typed, and acting on it |
 | `create_task` | A task in the Notion To Do database, through the `personal-assistant-create-task` workflow |
+| `update_task` | The category or due date of a task the assistant created itself, once you have said — never your own tasks |
 | `todo` / `task` | Your open To Do tasks, most urgent first; one task with its page text, the assistant's notes on it and its questions about it |
 | `task_note` | Writes the assistant's work on a task's page — a draft, a plan, its questions, your answer — through `personal-assistant-task-note` |
 | `lessons` / `outcomes` / `learn` | What you have taught it; drafts that ended and task notes you reacted to that are not learned from yet; recording a lesson |
@@ -436,7 +437,13 @@ your comments on it stay in the table. Times are shown in `ASSISTANT_TZ`
 
 `create_task` sets Name, Status (the first "To-do" option), Due Date and
 Category — a category that is not one of the database's is refused with the
-list, not added. The same title within a week returns the existing task.
+list, not added. The due date is required: the one that was said, or the
+assistant's guess, marked as one. A category it is unsure of is left empty
+and asked about, then set with `update_task` from your answer. Every task it
+creates is announced on Telegram — title, due date, category, where it came
+from — with an **Open in Notion** button, and when you change the category
+or due date it chose, the next sync records it as a correction to learn
+from. The same title within a week returns the existing task.
 The page is made from the database's **default template** (marked "Default"
 in Notion's template menu), so it gets that template's icon and content;
 notes and the source are added below them. With no default template the

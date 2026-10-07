@@ -13,8 +13,10 @@
  * It reads the chat log (src/core/chat-log.ts) and the
  * `tables/personal-assistant/` tables — `tasks` among them, the mirror of the
  * Notion To Do list that `personal-assistant-sync-tasks` keeps. It writes rows
- * to those tables and starts two workflows: `personal-assistant-create-task`
- * and `personal-assistant-task-note`, which appends a note to a task's page.
+ * to those tables and starts three workflows: `personal-assistant-create-task`,
+ * `personal-assistant-task-note`, which appends a note to a task's page, and
+ * `personal-assistant-update-task`, which sets the category or due date of a
+ * task the assistant created itself — and of no other.
  * A note is only accepted for a page in `tasks`, for the same reason a draft
  * is only accepted for a chat in `people`: the model cannot be handed a page
  * id in a message and write to it.
@@ -69,6 +71,7 @@ const MAX_BYTES = Number(process.env.MCP_MAX_BYTES ?? 24_000);
 const TZ = process.env.ASSISTANT_TZ ?? "Asia/Kuala_Lumpur";
 const TASK_WORKFLOW = "personal-assistant-create-task";
 const TASK_NOTE_WORKFLOW = "personal-assistant-task-note";
+const TASK_UPDATE_WORKFLOW = "personal-assistant-update-task";
 /** Statuses in the order `todo` lists them; anything else sits between To Do and KIV. */
 const STATUS_RANK: Record<string, number> = { "In progress": 0, "To Do": 1, KIV: 3 };
 
@@ -255,6 +258,7 @@ const OUTCOME_WORDS: Record<string, string> = {
   kiv: "moved the task to KIV",
   page_edited: "changed the page since your note",
   deleted: "deleted the task",
+  changed: "changed the category or due date you set",
 };
 
 /** A draft that has ended and whose ending has not been learned from yet. */
@@ -800,13 +804,14 @@ function tools(registry: Registry): Tool[] {
                 line(String(w.task_title), 40),
                 String(w.kind),
                 OUTCOME_WORDS[String(w.outcome)] ?? String(w.outcome),
-                w.outcome === "edited" ? line(w.detail as string | null, 300) : "-",
+                w.outcome === "edited" || w.outcome === "changed" ? line(w.detail as string | null, 300) : "-",
                 line(String(w.text), 200),
               ]),
             ) +
             "\n\nedited: compare his version with yours — that difference is the lesson. deleted your " +
             "note: it was not wanted (wrong task, wrong kind of help, or too long). Done after your note: " +
-            "it probably helped. page changed: read the task with `task` — he may have answered you there."
+            "it probably helped. page changed: read the task with `task` — he may have answered you there. " +
+            "created + changed: he corrected the category or due date you chose — learn how he files and dates tasks."
           : "";
         return clip(
           "Drafts:\n" +
@@ -986,7 +991,9 @@ function tools(registry: Registry): Tool[] {
           questions: table("questions").query({ limit: 500 }).filter((q) => after(q) && kindOf(q) === "question").length,
           lessons: table("lessons").query({ limit: 500 }).filter(after).length,
           tasks,
-          task_notes: table("task_work").query({ limit: 500 }).filter(after).length,
+          task_notes: table("task_work")
+            .query({ limit: 500 })
+            .filter((w) => after(w) && w.kind !== "created").length,
         };
         table("run_log").insert(
           { summary, trigger: str(args, "trigger") ?? null, problems: str(args, "problems") ?? null, ...counts },
@@ -1005,20 +1012,24 @@ function tools(registry: Registry): Tool[] {
       scope: "write",
       description:
         "Adds a task to the user's Notion To Do list. For real follow-ups only — something they " +
-        "promised or must do. The same title within a week returns the existing task.",
+        "promised or must do. Always give a due date: the one that was said, or your best guess " +
+        "(due_is_guess). Give the category when you are confident; when unsure leave it out and " +
+        "`ask` about the returned task id. He is sent a card with the task and a link to it. The " +
+        "same title within a week returns the existing task.",
       inputSchema: {
         type: "object",
         properties: {
           title: { type: "string", description: "Short, starts with a verb." },
-          due: { type: "string", description: "YYYY-MM-DD, only when a date was said or is obvious." },
+          due: { type: "string", description: "YYYY-MM-DD — the date that was said, or your best guess." },
+          due_is_guess: { type: "boolean", description: "True when nobody said this date. Shown on his card." },
           category: {
             type: "string",
-            description: "One of the database's categories, e.g. Personal, StudentQR, PBLSH.",
+            description: "One of the database's categories, e.g. Personal, StudentQR, PBLSH. Omit when unsure.",
           },
           notes: { type: "string", description: "Context: who, what, anything needed to do it." },
           ...CHAT_ARG,
         },
-        required: ["title"],
+        required: ["title", "due"],
         additionalProperties: false,
       },
       async run(args) {
@@ -1035,6 +1046,7 @@ function tools(registry: Registry): Tool[] {
           input: {
             title: str(args, "title"),
             due: str(args, "due"),
+            due_guess: args["due_is_guess"] === true,
             category: str(args, "category"),
             notes: str(args, "notes"),
             source,
@@ -1043,11 +1055,57 @@ function tools(registry: Registry): Tool[] {
         if (outcome.status !== "success") {
           throw new Error(`Task not created (${outcome.status}): ${outcome.error?.message ?? "unknown error"}`);
         }
-        const result = outcome.result as { url?: string; created?: boolean; refused?: string } | undefined;
+        const result = outcome.result as
+          | { url?: string; id?: string; created?: boolean; refused?: string }
+          | undefined;
         if (result?.refused) throw new Error(`Task not created: ${result.refused}`);
-        return result?.created === false
-          ? `Already on the list: ${result.url}`
-          : `Task created: ${result?.url ?? "(no url returned)"}`;
+        if (result?.created === false) return `Already on the list: ${result.url}`;
+        return (
+          `Task ${result?.id ? compactId(result.id) : "(no id)"} created: ${result?.url ?? "(no url returned)"}. ` +
+          "He has been sent a card with it and a link." +
+          (str(args, "category") ? "" : " No category yet: `ask` him with task set to this id.")
+        );
+      },
+    },
+
+    {
+      name: "update_task",
+      scope: "write",
+      description:
+        "Sets the category and/or due date of a task YOU created — once he has told you which " +
+        "category, or given a date. Refused for any other task: his own tasks are his.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          task: { type: "string", description: "The task's id, as `todo` or `create_task` printed it." },
+          category: { type: "string", description: "One of the database's categories." },
+          due: { type: "string", description: "YYYY-MM-DD." },
+        },
+        required: ["task"],
+        additionalProperties: false,
+      },
+      async run(args) {
+        const wf = registry.get(TASK_UPDATE_WORKFLOW);
+        if (!wf) throw new Error(`${TASK_UPDATE_WORKFLOW} is not loaded on this server`);
+        const t = taskArg(str(args, "task"));
+        const mine = (workByTask().get(String(t.page_id)) ?? []).some((w) => w.kind === "created");
+        if (!mine) throw new Error(`“${t.title}” is his task, not one you created — you may not change it`);
+        const category = str(args, "category");
+        const due = str(args, "due");
+        if (!category && !due) throw new Error("Pass category, due, or both");
+        const outcome = await runWorkflow(wf, {
+          trigger: "manual",
+          input: { page_id: String(t.page_id), category, due },
+        });
+        if (outcome.status !== "success") {
+          throw new Error(`Task not updated (${outcome.status}): ${outcome.error?.message ?? "unknown error"}`);
+        }
+        const result = outcome.result as
+          | { updated?: boolean; category?: string | null; due?: string | null; refused?: string }
+          | undefined;
+        if (result?.refused) throw new Error(`Task not updated: ${result.refused}`);
+        if (!result?.updated) throw new Error("Task not updated: Notion returned no page");
+        return `“${t.title}” now: category ${result.category ?? "-"}, due ${result.due ?? "-"}.`;
       },
     },
 

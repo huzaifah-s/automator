@@ -1,6 +1,17 @@
 import { z } from "zod";
 import { defineCredential, defineWorkflow, manual, type Ctx } from "../../src/core/define.ts";
-import { CATEGORY, DATABASE_TITLE, DUE, STATUS, dataSourceId, headers as notionHeaders } from "./_notion.ts";
+import {
+  CATEGORY,
+  DATABASE_TITLE,
+  DUE,
+  STATUS,
+  headers as notionHeaders,
+  matchCategory,
+  readDataSource,
+  selectOptions,
+  taskProps,
+  type Database,
+} from "./_notion.ts";
 
 /**
  * Personal assistant — adds a task to the Notion "To Do" database.
@@ -30,14 +41,14 @@ const SAME_TASK_SECONDS = 7 * 86_400;
 const input = z.object({
   title: z.string().trim().min(1).max(200),
   due: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "due is YYYY-MM-DD").optional(),
+  /** The due date is the assistant's guess, not a date anybody said. Shown on the card. */
+  due_guess: z.boolean().optional(),
   category: z.string().trim().min(1).optional(),
   notes: z.string().trim().max(1800).optional(),
   /** Where it came from, e.g. "WhatsApp — Ali". Written into the page. */
   source: z.string().trim().max(200).optional(),
 });
 
-type Prop = { type: string; [k: string]: unknown };
-type Database = { id: string; properties: Record<string, Prop> };
 type Template = { id: string; name: string; blocks: number };
 
 const headers = () => notionHeaders(notion.token);
@@ -64,11 +75,7 @@ export default defineWorkflow({
 
     // Since 2025-09-03 the columns belong to the database's data source, not
     // the database, and a page is made in the data source.
-    const db = await ctx.step("read database", async () =>
-      ctx.http.get<Database>(`https://api.notion.com/v1/data_sources/${await dataSourceId(ctx, notion.token)}`, {
-        headers: headers(),
-      }),
-    );
+    const db = await ctx.step("read database", () => readDataSource(ctx, notion.token));
 
     const template = await ctx.step("read template", () => defaultTemplate(ctx, db.id));
 
@@ -83,15 +90,12 @@ export default defineWorkflow({
     if (task.due && db.properties[DUE]?.type === "date") {
       properties[DUE] = { date: { start: task.due } };
     }
+    let category: string | null = null;
     if (task.category) {
-      const options = selectOptions(db.properties[CATEGORY]);
-      const match = options.find((o) => o.toLowerCase() === task.category!.toLowerCase());
-      // Refused rather than created: a select silently grows a new option on
-      // every typo, and the assistant can read this and pick a real one.
-      if (!match) {
-        return { refused: `"${task.category}" is not a ${CATEGORY} — it is one of ${options.join(", ")}` };
-      }
-      properties[CATEGORY] = { select: { name: match } };
+      const match = matchCategory(db, task.category);
+      if ("refused" in match) return match;
+      category = match.name;
+      properties[CATEGORY] = { select: { name: category } };
     }
 
     const children = [task.notes, task.source && `From ${task.source}`]
@@ -130,10 +134,42 @@ export default defineWorkflow({
     // Only a real page is remembered. A practice run's held POST answers with
     // no url, and remembering that would turn the next real attempt into
     // "already on the list" for a task that does not exist.
-    if (typeof page?.url === "string") {
-      await ctx.state.set(dedupeKey, { url: page.url }, { ttlSeconds: SAME_TASK_SECONDS });
-    }
-    return { url: page?.url, created: true };
+    if (typeof page?.url !== "string" || typeof page.id !== "string") return { url: page?.url, created: true };
+    await ctx.state.set(dedupeKey, { url: page.url }, { ttlSeconds: SAME_TASK_SECONDS });
+
+    await ctx.step("record and tell", async () => {
+      const due = task.due ?? null;
+      // In the mirror at once, so the assistant can ask about it in the same
+      // run rather than waiting for the next sync to find it.
+      ctx.table("tasks").insert(
+        {
+          page_id: page.id,
+          title: task.title,
+          status,
+          due,
+          category,
+          url: page.url,
+          edited_at: Date.now(),
+          edited_by: "automation",
+          checked_at: 0,
+        },
+        { writtenBy: ctx.workflow },
+      );
+      // What it set, so the sync can tell when you change it — see task_work.
+      const set = taskProps(category, due);
+      const { row } = ctx.table("task_work").insert(
+        { page_id: page.id, task_title: task.title, kind: "created", text: set, seen_text: set, seen_status: status },
+        { writtenBy: ctx.workflow },
+      );
+      // Every task the assistant adds is announced, with a button that opens
+      // it in Notion — the quickest way to correct what it guessed.
+      ctx.table("questions").insert(
+        { kind: "update", question: announcement(task, category), link: page.url },
+        { writtenBy: ctx.workflow },
+      );
+      return { work: row.id };
+    });
+    return { url: page.url, created: true, id: page.id };
   },
 });
 
@@ -190,7 +226,19 @@ function startingStatus(db: Database): string | null {
   return null;
 }
 
-function selectOptions(prop: Prop | undefined): string[] {
-  if (prop?.type !== "select") return [];
-  return ((prop.select as { options?: Array<{ name: string }> }).options ?? []).map((o) => o.name);
+const dayFmt = new Intl.DateTimeFormat("en-GB", { timeZone: "UTC", weekday: "short", day: "numeric", month: "short" });
+
+/** The card text: what was added, with which due date and category, and from where. */
+function announcement(task: z.infer<typeof input>, category: string | null): string {
+  const due = task.due
+    ? `${dayFmt.format(new Date(`${task.due}T00:00:00Z`)).replace(",", "")}${task.due_guess ? " (my guess)" : ""}`
+    : "none";
+  return [
+    `Added to your To Do: *${task.title}*`,
+    `Due: ${due} · Category: ${category ?? "not set — I'll ask you"}`,
+    task.source ? `From ${task.source}` : null,
+    task.notes ? (task.notes.length > 300 ? `${task.notes.slice(0, 299)}…` : task.notes) : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
 }

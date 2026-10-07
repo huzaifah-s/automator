@@ -303,6 +303,16 @@ the last read, not when the timestamp moves; and "who edited" is
 read as the user's feedback. A callout missing from a page cut at
 `MAX_BLOCKS` is not "removed"; `readBlocks` says when it cut.
 
+**`update_task` only reaches tasks the assistant created.** The tool refuses a
+page without a `created` row in `task_work`, and the workflow sets two
+properties, category and due date. Two details keep its feedback honest:
+it moves the row's `seen_text` only for the field it changed (Notion's
+answer may already carry a change of yours to the other one, which the sync
+must still see), and the sync counts a changed category or due date as
+yours only when `last_edited_by` is a person — Notion applying the
+database's template is an integration edit that may fill in what the
+assistant left empty.
+
 **`MARIA_MARK` and `todo-repeat`'s `ASSISTANT_NOTE` are one string in two
 folders.** A repeating task's next copy leaves out callouts that start with
 it. Change one without the other and every monthly task collects empty

@@ -55,7 +55,8 @@ export const clock = (ms: number) =>
     hour12: false,
   }).format(new Date(ms));
 
-type Button = { text: string; callback_data: string };
+/** A button that comes back to the bot, or one that opens a page. */
+type Button = { text: string; callback_data: string } | { text: string; url: string };
 
 /** Only `http` is needed, so a webhook's `register` can use it as well as a run. */
 export function botApi(ctx: Pick<Ctx, "http"> & Partial<Pick<Ctx, "log">>, bot: Partial<BotCredential>) {
@@ -283,6 +284,12 @@ export function questionOutcome(q: Row, about?: string | null): string {
   ]
     .filter((l) => l !== null)
     .join("\n");
+}
+
+/** The button under an update that carries a link — a task the assistant added. */
+export function linkButtons(url: unknown): Button[][] | undefined {
+  if (typeof url !== "string" || !/^https:\/\//.test(url)) return undefined;
+  return [[{ text: /notion\.(so|com)\//.test(url) ? "Open in Notion" : "Open", url }]];
 }
 
 /** An update from the assistant — a digest, or its answer to something you asked. */

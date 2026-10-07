@@ -80,6 +80,40 @@ export async function dataSourceId(ctx: Ctx, token: string): Promise<string> {
   return source.id;
 }
 
+export type Prop = { type: string; [k: string]: unknown };
+export type Database = { id: string; properties: Record<string, Prop> };
+
+/** The data source itself — its columns and their options. */
+export async function readDataSource(ctx: Ctx, token: string): Promise<Database> {
+  return ctx.http.get<Database>(`https://api.notion.com/v1/data_sources/${await dataSourceId(ctx, token)}`, {
+    headers: headers(token),
+  });
+}
+
+export function selectOptions(prop: Prop | undefined): string[] {
+  if (prop?.type !== "select") return [];
+  return ((prop.select as { options?: Array<{ name: string }> }).options ?? []).map((o) => o.name);
+}
+
+/**
+ * A category as the database spells it, or why not. Refused rather than
+ * created: a select silently grows a new option on every typo, and the
+ * assistant can read the list and pick a real one.
+ */
+export function matchCategory(db: Database, given: string): { name: string } | { refused: string } {
+  const options = selectOptions(db.properties[CATEGORY]);
+  const match = options.find((o) => o.toLowerCase() === given.trim().toLowerCase());
+  return match ? { name: match } : { refused: `"${given}" is not a ${CATEGORY} — it is one of ${options.join(", ")}` };
+}
+
+/**
+ * The two properties the assistant sets on a task it creates, as one line.
+ * Stored on the task's `task_work` row when it is made, and compared by the
+ * sync, so you changing either one is feedback it learns from.
+ */
+export const taskProps = (category: string | null | undefined, due: string | null | undefined) =>
+  `Category: ${category || "-"} · Due: ${due ? due.slice(0, 10) : "-"}`;
+
 /* ------------------------------------------------------------ properties */
 
 export interface RichText {

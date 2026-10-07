@@ -5,6 +5,7 @@ import {
   draftButtons,
   draftCard,
   draftOutcome,
+  linkButtons,
   questionButtons,
   questionCard,
   questionOutcome,
@@ -88,14 +89,19 @@ export default defineWorkflow({
       posted++;
     }
 
-    // The assistant's own updates to you — the digests, and its answers to
-    // your notes. Plain messages: there is nothing to answer, so they are
-    // done once delivered. An answer is threaded under what it answers.
+    // The assistant's own updates to you — the digests, its answers to your
+    // notes, and every task it adds (with a button that opens it in Notion).
+    // Nothing to answer, so they are done once delivered. An answer is
+    // threaded under what it answers.
     for (const u of [...updates].reverse()) {
       await ctx.step(`update ${u.id}`, async () => {
         const answers: Row | null = u.reply_to ? questions.get(String(u.reply_to)) : null;
         const under = Number(answers?.card_id);
-        const cardId = await api.send(updateCard(u), undefined, Number.isFinite(under) && under > 0 ? under : undefined);
+        const cardId = await api.send(
+          updateCard(u),
+          linkButtons(u.link),
+          Number.isFinite(under) && under > 0 ? under : undefined,
+        );
         questions.update(String(u.id), { card_id: String(cardId), status: "done" }, { writtenBy: ctx.workflow });
       });
       posted++;

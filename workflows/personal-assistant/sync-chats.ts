@@ -3,7 +3,7 @@ import {
   cron,
   defineCredential,
   defineWorkflow,
-  optionalSecret,
+  defineSecrets,
   realName,
   type ChatLogEntry,
   type Ctx,
@@ -48,7 +48,8 @@ const TZ = "Asia/Kuala_Lumpur";
 const whatsappAccount = defineCredential("evolution", "huzaifah-evolution-api");
 const telegramAccount = defineCredential("telegram_user", "huzaifah-telegram-user-account");
 /** Optional: without it, an `always` chat waits for the hourly run like any other. */
-const routineToken = optionalSecret("ASSISTANT_ROUTINE_TOKEN", z.string().min(20), "");
+/** Read on every run, so setting it on the Secrets tab works without a restart. */
+const routine = defineSecrets({ ASSISTANT_ROUTINE_TOKEN: z.string().min(20).optional() });
 
 /** Telegram's own notifications account, which sends login codes. */
 const TELEGRAM_SERVICE = 777000;
@@ -150,7 +151,7 @@ export default defineWorkflow({
     // than at the top of the hour. The count, never who — see _routine.ts.
     const urgent = whatsapp.urgent + telegram.urgent;
     const fired = urgent
-      ? await fireAssistant(ctx, routineToken, `${urgent} new message(s) in chats marked always. Start with \`waiting\`.`)
+      ? await fireAssistant(ctx, routine.ASSISTANT_ROUTINE_TOKEN ?? "", `${urgent} new message(s) in chats marked always. Start with \`waiting\`.`)
       : undefined;
     return { whatsapp, telegram, ...(fired ? { fired } : {}) };
   },

@@ -1,8 +1,8 @@
 import { z } from "zod";
 import {
   defineCredential,
+  defineSecrets,
   defineWorkflow,
-  optionalSecret,
   telegramSecretToken,
   webhook,
   type Ctx,
@@ -10,6 +10,7 @@ import {
 } from "../../src/core/define.ts";
 import {
   botApi,
+  chatLabel,
   draftButtons,
   draftOutcome,
   esc,
@@ -30,9 +31,20 @@ import { fireAssistant } from "./_routine.ts";
  *              words in `feedback`, and the assistant writes a new version.
  *              On a draft already sent or skipped it is the reason, kept for
  *              the assistant to learn from.
- *   option / reply to a question card    is the answer.
+ *   option on a question card    is the answer. always / normal / ignore
+ *              about a chat is applied to `people` at once, so the chat stops
+ *              being "unsorted" before the assistant next runs.
+ *   reply to a question card, a digest or an answered card    is a note
+ *              about that card. The assistant decides what it is: an answer
+ *              (recorded on the question, and the card rewritten) or you
+ *              asking back, which it answers under your message. A bare
+ *              always / normal / ignore is the one reply taken as the answer
+ *              here and now.
  *   any other message    is a note to the assistant, filed as an answered
  *              "question" so its next run reads it.
+ *
+ * **Every message gets a reply.** A card edited a screen above is not one:
+ * what you see after swiping to reply is whether anything heard you.
  *
  * **Only you.** The credential's Default chat id is the one person the bot
  * answers; an update from anyone else is dropped without a reply, because
@@ -51,8 +63,12 @@ import { fireAssistant } from "./_routine.ts";
 const bot = defineCredential("telegram", "maria");
 const whatsappAccount = defineCredential("evolution", "huzaifah-evolution-api");
 const telegramAccount = defineCredential("telegram_user", "huzaifah-telegram-user-account");
-/** Optional: without it, comments wait for the hourly run. See _routine.ts. */
-const routineToken = optionalSecret("ASSISTANT_ROUTINE_TOKEN", z.string().min(20), "");
+/**
+ * Optional: without it, comments wait for the hourly run. See _routine.ts.
+ * Read on every run, so setting it on the Secrets tab works without a restart.
+ */
+const routine = defineSecrets({ ASSISTANT_ROUTINE_TOKEN: z.string().min(20).optional() });
+const routineToken = () => routine.ASSISTANT_ROUTINE_TOKEN ?? "";
 
 const update = z.looseObject({
   update_id: z.number().optional(),
@@ -177,9 +193,15 @@ async function onButton(ctx: Ctx, cb: NonNullable<Update["callback_query"]>) {
       return { question: id, outcome: "already answered" };
     }
     const row = answer(ctx, q, choice);
-    if (q.card_id) await api.edit(String(q.card_id), questionOutcome(row, aboutName(ctx, row)));
-    await api.answer(cb.id, "Noted.");
-    return { question: id, outcome: "answered" };
+    const priority = applyPriority(ctx, row);
+    if (q.card_id) await api.edit(String(q.card_id), questionOutcome(row, about(ctx, row)));
+    if (priority) {
+      await api.answer(cb.id, `Noted — set to ${priority}.`);
+      return { question: id, outcome: "answered", priority };
+    }
+    const fired = await fireAssistant(ctx, routineToken(), "The user answered a question. Read `questions` and act on it.");
+    await api.answer(cb.id, fired === "fired" ? "Noted — on it now." : "Noted.");
+    return { question: id, outcome: "answered", fired };
   }
 
   await api.answer(cb.id);
@@ -231,29 +253,64 @@ async function onMessage(ctx: Ctx, m: NonNullable<Update["message"]>) {
     const d = ctx.table("drafts").query({ where: [{ column: "card_id", op: "=", value: card }], limit: 1 })[0];
     if (d) return comment(ctx, d, text, m.message_id);
     const q = ctx.table("questions").query({ where: [{ column: "card_id", op: "=", value: card }], limit: 1 })[0];
-    if (q) {
-      if (q.status !== "open") {
-        await api.reply(m.message_id, `Already answered: ${esc(String(q.answer))}`);
-        return { question: q.id, outcome: "already answered" };
+    // Typed in words, a reply may answer the card or ask something back —
+    // "telegram or whatsapp", with or without the "?". Telling those apart
+    // is the assistant's job, so it arrives as a note and the question stays
+    // open. Only a bare priority is unambiguous enough to apply here.
+    const bare = text.toLowerCase();
+    if (q && kindOf(q) === "question" && q.status === "open" && q.chat_key && PRIORITIES.has(bare)) {
+      const row = answer(ctx, q, bare);
+      const priority = applyPriority(ctx, row);
+      if (q.card_id) await api.edit(String(q.card_id), questionOutcome(row, about(ctx, row)));
+      if (priority) {
+        await api.reply(m.message_id, `Noted — ${esc(about(ctx, row) ?? "that chat")} is now <b>${priority}</b>.`);
+        return { question: q.id, outcome: "answered", priority };
       }
-      const row = answer(ctx, q, text);
-      if (q.card_id) await api.edit(String(q.card_id), questionOutcome(row, aboutName(ctx, row)));
-      return { question: q.id, outcome: "answered" };
     }
+    if (q) return note(ctx, text, m.message_id, q);
   }
 
-  // Not about a card: a note for the assistant's next run. Filed as an
-  // answered question so the one place it already looks is where it is.
+  return note(ctx, text, m.message_id, null);
+}
+
+/**
+ * Something for the assistant's next run that is not an answer. Filed as an
+ * answered "question" so the one place it already looks is where it is; when
+ * it was a reply to a card, it quotes that card and carries its chat, so
+ * "telegram or whatsapp?" arrives with what it was asking about. `card_id`
+ * is your message, which the assistant's answer is threaded under.
+ */
+async function note(ctx: Ctx, text: string, messageId: number, about: Row | null) {
+  const quoted = about
+    ? `(your reply to: “${String(about.question).replace(/\s+/g, " ").slice(0, 300)}”)`
+    : "(a message from you)";
   const { row } = ctx.table("questions").insert(
-    { kind: "note", question: "(a message from you)", answer: text, status: "answered", answered_at: Date.now() },
+    {
+      kind: "note",
+      question: quoted,
+      answer: text,
+      chat_key: about?.chat_key ?? null,
+      reply_to: about ? String(about.id) : null,
+      status: "answered",
+      answered_at: Date.now(),
+      card_id: String(messageId),
+    },
     { writtenBy: ctx.workflow },
   );
-  const fired = await fireAssistant(ctx, routineToken, "The user sent you a note. Read `questions` and act on it.");
-  await api.reply(
-    m.message_id,
-    fired === "fired" ? "Noted — on it now." : "Noted — I'll read this on my next run.",
+  const fired = await fireAssistant(
+    ctx,
+    routineToken(),
+    "The user sent you a note. Read `questions`, act on it, and answer him with `brief` (reply_to the note).",
   );
-  return { note: row.id, fired };
+  await botApi(ctx, bot).reply(messageId, heard(fired));
+  return { note: row.id, about: about?.id ?? null, fired };
+}
+
+/** What you are told after a message: whether the assistant is already on it. */
+function heard(fired: Awaited<ReturnType<typeof fireAssistant>>): string {
+  return fired === "fired"
+    ? "Got it — on it now."
+    : "Got it — I'll pick this up on my next run (hourly, 08:00–23:00).";
 }
 
 /** Your reply to a draft card: what to change. */
@@ -280,8 +337,14 @@ async function comment(ctx: Ctx, d: Row, text: string, messageId: number) {
   if (d.card_id) await api.edit(String(d.card_id), draftOutcome(row, "revise"));
   const fired = await fireAssistant(
     ctx,
-    routineToken,
+    routineToken(),
     "The user commented on a draft. Revise the drafts in `revise` (see `drafts`) and learn from the comment.",
+  );
+  await api.reply(
+    messageId,
+    fired === "fired"
+      ? "Got it — a new version is coming."
+      : "Got it — I'll send a new version on my next run (hourly, 08:00–23:00).",
   );
   return { draft: d.id, outcome: "revise", fired };
 }
@@ -292,8 +355,34 @@ function answer(ctx: Ctx, q: Row, value: string): Row {
     .update(String(q.id), { answer: value, status: "answered", answered_at: Date.now() }, { writtenBy: ctx.workflow });
 }
 
-function aboutName(ctx: Ctx, q: Row): string | null {
+/** `kind` is NULL on rows from before it existed, which were all questions. */
+const kindOf = (q: Row) => String(q.kind ?? "question");
+
+const PRIORITIES = new Set(["always", "normal", "ignore"]);
+
+const personFor = (ctx: Ctx, chatKey: unknown): Row | undefined =>
+  chatKey
+    ? ctx.table("people").query({ where: [{ column: "chat_key", op: "=", value: chatKey }], limit: 1 })[0]
+    : undefined;
+
+/**
+ * An answer that is exactly a priority, about one chat, goes straight into
+ * `people`. Waiting for the assistant's next run left the chat "unsorted" in
+ * between, and an unsorted chat is one it asks about — which is how the same
+ * group got asked twice. The question stays `answered`, so the assistant still
+ * reads it and can learn from the pattern.
+ */
+function applyPriority(ctx: Ctx, q: Row): string | null {
+  const value = String(q.answer ?? "").trim().toLowerCase();
+  if (!PRIORITIES.has(value)) return null;
+  const person = personFor(ctx, q.chat_key);
+  if (!person) return null;
+  ctx.table("people").update(String(person.id), { priority: value }, { writtenBy: ctx.workflow });
+  return value;
+}
+
+/** Which chat a question is about, and in which app. */
+function about(ctx: Ctx, q: Row): string | null {
   if (!q.chat_key) return null;
-  const p = ctx.table("people").query({ where: [{ column: "chat_key", op: "=", value: q.chat_key }], limit: 1 })[0];
-  return p ? String(p.name) : String(q.chat_key);
+  return chatLabel(String(q.chat_key), personFor(ctx, q.chat_key));
 }

@@ -418,10 +418,10 @@ access — and refuses the operations and data-table ones, as they refuse it.
 | `thread` | One chat's messages, with what `people` knows about it |
 | `people` / `update_person` | Priorities and notes |
 | `drafts` / `draft_reply` | Replies waiting for approval; a new one, or a revision |
-| `questions` / `ask` / `close_question` | Asking you something and acting on the answer |
+| `questions` / `ask` / `answer_question` / `close_question` | Asking you something, recording an answer you typed, and acting on it |
 | `create_task` | A task in the Notion To Do database, through the `personal-assistant-create-task` workflow |
 | `lessons` / `outcomes` / `learn` | What you have taught it; drafts that ended and are not learned from yet; recording a lesson |
-| `brief` | An update to you — the morning and night digests |
+| `brief` | An update to you — the morning and night digests, or an answer threaded under your note (`reply_to`) |
 | `now` | Your local time, and whether a digest is due and already sent |
 | `log_run` | Called last every run: a row in `run_log` with its own account of what it did and why, and counts the runner measures itself |
 
@@ -450,8 +450,15 @@ back:
 | **✅ Send** | Sent from your own WhatsApp or Telegram, exactly as drafted; the card says when |
 | **Skip** | Closed; nothing is sent |
 | Reply to a draft card | Your words go in `feedback`, the draft goes to `revise`, and the assistant writes a new version — whose card says what you asked for, while the old card's buttons are removed |
-| Tap an option, or reply to a question card | The answer |
-| Any other message | A note the assistant reads on its next run |
+| Tap an option on a question card | The answer — always / normal / ignore is applied to `people` at once |
+| Reply to a question card, a digest or an answered card | A note about that card. The assistant decides whether it answers the question (`answer_question`, and the card is rewritten) or asks something back (answered under your message) — by meaning, not by a "?". A bare `always` / `normal` / `ignore` is applied at once, like a tap |
+| Any other message | A note the assistant reads on its next run, and answers under your message |
+
+Every message you send gets a reply straight away — "on it now" when the
+assistant was started early, "on my next run" when it was not. Every card
+about a chat names its app ("ANSARA Lounge · WhatsApp group"), and the
+assistant is refused a second question about a chat within a week, or about
+one that already has a priority.
 
 Updates are handled one at a time (`onOverlap: "queue"`), so a double tap on
 Send sends once. A failed send is written on the card with Send still there.
@@ -482,9 +489,10 @@ sent or skipped records the reason, which is exactly what it learns from.
 **It starts early** when you comment on a draft, send the bot a note, or a
 chat marked `always` gets a message — if the routine has an API trigger and
 automator knows it: the variable `ASSISTANT_ROUTINE_FIRE_URL` and the secret
-`ASSISTANT_ROUTINE_TOKEN`, both shown once when the trigger is added. Without
-them the hourly schedule still does everything, a little later. At most one
-early start every two minutes.
+`ASSISTANT_ROUTINE_TOKEN`, both shown once when the trigger is added. Both are
+read on every run, so setting them needs no restart. Without them the hourly
+schedule still does everything, a little later. At most one early start every
+two minutes.
 
 ## Checkpoints and resume
 

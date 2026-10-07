@@ -87,7 +87,7 @@ export function botApi(ctx: Pick<Ctx, "http"> & Partial<Pick<Ctx, "log">>, bot: 
      * timed out may have arrived, and a second card for one draft is a second
      * Send button for one message.
      */
-    async send(html: string, buttons?: Button[][]): Promise<number> {
+    async send(html: string, buttons?: Button[][], replyTo?: number): Promise<number> {
       const m = await call<{ message_id: number }>(
         "sendMessage",
         {
@@ -96,6 +96,10 @@ export function botApi(ctx: Pick<Ctx, "http"> & Partial<Pick<Ctx, "log">>, bot: 
           parse_mode: "HTML",
           link_preview_options: { is_disabled: true },
           ...(buttons ? { reply_markup: { inline_keyboard: buttons } } : {}),
+          // Threaded under what it answers — your note, or the card you
+          // replied to — so an answer is next to the question, not a screen
+          // away. Sent anyway if that message was deleted.
+          ...(replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
         },
         0,
       );
@@ -167,6 +171,31 @@ export function botApi(ctx: Pick<Ctx, "http"> & Partial<Pick<Ctx, "log">>, bot: 
 /* ------------------------------------------------------------------ cards */
 
 const CHANNEL: Record<string, string> = { whatsapp: "WhatsApp", telegram: "Telegram" };
+const channelOf = (chatKey: string) => CHANNEL[chatKey.split(":")[0]!] ?? "chat";
+
+/**
+ * Where a chat lives, said the way you would look for it: "ANSARA Lounge ·
+ * WhatsApp group". Every card that is about a chat carries one, because the
+ * same name can be a WhatsApp group and a Telegram one, and a card that does
+ * not say which sends you searching both apps.
+ */
+export function chatLabel(chatKey: string, person?: Row | null): string {
+  const name = person?.name ? String(person.name) : chatKey.slice(chatKey.indexOf(":") + 1);
+  return `${name} · ${chatWhere(chatKey, person)}`;
+}
+
+/** "WhatsApp", "Telegram group" — the app, and the kind of chat when it is not one person. */
+export function chatWhere(chatKey: string, person?: Row | null): string {
+  const kind = person?.kind && person.kind !== "person" ? ` ${person.kind}` : "";
+  return `${channelOf(chatKey)}${kind}`;
+}
+
+/**
+ * The assistant writes `*like this*` for emphasis, the way WhatsApp does;
+ * the cards are Telegram HTML, where that shows the asterisks. Applied after
+ * escaping, so it can only ever add <b>.
+ */
+const bold = (html: string) => html.replace(/\*([^*\n]+)\*/g, "<b>$1</b>");
 
 /**
  * A draft as shown on a card. Telegram refuses a message over 4096
@@ -177,7 +206,6 @@ const shown = (text: unknown) => {
   const t = String(text ?? "");
   return t.length > 3300 ? `${t.slice(0, 3300)}… (${t.length - 3300} more characters — full text in the drafts table)` : t;
 };
-const channelOf = (chatKey: string) => CHANNEL[chatKey.split(":")[0]!] ?? "chat";
 
 /** The buttons under an open draft. `d:<id>:<action>` stays well inside Telegram's 64 bytes. */
 export const draftButtons = (id: string): Button[][] => [
@@ -191,9 +219,9 @@ export const draftButtons = (id: string): Button[][] => [
  * A draft's card. `previousFeedback` is what you said about the version this
  * one replaces, so a revision arrives with the reason for it.
  */
-export function draftCard(d: Row, previousFeedback?: string | null): string {
+export function draftCard(d: Row, previousFeedback?: string | null, person?: Row | null): string {
   return [
-    `✉️ <b>Reply to ${esc(String(d.chat_name))}</b> · ${channelOf(String(d.chat_key))}`,
+    `✉️ <b>Reply to ${esc(String(d.chat_name))}</b> · ${chatWhere(String(d.chat_key), person)}`,
     d.why ? `<i>${esc(String(d.why))}</i>` : null,
     previousFeedback ? `Revised after: “${esc(previousFeedback)}”` : null,
     "",
@@ -229,10 +257,11 @@ export function questionButtons(q: Row): Button[][] | undefined {
   return rows;
 }
 
+/** `about` is a chatLabel — which chat, and in which app. */
 export function questionCard(q: Row, about?: string | null): string {
   const options = Array.isArray(q.options) ? q.options : [];
   return [
-    `❓ ${esc(String(q.question))}`,
+    `❓ ${bold(esc(String(q.question)))}`,
     about ? `<i>About ${esc(about)}</i>` : null,
     options.length ? null : "\nReply to this message with your answer.",
   ]
@@ -242,7 +271,7 @@ export function questionCard(q: Row, about?: string | null): string {
 
 export function questionOutcome(q: Row, about?: string | null): string {
   return [
-    `❓ ${esc(String(q.question))}`,
+    `❓ ${bold(esc(String(q.question)))}`,
     about ? `<i>About ${esc(about)}</i>` : null,
     "",
     `<b>Answer:</b> ${esc(String(q.answer ?? ""))}`,
@@ -250,3 +279,6 @@ export function questionOutcome(q: Row, about?: string | null): string {
     .filter((l) => l !== null)
     .join("\n");
 }
+
+/** An update from the assistant — a digest, or its answer to something you asked. */
+export const updateCard = (u: Row) => `🗒 ${bold(esc(String(u.question)))}`;

@@ -8,9 +8,9 @@ import type { Ctx } from "../../src/core/define.ts";
  * Configured by two values, and quietly off without either: the routine's
  * fire URL as the variable `ASSISTANT_ROUTINE_FIRE_URL`, and its token as the
  * secret `ASSISTANT_ROUTINE_TOKEN` — both shown once when you add an API
- * trigger to the routine at claude.ai/code/routines. The token is read with
- * `optionalSecret` in the calling workflow and passed in, so that file's
- * import registers it with the redactor.
+ * trigger to the routine at claude.ai/code/routines. The token is declared
+ * with `defineSecrets` (optional) in the calling workflow and passed in, so it
+ * is registered with the redactor and a new value is live on the next run.
  *
  * **At most one fire every two minutes.** A routine takes 30 fires an hour,
  * a fire is a whole session, and two sessions working the same drafts at

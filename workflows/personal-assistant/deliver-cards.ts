@@ -3,9 +3,12 @@ import { cron, defineCredential, defineSecrets, defineWorkflow, type Row } from 
 import {
   BATCH_MAX,
   EXPIRE_DAYS,
+  SORTED_MAX,
+  SORTED_SETTLE_MS,
   batchCard,
   botApi,
   byAsked,
+  bySorted,
   cardQuestions,
   chatLabel,
   draftButtons,
@@ -17,6 +20,9 @@ import {
   questionButtons,
   questionCard,
   questionOutcome,
+  setByHim,
+  sortedCard,
+  sortedOnCard,
   taskLabel,
   taskLinks,
   updateCard,
@@ -36,6 +42,9 @@ import { firePending } from "./_routine.ts";
  * within a run, because a retried send whose first attempt arrived is a
  * second card with a second Send button; the next minute picks up anything
  * that genuinely failed.
+ *
+ * The chats the assistant sorted by herself come a run at a time, on one
+ * "I sorted these" card, once that run has logged its end.
  *
  * A revision's card says what you asked to change, and the card of the draft
  * it replaces is closed so that only one Send button is live per reply.
@@ -120,6 +129,50 @@ export default defineWorkflow({
       });
       posted++;
     }
+    // A priority of hers he changed on the dashboard: her newest call on the
+    // chat no longer matches it. That is his answer, the same as a tap —
+    // his from now on, kept for her to learn from, and her card redrawn.
+    const sortingTable = ctx.table("sorting");
+    const newestCall = new Map<string, Row>();
+    for (const r of sortingTable.query({ limit: 500 }).sort(byAsked)) newestCall.set(String(r.chat_key), r);
+    const overruled: Row[] = [];
+    for (const p of people.values()) {
+      const call = newestCall.get(String(p.chat_key));
+      if (p.priority_by !== "maria" || !p.priority || !call || call.answer || call.choice === p.priority) continue;
+      setByHim(ctx, p, String(p.priority));
+      overruled.push(call);
+    }
+    for (const card of new Set(overruled.map((r) => r.card_id).filter(Boolean).map(String))) {
+      await ctx.step(`sorted card ${card}`, async () => {
+        const rows = sortedOnCard(ctx, card);
+        const label = (r: Row) => chatLabel(String(r.chat_key), people.get(String(r.chat_key)));
+        const { html, buttons } = sortedCard(rows.slice(0, SORTED_MAX), label, rows.slice(SORTED_MAX));
+        await api.edit(card, html, buttons);
+      });
+    }
+
+    // The chats she sorted herself: one card per run, sent once the run has
+    // logged its end (or gone quiet), so calls made minutes apart arrive
+    // together. Past SORTED_MAX, the rest are named on it without buttons.
+    const calls = sortingTable
+      .query({ where: [{ column: "card_id", op: "is null" }], limit: 100 })
+      .filter((r) => !r.answer)
+      .sort(bySorted);
+    const newest = Math.max(0, ...calls.map((r) => Number(r.created_at)));
+    const lastLog = Number(ctx.table("run_log").query({ limit: 1 })[0]?.created_at ?? 0);
+    let sortedCalls = 0;
+    if (calls.length && (lastLog > newest || Date.now() - newest > SORTED_SETTLE_MS)) {
+      sortedCalls = calls.length;
+      await ctx.step(`sorted ${calls[0]!.id}`, async () => {
+        const shown = calls.slice(0, SORTED_MAX);
+        const label = (r: Row) => chatLabel(String(r.chat_key), people.get(String(r.chat_key)));
+        const { html, buttons } = sortedCard(shown, label, calls.slice(SORTED_MAX));
+        const cardId = await api.send(html, buttons);
+        for (const r of calls) sortingTable.update(String(r.id), { card_id: String(cardId) }, { writtenBy: ctx.workflow });
+      });
+      posted++;
+    }
+
     const inBatch = new Set(batched.map((q) => String(q.id)));
     for (const q of oldestFirst.filter((q) => !inBatch.has(String(q.id)))) {
       await ctx.step(`question ${q.id}`, async () => {
@@ -206,6 +259,10 @@ export default defineWorkflow({
       fired,
       drafts: newDrafts.length,
       questions: newQuestions.length,
+      sorted: sortedCalls,
+      overruled: overruled.length,
+
+
       updates: updates.length,
       posted,
       cardsUpdated: outdated.length + withdrawn.length,

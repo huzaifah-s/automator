@@ -34,6 +34,7 @@ export default defineTable({
     lessons: int({ default: 0, label: "Lessons" }),
     tasks: int({ default: 0, label: "Tasks" }),
     task_notes: int({ default: 0, label: "Task notes", help: "Notes written on To Do tasks." }),
+    sorted: int({ default: 0, label: "Sorted", help: "Chats the assistant gave a priority herself." }),
     facts: int({ default: 0, label: "Facts", help: "Facts added to the brain." }),
     loops_opened: int({ default: 0, label: "Loops opened" }),
     loops_closed: int({ default: 0, label: "Loops closed" }),

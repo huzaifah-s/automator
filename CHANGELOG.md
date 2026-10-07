@@ -8,7 +8,45 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-10-08
 
+### Maria decides, and asks only what she can't work out
+
+In the 24 hours to 8 Oct she sent about 30 "Is X important?" cards. Most
+were obvious from the chat — family groups, alumni groups, broadcasts,
+promos — and about 60% came back "ignore". Two "who is this hidden number?"
+cards showed nothing he could recognise.
+
+- **She sorts chats herself.** `update_person` with a priority and a
+  one-line `reason` is her call: `people.priority_by` maria, and a row in the
+  new `sorting` table. A priority from him cites the question or note he
+  said it in (`answer`), so she cannot pass her guess off as his. Hers is
+  refused on any chat he set — and a priority with no `priority_by`, from
+  before the column, counts as his.
+- **One "🗂 I sorted these" card per run**, sent once the run has logged its
+  end (or ten minutes after its last call), with her choice, her reason, a
+  quote for a person she could not place, and a row of buttons per chat (✓
+  on hers). No tap: her choice stands. Past ten chats the rest are named in
+  a line. *Considered:* sending it as soon as she sorts — calls a few
+  minutes apart arrived as several cards, the thing this replaces.
+- **His changes are feedback.** A tap that changes her call, a priority he
+  gives in words, or a change on the dashboard (her newest call no longer
+  matches the priority — `deliver-cards` checks every minute) sets
+  `sorting.answer`; `outcomes` lists it until `learn from_sorting`. A tap
+  that agrees makes the priority his and is not a correction.
+- **`ask` won't ask how important a chat is at all**, refuses an automated
+  sender (every message a business template) and a person nobody has a
+  note on who has written no words — the hidden-number rule, widened.
+- **A question budget: two an hour about chats (and anything else), two
+  about To Do tasks.** She runs hourly and sorts chats herself, so a
+  question is for what only he knows; two fit on one card a run, and a
+  separate budget for tasks keeps one kind from crowding out the other.
+  *Considered:* a daily cap — an hourly one is what keeps a single bad run
+  from becoming a screen of cards, which is what he complained about.
+- `linkChats` keeps his priority over hers and moves `sorting`; `run_log`
+  counts chats sorted; `questions` shows a note's quote in full, so a reply
+  to a card of ten chats lists all ten.
+
 ### Maria has a brain: facts and loops, kept apart from lessons
+
 
 On 7 Oct she asked who his account manager was, who a client's product owner
 was and who his business partner was — some of which he had already told

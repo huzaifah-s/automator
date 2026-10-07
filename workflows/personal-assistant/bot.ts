@@ -22,6 +22,10 @@ import {
   owner,
   questionOutcome,
   nowCard,
+  setByHim,
+  SORTED_MAX,
+  sortedCard,
+  sortedOnCard,
   brainCards,
   BRAIN_TITLE,
   webhookSecret,
@@ -48,6 +52,11 @@ import { fireAssistant } from "./_routine.ts";
  *              asking back, which it answers under your message. A bare
  *              always / normal / ignore is the one reply taken as the answer
  *              here and now.
+ *   always / normal / ignore on the "I sorted these" card    changes a
+ *              priority the assistant chose (✓ marks hers) — or, on her own
+ *              choice, agrees with it. Either way it is now yours, and she
+ *              can no longer change it; a change is kept for her to learn
+ *              from. A reply to that card is a note listing its chats.
  *   🗑 / ↩ on the weekly lessons card    retires a lesson, or brings it back.
  *   /now       what needs you right now, read from the tables on the spot —
  *              no run of the assistant, so no wait.
@@ -219,6 +228,28 @@ async function onButton(ctx: Ctx, cb: NonNullable<Update["callback_query"]>) {
     return { question: id, outcome: "answered", fired };
   }
 
+  if (kind === "s" && id && action !== undefined) {
+    const sorting = ctx.table("sorting");
+    const r = sorting.get(id);
+    const choice = SORT_OPTIONS[Number(action)];
+    if (!r || !choice) {
+      await api.answer(cb.id, "That chat is no longer on a card.");
+      return { sorted: id, outcome: "missing" };
+    }
+    if (r.answer) {
+      await api.answer(cb.id, `Already set to ${r.answer}.`);
+      return { sorted: id, outcome: "already answered" };
+    }
+    const person = personFor(ctx, r.chat_key);
+    if (person) setByHim(ctx, person, choice);
+    else sorting.update(id, { answer: choice, answered_at: Date.now() }, { writtenBy: ctx.workflow });
+    if (r.card_id) await redrawSorted(ctx, String(r.card_id));
+    const name = person ? String(person.name) : "That chat";
+    const kept = choice === r.choice;
+    await api.answer(cb.id, kept ? `Kept — ${name} stays ${choice}.` : `Changed — ${name} is now ${choice}. I'll learn from it.`);
+    return { sorted: id, outcome: kept ? "kept" : "changed", priority: choice };
+  }
+
   if (kind === "l" && id && action === "t") {
     const lessons = ctx.table("lessons");
     const l = lessons.get(id);
@@ -279,6 +310,8 @@ async function onMessage(ctx: Ctx, m: NonNullable<Update["message"]>) {
         "• <b>Send</b> or <b>Skip</b> a draft with its buttons.\n" +
         "• <b>Reply to a draft</b> to say what to change — a new version follows.\n" +
         "• <b>Reply to a question</b>, or tap an option, to answer it.\n" +
+        "• New chats I sort myself; the <b>I sorted these</b> card shows how — tap to change one.\n" +
+
         "• <b>/now</b> shows what needs you right now.\n" +
         "• <b>/brain</b> shows what I know about you — reply to correct it.\n" +
         "• Anything else you send me is a note I read on my next run.",
@@ -303,6 +336,8 @@ async function onMessage(ctx: Ctx, m: NonNullable<Update["message"]>) {
     const card = String(replied);
     const d = ctx.table("drafts").query({ where: [{ column: "card_id", op: "=", value: card }], limit: 1 })[0];
     if (d) return comment(ctx, d, text, m.message_id);
+    const sorted = sortedOnCard(ctx, card);
+    if (sorted.length) return note(ctx, text, m.message_id, null, sortedQuote(ctx, sorted));
     // A card about several chats: a typed reply could be about any of them,
     // so even a bare "normal" is the assistant's to place, not this one's.
     const onCard = cardQuestions(ctx, card);
@@ -428,6 +463,29 @@ function batchQuote(ctx: Ctx, qs: Row[]): string {
   return `(your reply to the card asking how important these chats are: ${list})`.slice(0, 1500);
 }
 
+/**
+ * What a reply to an "I sorted these" card is about: each chat, her call and
+ * its sorting id — so the assistant can tell which one he means, and set it
+ * with update_person and his note as the answer.
+ */
+function sortedQuote(ctx: Ctx, rows: Row[]): string {
+  const list = rows
+    .map((r, i) => {
+      const where = chatLabel(String(r.chat_key), personFor(ctx, r.chat_key));
+      return `${i + 1}. ${where} — you chose ${r.choice}${r.answer ? `, he set ${r.answer}` : ""} [sorting ${r.id}, chat ${r.chat_key}]`;
+    })
+    .join("; ");
+  return `(your reply to the card of chats I sorted: ${list})`.slice(0, 2000);
+}
+
+/** Redraws an "I sorted these" card from its rows: the first SORTED_MAX with buttons, the rest named. */
+async function redrawSorted(ctx: Ctx, cardId: string) {
+  const rows = sortedOnCard(ctx, cardId);
+  const label = (r: Row) => chatLabel(String(r.chat_key), personFor(ctx, r.chat_key));
+  const { html, buttons } = sortedCard(rows.slice(0, SORTED_MAX), label, rows.slice(SORTED_MAX));
+  await botApi(ctx, bot).edit(cardId, html, buttons);
+}
+
 /** Rewrites the card a question was asked on — whole, when it shares it with other chats. */
 async function redraw(ctx: Ctx, q: Row) {
   const api = botApi(ctx, bot);
@@ -450,6 +508,8 @@ function answer(ctx: Ctx, q: Row, value: string): Row {
 const kindOf = (q: Row) => String(q.kind ?? "question");
 
 const PRIORITIES = new Set(["always", "normal", "ignore"]);
+/** The buttons on a sorted card, by index — `s:<id>:<index>`. */
+const SORT_OPTIONS = ["always", "normal", "ignore"];
 
 /** The chat's row — or, for a hidden id linked to a number, the number's, where everything lives. */
 function personFor(ctx: Ctx, chatKey: unknown): Row | undefined {
@@ -471,7 +531,7 @@ function applyPriority(ctx: Ctx, q: Row): string | null {
   if (!PRIORITIES.has(value)) return null;
   const person = personFor(ctx, q.chat_key);
   if (!person) return null;
-  ctx.table("people").update(String(person.id), { priority: value }, { writtenBy: ctx.workflow });
+  setByHim(ctx, person, value);
   return value;
 }
 

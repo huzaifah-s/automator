@@ -459,7 +459,98 @@ export function cardQuestions(ctx: Pick<Ctx, "table">, cardId: string): Row[] {
     .sort(byAsked);
 }
 
+/* ------------------------------------------------- chats she sorted herself */
+
+/** Chats with buttons on one "I sorted these" card; the rest of a run's are named in a line. */
+export const SORTED_MAX = 10;
+/**
+ * A sorted card waits for the run that wrote it to finish — its `log_run`
+ * — so a run's worth arrives as one card; this long after its newest call,
+ * it goes anyway (a run that died before logging).
+ */
+export const SORTED_SETTLE_MS = 10 * 60_000;
+
+const SORT_RANK: Record<string, number> = { always: 0, normal: 1, ignore: 2 };
+
+/**
+ * The order of the chats on a sorted card, and so their numbers: the ones
+ * she let through first, the ignored last — the end he can skim.
+ */
+export const bySorted = (a: Row, b: Row) =>
+  (SORT_RANK[String(a.choice)] ?? 3) - (SORT_RANK[String(b.choice)] ?? 3) || byAsked(a, b);
+
+/**
+ * "I sorted these": every chat she gave a priority on her own this run, her
+ * choice and her reason, and a row of buttons each to change it — her
+ * choice marked ✓. Untouched, her choice stands, so the card asks nothing of
+ * him unless one is wrong. Redrawn whole from the rows after each tap.
+ * `more` are the run's calls past SORTED_MAX, named without buttons.
+ */
+export function sortedCard(
+  rows: Row[],
+  aboutOf: (r: Row) => string,
+  more: Row[] = [],
+  quotes = true,
+): { html: string; buttons: Button[][] } {
+  const lines = rows.map((r, i) => {
+    const mine = String(r.choice);
+    const verdict = !r.answer
+      ? `→ <b>${mine}</b>`
+      : r.answer === mine
+        ? `→ <b>${mine}</b> ✓ <i>you agreed</i>`
+        : `→ <s>${mine}</s> <b>${esc(String(r.answer))}</b> <i>(you)</i>`;
+    const said =
+      quotes && r.quote && !r.answer ? `\n${quoted(clipLines(String(r.quote).split("\n").slice(-1).join("\n"), 120))}` : "";
+    return `<b>${i + 1}.</b> ${esc(aboutOf(r))} ${verdict}\n<i>${esc(String(r.reason))}</i>${said}`;
+  });
+  const named = more.slice(0, 12).map((r) => `${clipLines(aboutOf(r).split(" · ")[0]!, 40)} (${r.choice})`);
+  const extra = more.length
+    ? `\n\n<i>Also set: ${esc(named.join(", "))}${more.length > named.length ? ` and ${more.length - named.length} more` : ""}.</i>`
+    : "";
+  const open = rows.some((r) => !r.answer);
+  const html = [
+    `🗂 <b>I sorted ${rows.length + more.length} new chat${rows.length + more.length === 1 ? "" : "s"}</b>`,
+    open
+      ? "<i>Nothing to do if these look right. Tap to change one and I'll learn from it — or reply to tell me who someone is.</i>"
+      : "<i>All checked.</i>",
+    "",
+    lines.join("\n\n") + extra,
+  ].join("\n");
+  // Telegram refuses past 4096: the quotes are what can go.
+  if (html.length > 4000 && quotes) return sortedCard(rows, aboutOf, more, false);
+  const buttons = rows.flatMap((r, i) =>
+
+    r.answer
+      ? []
+      : [PRIORITY_OPTIONS.map((o, j) => ({ text: `${i + 1} · ${o}${o === r.choice ? " ✓" : ""}`, callback_data: `s:${r.id}:${j}` }))],
+  );
+  return { html, buttons };
+}
+
+/** Her calls shown on one card — with buttons, in their numbered order. */
+export function sortedOnCard(ctx: Pick<Ctx, "table">, cardId: string): Row[] {
+  return ctx
+    .table("sorting")
+    .query({ where: [{ column: "card_id", op: "=", value: cardId }], limit: 100 })
+    .sort(bySorted);
+}
+
+/**
+ * A priority he gave — by a tap or in a reply. It is his from now on, so
+ * the assistant can no longer change it, and every call of hers on that
+ * chat he has not answered gets his choice: where it differs, that is the
+ * feedback `outcomes` hands her to learn from.
+ */
+export function setByHim(ctx: Pick<Ctx, "table" | "workflow">, person: Row, priority: string): void {
+  ctx.table("people").update(String(person.id), { priority, priority_by: "him", reason: null }, { writtenBy: ctx.workflow });
+  const sorting = ctx.table("sorting");
+  for (const r of sorting.query({ where: [{ column: "chat_key", op: "=", value: person.chat_key }], limit: 20 })) {
+    if (!r.answer) sorting.update(String(r.id), { answer: priority, answered_at: Date.now() }, { writtenBy: ctx.workflow });
+  }
+}
+
 /** The button under an update that carries a link — a task the assistant added. */
+
 export function linkButtons(url: unknown): Button[][] | undefined {
   if (typeof url !== "string" || !/^https:\/\//.test(url)) return undefined;
   return [[{ text: /notion\.(so|com)\//.test(url) ? "Open in Notion" : "Open", url }]];

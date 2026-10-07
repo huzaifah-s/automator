@@ -416,16 +416,16 @@ access — and refuses the operations and data-table ones, as they refuse it.
 |---|---|
 | `waiting` | Chats where they spoke last, priority first, then longest wait — and whose message the newest one replies to |
 | `thread` | One chat's messages, with what `people` knows about it; a reply says who it answers (`↩ me`, `↩ Amin`) |
-| `people` / `update_person` | Priorities and notes |
+| `people` / `update_person` | Priorities and notes. A priority is the assistant's own call (with a one-line `reason`, shown on the "I sorted these" card and recorded in `sorting`) or yours (citing the question or note you said it in). Hers is refused on a chat you set |
 | `drafts` / `draft_reply` | Replies waiting for approval; a new one, or a revision. The card quotes what it answers |
 | `withdraw_draft` | Takes back a draft that should not be sent at all ("that was for Amin"), with a reason shown on its card |
-| `questions` / `ask` / `answer_question` / `close_question` | Asking you something, recording an answer you typed, and acting on it. A question about a chat quotes their latest messages on its card; one about a hidden number with no words to show is refused. Closing an open one drops it, and its card says so |
+| `questions` / `ask` / `answer_question` / `close_question` | Asking you something, recording an answer you typed, and acting on it. Never "how important is this chat?" — she decides that herself. At most two new questions an hour about chats (or anything else) and two about To Do tasks; past that, `ask` refuses. A question about a chat quotes their latest messages on its card; one about an automated sender, or about a person nobody has a note on who has written no words, is refused. Closing an open one drops it, and its card says so |
 | `create_task` | A task in the Notion To Do database, through the `personal-assistant-create-task` workflow |
 | `update_task` | The title, category or due date of a task the assistant created itself, once you have said — never your own tasks |
 | `trash_task` | Moves a task the assistant created to Notion's trash when you ask (restorable for 30 days), with your reason, which it then learns from — never your own tasks |
 | `todo` / `task` | Your open To Do tasks, most urgent first; one task with its page text, the assistant's notes on it and its questions about it |
 | `task_note` | Writes the assistant's work on a task's page — a draft, a plan, its questions, your answer — through `personal-assistant-task-note` |
-| `lessons` / `outcomes` / `learn` | What you have taught it; drafts that ended and task notes you reacted to that are not learned from yet; recording a lesson |
+| `lessons` / `outcomes` / `learn` | What you have taught it; drafts that ended, task notes you reacted to and chats she sorted that you moved, not learned from yet; recording a lesson |
 | `brain` / `remember` / `forget` | What it knows is true about you — roles, companies, projects, who people are to you, preferences — one line per fact, grouped by topic. A changed fact replaces the old one, which is retired with the reason, so it stays about a page (~3k tokens) |
 | `loops` / `open_loop` / `update_loop` / `close_loop` | What is in flight — waiting on you or on them, with its chat or task and due date — so it is not lost when the chat scrolls past. Overdue ones, and ones waiting on them for two days (and not nudged in the last two), are marked |
 | `brief` | An update to you, or an answer threaded under your note (`reply_to`), in a few marks — `# heading`, `- bullet`, `> quote`, `*bold*`, `_italic_`, `[[Task title]]` (a link to the task) — that every card renders the same way |
@@ -483,8 +483,10 @@ Drafts and questions reach you as cards from a Telegram bot of your own —
 the `telegram` credential **maria**, whose *Default chat id* is your
 Telegram user id (the bot answers nobody else, and says nothing to them).
 `personal-assistant-deliver-cards` posts a card for each new `pending` draft
-and `open` question every minute; `personal-assistant-bot` handles what comes
-back:
+and `open` question every minute, and one "I sorted these" card for the chats
+the assistant gave a priority on its own, once the run that sorted them has
+logged its end; `personal-assistant-bot` handles what comes back:
+
 
 | You | Happens |
 |---|---|
@@ -494,6 +496,8 @@ back:
 | Reply to a draft card | Your words go in `feedback`, the draft goes to `revise`, and the assistant writes a new version — whose card says what you asked for, while the old card's buttons are removed |
 | Tap an option on a question card | The answer — always / normal / ignore is applied to `people` at once |
 | Tap a numbered button on the "How important are these chats?" card | The same, for that chat; the card is redrawn with the answer and keeps buttons only for the chats still open |
+| Tap a numbered button on the "🗂 I sorted these" card | Changes the priority she chose for that chat (✓ marks hers), or agrees with it. Either way it is yours from then on; a change is listed in `outcomes` until she has learned from it. No tap: her choice stands. Changing a priority of hers on the dashboard counts the same |
+
 | Reply to a question card, a digest or an answered card | A note about that card (on the chats card, it lists every chat on it, and even a bare `normal` is left to the assistant to place). The assistant decides whether it answers the question (`answer_question`, and the card is rewritten) or asks something back (answered under your message) — by meaning, not by a "?". A bare `always` / `normal` / `ignore` is applied at once, like a tap |
 | `/now` (also in the bot's menu) | What needs you right now — drafts waiting, open questions, overdue and due-today tasks, loops you owe that are due — read from the tables on the spot, without waiting for a run |
 | `/brain` (also in the bot's menu) | Everything the assistant believes about you, grouped by topic. Reply to it to correct a fact; the assistant fixes it on its next run |

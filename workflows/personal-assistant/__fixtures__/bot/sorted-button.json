@@ -1,0 +1,29 @@
+{
+  "expect": "run",
+  "note": "Changing a chat on the \"I sorted these\" card: s:<sorting id>:<index of always / normal / ignore>; her own choice carries a ✓.",
+  "body": {
+    "update_id": 100000106,
+    "callback_query": {
+      "id": "1000000000000000106",
+      "from": { "id": 100000001, "is_bot": false, "first_name": "Test" },
+      "message": {
+        "message_id": 51,
+        "from": { "id": 200000001, "is_bot": true, "first_name": "Assistant", "username": "contoh_assistant_bot" },
+        "chat": { "id": 100000001, "first_name": "Test", "type": "private" },
+        "date": 1767225600,
+        "text": "🗂 I sorted 2 new chats",
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              { "text": "1 · always", "callback_data": "s:0abc000000000s1:0" },
+              { "text": "1 · normal ✓", "callback_data": "s:0abc000000000s1:1" },
+              { "text": "1 · ignore", "callback_data": "s:0abc000000000s1:2" }
+            ]
+          ]
+        }
+      },
+      "chat_instance": "-1000000000000000001",
+      "data": "s:0abc000000000s1:2"
+    }
+  }
+}

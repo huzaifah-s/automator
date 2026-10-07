@@ -269,7 +269,22 @@ copy. Keep a new kind of memory out of the wrong one — a fact in `lessons` is
 followed as an order, and a pending thing in `notes` is never closed. Loops
 carry a `chat_key`, so `linkChats` moves them with the rest.
 
+**His priority beats hers, and `setBy` decides whose a priority is.** The
+assistant sorts new chats itself (`update_person` with `reason` →
+`priority_by` maria, and a `sorting` row for the "I sorted these" card);
+`ask` refuses to ask how much a chat matters and has an hourly budget
+(`ASKS_PER_HOUR`). A priority with no `priority_by` predates the column,
+when only he set them, so it is his — do not "fix" those rows to null-means-
+nobody. Everything that applies his choice goes through `setByHim` (bot) or
+`overrule` (endpoint), which also answer her open `sorting` rows: that
+answer is the feedback `outcomes` lists until `learn` marks the row, and a
+path that sets `people.priority` without it loses a correction. A change
+he makes on the dashboard is caught by `deliver-cards` the same way — her
+newest call on the chat no longer matches the priority. `linkChats` keeps
+his over hers when two halves of a person disagree, and moves `sorting`.
+
 **The bot acts only for the credential's chat id, one update at a time.**
+
 `personal-assistant-bot` drops anything not from the `maria`
 credential's Default chat id without replying (a reply confirms the bot is
 alive), and runs with `onOverlap: "queue"`: skipped, a tap could be lost; in

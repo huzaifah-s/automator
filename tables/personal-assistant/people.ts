@@ -15,6 +15,14 @@ import { defineTable, enumOf, text } from "../../src/core/define.ts";
  * row keeps only `same_as`, pointing at the number's row, which holds
  * everything else (src/core/chat-link.ts).
  *
+ * A priority is set by him (a tap, a reply, the dashboard) or by the
+ * assistant, which sorts new chats itself and says why in `reason`
+ * (`priority_by` maria). His always wins: the assistant cannot change a
+ * priority he set, and a row with a priority but no `priority_by` is from
+ * before the column existed, when only he set them — so it is his. Each of
+ * her calls is also a `sorting` row, which is where his changes to them are
+ * kept for her to learn from.
+ *
  * `notes` says who the chat is, in a line — his role in a group, who a
  * person is. The messages themselves are forgotten after two weeks (see
  * src/core/chat-log.ts); what is still pending with them is a `loops` row,
@@ -25,7 +33,8 @@ export default defineTable({
   description:
     "WhatsApp and Telegram chats and how much they matter: always (checked every run, never " +
     "waits), normal (looked at when they spoke last), ignore (never read). Empty means not " +
-    "decided yet — ask. Notes say who they are, in a line.",
+    "decided yet. priority_by says who set it — him, or the assistant with its reason. Notes " +
+    "say who they are, in a line.",
 
   columns: {
     name: text({ label: "Name", help: "The person's or group's name, as the chat shows it." }),
@@ -35,6 +44,18 @@ export default defineTable({
       nullable: true,
       label: "Priority",
       help: "always: never waits. normal: when they spoke last. ignore: never read. Empty: not decided.",
+    }),
+    priority_by: enumOf(["him", "maria"], {
+      nullable: true,
+      label: "Set by",
+      help:
+        "him: you chose it, and the assistant never changes it. maria: her own call, with the " +
+        "reason — change it here or on her card. Empty with a priority: set before this existed, so yours.",
+    }),
+    reason: text({
+      nullable: true,
+      label: "Why",
+      help: "The assistant's one-line reason, when she set the priority herself.",
     }),
     notes: text({
       nullable: true,

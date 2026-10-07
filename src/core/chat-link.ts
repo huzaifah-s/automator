@@ -18,7 +18,7 @@ import { realName } from "../integrations/evolution.ts";
  * `@lid`). The `@lid` keeps its `people` row with `same_as` set to the
  * canonical key and nothing else of its own, so the sync still recognises it
  * and every tool can turn it into the canonical one. Everything else — the
- * chat log, lessons, questions, drafts, loops — is moved to the canonical
+ * chat log, lessons, questions, drafts, loops, sorting — is moved to the canonical
  * key, so there is one conversation, one set of lessons and one open draft.
  *
  * **Never from names.** Two people can share a name, and a wrong link sends a
@@ -126,6 +126,8 @@ export function linkChats(one: string, other: string, writtenBy: string): LinkRe
         channel: "whatsapp",
         kind: alias!.kind,
         priority: alias!.priority ?? null,
+        priority_by: alias!.priority_by ?? null,
+        reason: alias!.reason ?? null,
         notes: alias!.notes ?? null,
         chat_key: canonical,
       },
@@ -133,9 +135,17 @@ export function linkChats(one: string, other: string, writtenBy: string): LinkRe
     ).row;
   } else if (alias) {
     const patch: Record<string, unknown> = {};
+    // His priority beats the assistant's own call, whichever is louder;
+    // between two of the same hand, the louder stands.
+    const his = (r: Row) => Boolean(r.priority) && r.priority_by !== "maria";
     const a = alias.priority ? PRIORITY_RANK[String(alias.priority)] ?? 0 : 0;
     const c = canon.priority ? PRIORITY_RANK[String(canon.priority)] ?? 0 : 0;
-    if (a > c) patch.priority = alias.priority;
+    const aliasWins = his(alias) !== his(canon) ? his(alias) : a > c;
+    if (aliasWins) {
+      patch.priority = alias.priority;
+      patch.priority_by = alias.priority_by ?? null;
+      patch.reason = alias.reason ?? null;
+    }
     const notes = mergeNotes(canon.notes as string | null, alias.notes as string | null);
     if (notes !== (canon.notes ?? null)) patch.notes = notes;
     if (isPlaceholder(canon.name) && !isPlaceholder(alias.name)) patch.name = alias.name;
@@ -145,7 +155,11 @@ export function linkChats(one: string, other: string, writtenBy: string): LinkRe
   if (alias) {
     // Its priority and notes now live on the canonical row; left here they
     // would be a second, stale copy.
-    people.update(String(alias.id), { same_as: canonical, priority: null, notes: null }, { writtenBy });
+    people.update(
+      String(alias.id),
+      { same_as: canonical, priority: null, priority_by: null, reason: null, notes: null },
+      { writtenBy },
+    );
   } else {
     // Linked before the hidden id ever got a row of its own: give it one, so
     // the sync knows the `@lid` the next time Evolution files a message there.
@@ -177,6 +191,21 @@ export function linkChats(one: string, other: string, writtenBy: string): LinkRe
   // Loops follow too, uncounted: a thread left hanging with him is his, under
   // whichever key it was opened.
   repoint("loops");
+  // So do the assistant's priority calls, and his changes to them. A call
+  // of hers that lost to his priority in the merge is settled as his, and
+  // learned: he never saw it, so there is nothing in it to learn from.
+  repoint("sorting");
+  const merged = byKey(canonical);
+  if (merged?.priority && merged.priority_by !== "maria") {
+    const sorting = table("sorting");
+    for (const r of sorting.query({ where: [{ column: "chat_key", op: "=", value: canonical }], limit: 100 })) {
+      if (!r.answer && !r.card_id) {
+        sorting.update(String(r.id), { answer: merged.priority, answered_at: Date.now(), learned: true }, { writtenBy });
+      }
+    }
+  }
+
+
 
   // One open draft per chat. If both halves have one, the newer stands —
   // it was written with more of the conversation in view.

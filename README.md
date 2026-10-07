@@ -435,6 +435,10 @@ your comments on it stay in the table. Times are shown in `ASSISTANT_TZ`
 `create_task` sets Name, Status (the first "To-do" option), Due Date and
 Category — a category that is not one of the database's is refused with the
 list, not added. The same title within a week returns the existing task.
+The page is made from the database's **default template** (marked "Default"
+in Notion's template menu), so it gets that template's icon and content;
+notes and the source are added below them. With no default template the
+page is made plain.
 
 ### The approval bot
 

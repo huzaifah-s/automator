@@ -1019,14 +1019,14 @@ function tools(registry: Registry): Tool[] {
       inputSchema: {
         type: "object",
         properties: {
-          title: { type: "string", description: "Short, starts with a verb." },
+          title: { type: "string", description: "Short, in English, starts with a verb — even when the chat is in Malay." },
           due: { type: "string", description: "YYYY-MM-DD — the date that was said, or your best guess." },
           due_is_guess: { type: "boolean", description: "True when nobody said this date. Shown on his card." },
           category: {
             type: "string",
             description: "One of the database's categories, e.g. Personal, StudentQR, PBLSH. Omit when unsure.",
           },
-          notes: { type: "string", description: "Context: who, what, anything needed to do it." },
+          notes: { type: "string", description: "Context in English: who, what, anything needed to do it." },
           ...CHAT_ARG,
         },
         required: ["title", "due"],
@@ -1238,7 +1238,8 @@ function tools(registry: Registry): Tool[] {
         "Writes a note at the end of a To Do task's page in Notion, as a callout signed by you. Use " +
         "it to do the work — a draft (the email, the post, the message, the outline), a plan or " +
         "checklist, the questions you need answered, progress, or his answer to your question " +
-        "written down. It never changes the task's status or anything already on the page. Text: " +
+        "written down. Always in English. It never changes the task's status or anything already " +
+        "on the page. Text: " +
         "one block per line; # heading, - bullet, 1. numbered, [ ] checkbox, > quote, **bold**.",
       inputSchema: {
         type: "object",

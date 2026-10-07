@@ -6,6 +6,39 @@ Entries record the *reasoning*, not just the diff — `git log` already has the
 diff. If a change settled a question, say what was settled and what the losing
 option was, so nobody relitigates it from scratch.
 
+## 2026-10-08
+
+### Maria has a brain: facts and loops, kept apart from lessons
+
+On 7 Oct she asked who his account manager was, who a client's product owner
+was and who his business partner was — some of which he had already told
+her. Lessons say how to act, not what is true, and `people.notes` mixed "who
+this is" with "what is pending", so facts drifted and loose ends scrolled out
+of the 14-day window.
+
+- **Three memories, one job each.** `lessons` (how to act) stays; `brain` is
+  what is true — one line per fact, topic me / work / project / person /
+  preference — and `loops` is what is in flight, waiting on him or on them,
+  with its chat or task and due date. `people.notes` shrinks to who the chat
+  is. A fact in `lessons` would be followed as an order, and a pending thing
+  in `notes` was never closed; that is why they are separate tables rather
+  than more columns.
+- **Replace, don't append.** `remember` takes `replaces` and retires the old
+  fact with the reason, and `brain` says when it passes ~12k characters
+  (~3k tokens, read every run). *Considered:* a free-text profile document.
+  One row per fact is what lets `/brain` show it, a reply correct one line,
+  and a correction leave a trail.
+- **Loops know when to nudge.** `loops` marks overdue ones and ones waiting
+  on them for two days; `update_loop nudged` holds the next nudge for two
+  more days, so the same chase is not drafted every hour. `now` counts the
+  ones due for the digest, which has an "Open loops" section, and `/now`
+  lists the ones he owes. Loops move with `linkChats`.
+- **`/brain`** shows him everything she believes, grouped by topic and split
+  across messages past one screen. A reply is a note marked as a correction
+  to the brain (the card is longer than a quote, and she has it whole).
+- `run_log` counts facts, loops opened and loops closed, measured by the
+  server like the rest, for the scorecard.
+
 ## 2026-10-07
 
 ### Everything Maria sends is laid out for a phone

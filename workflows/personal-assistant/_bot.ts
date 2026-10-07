@@ -537,7 +537,8 @@ const NOW_CAP = 5;
 
 /**
  * What needs you right now, from the tables alone: drafts waiting for Send,
- * the assistant's open questions, and To Do tasks overdue or due today. The
+ * the assistant's open questions, To Do tasks overdue or due today, and the
+ * loops you owe somebody that are due. The
  * same layout as a digest, without a run of the assistant — so it answers at
  * once, and says nothing the tables do not.
  */
@@ -570,6 +571,14 @@ export function nowCard(ctx: Pick<Ctx, "table">): { html: string; items: number 
   const overdue = open.filter((t) => due(t) < today).sort((a, b) => due(a).localeCompare(due(b)));
   const dueToday = open.filter((t) => due(t) === today);
 
+  // What he owes somebody and is due — the loops on him. Theirs wait for a nudge draft, not for him.
+  const owed = ctx
+    .table("loops")
+    .query({ limit: 1000 })
+    .filter((l) => l.status === "open" && l.waiting_on === "him" && l.due && String(l.due) <= today)
+    .sort((a, b) => String(a.due).localeCompare(String(b.due)))
+    .map((l) => `- ${one(l.what, 90)}${String(l.due) < today ? ` — due ${String(l.due).slice(5)}` : " — due today"}`);
+
   const section = (title: string, lines: string[]) =>
     lines.length
       ? `# ${title}\n${lines.slice(0, NOW_CAP).join("\n")}${lines.length > NOW_CAP ? `\n_+${lines.length - NOW_CAP} more_` : ""}`
@@ -579,8 +588,75 @@ export function nowCard(ctx: Pick<Ctx, "table">): { html: string; items: number 
     section("❓ I asked you", asked),
     section("⏰ Overdue", overdue.map((t) => `- [[${t.title}]]`)),
     section("📅 Due today", dueToday.map((t) => `- [[${t.title}]]`)),
+    section("🔄 You owe", owed),
   ].filter((b): b is string => b !== null);
-  const items = drafts.length + asked.length + overdue.length + dueToday.length;
+  const items = drafts.length + asked.length + overdue.length + dueToday.length + owed.length;
   const head = items ? `*Right now* — ${items} thing${items === 1 ? "" : "s"}` : "*Right now* — nothing needs you. 🎉";
   return { html: rich([head, ...blocks].join("\n\n"), taskLinks(tasks)), items };
+}
+
+/* ------------------------------------------------------------------ /brain */
+
+/** The brain's topics, in the order `/brain` shows them — the endpoint's `brain` tool uses the same words. */
+const BRAIN_TOPICS: Array<[string, string]> = [
+  ["me", "👤 You"],
+  ["work", "💼 Work"],
+  ["project", "📁 Projects"],
+  ["person", "👥 People"],
+  ["preference", "⚙️ How you like things"],
+];
+/** The title line — also how a reply to one of these is recognised as being about the brain. */
+export const BRAIN_TITLE = "🧠 What I know about you";
+/** Under Telegram's 4096, with room for the tags `rich` adds. */
+const BRAIN_MESSAGE_MAX = 3_400;
+
+/**
+ * Everything the assistant believes about you, as you would read it on a
+ * phone: a heading per topic, a bullet per fact, the subject in bold. A
+ * brain past one message is split between topics (or, for one long topic,
+ * between facts), and every part says it is part of the brain, so a reply
+ * to any of them arrives as a note quoting it — which is how "that's wrong"
+ * reaches the assistant.
+ */
+export function brainCards(ctx: Pick<Ctx, "table">): { messages: string[]; facts: number } {
+  const facts = ctx.table("brain").query({ limit: 1000 }).filter((f) => !f.retired);
+  if (facts.length === 0) {
+    return {
+      messages: [rich(`*${BRAIN_TITLE}*\n\nNothing yet. Tell me about your work, your projects and the people in your chats, and I'll remember it.`)],
+      facts: 0,
+    };
+  }
+  const one = (s: unknown, max: number) => {
+    const t = String(s ?? "").replace(/\s+/g, " ").replace(/\*/g, "").trim();
+    return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+  };
+  const lines: string[] = [];
+  for (const [topic, title] of BRAIN_TOPICS) {
+    const rows = facts
+      .filter((f) => f.topic === topic)
+      .sort((a, b) => String(a.subject ?? "").localeCompare(String(b.subject ?? "")));
+    if (!rows.length) continue;
+    lines.push("", `# ${title}`);
+    for (const f of rows) lines.push(`- ${f.subject ? `*${one(f.subject, 40)}*: ` : ""}${one(f.fact, 220)}`);
+  }
+  const foot = "_Reply to this message to correct anything — I'll fix it._";
+  const parts: string[][] = [[]];
+  let size = 0;
+  let heading = "";
+  for (const l of lines) {
+    if (l.startsWith("# ")) heading = l;
+    if (size + l.length > BRAIN_MESSAGE_MAX && parts.at(-1)!.length) {
+      // Cut inside a topic, the next part says which topic it is still on.
+      parts.push(l.startsWith("# ") || !l ? [] : ["", `${heading} (cont.)`]);
+      size = 0;
+    }
+    parts.at(-1)!.push(l);
+    size += l.length + 1;
+  }
+  const messages = parts.map((p, i) => {
+    const head = `*${BRAIN_TITLE}*${parts.length > 1 ? ` (${i + 1}/${parts.length})` : ""}`;
+    const tail = i === parts.length - 1 ? `\n\n${foot}` : "";
+    return rich(`${head}\n${p.join("\n")}${tail}`);
+  });
+  return { messages, facts: facts.length };
 }

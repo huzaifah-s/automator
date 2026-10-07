@@ -18,8 +18,8 @@ import { realName } from "../integrations/evolution.ts";
  * `@lid`). The `@lid` keeps its `people` row with `same_as` set to the
  * canonical key and nothing else of its own, so the sync still recognises it
  * and every tool can turn it into the canonical one. Everything else — the
- * chat log, lessons, questions, drafts — is moved to the canonical key, so
- * there is one conversation, one set of lessons and one open draft.
+ * chat log, lessons, questions, drafts, loops — is moved to the canonical
+ * key, so there is one conversation, one set of lessons and one open draft.
  *
  * **Never from names.** Two people can share a name, and a wrong link sends a
  * reply to the wrong person. A link comes from Evolution (a message filed
@@ -174,6 +174,9 @@ export function linkChats(one: string, other: string, writtenBy: string): LinkRe
   };
   const lessons = repoint("lessons");
   const questions = repoint("questions");
+  // Loops follow too, uncounted: a thread left hanging with him is his, under
+  // whichever key it was opened.
+  repoint("loops");
 
   // One open draft per chat. If both halves have one, the newer stands —
   // it was written with more of the conversation in view.

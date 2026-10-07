@@ -48,10 +48,11 @@ import { firePending } from "./_routine.ts";
 const bot = defineCredential("telegram", "maria");
 const COMMANDS = [
   { command: "now", description: "What needs me right now" },
+  { command: "brain", description: "What Maria knows about me" },
   { command: "help", description: "How the cards work" },
 ];
 /** Bump when COMMANDS changes, and the next run sets them again. */
-const COMMANDS_VERSION = 1;
+const COMMANDS_VERSION = 2;
 /** Optional, as in bot.ts: without it there are no early starts to make. */
 const routine = defineSecrets({ ASSISTANT_ROUTINE_TOKEN: z.string().min(20).optional() });
 

@@ -22,6 +22,8 @@ import {
   owner,
   questionOutcome,
   nowCard,
+  brainCards,
+  BRAIN_TITLE,
   webhookSecret,
 } from "./_bot.ts";
 import { fireAssistant } from "./_routine.ts";
@@ -49,6 +51,10 @@ import { fireAssistant } from "./_routine.ts";
  *   🗑 / ↩ on the weekly lessons card    retires a lesson, or brings it back.
  *   /now       what needs you right now, read from the tables on the spot —
  *              no run of the assistant, so no wait.
+ *   /brain     what the assistant believes about you and your world. A reply
+ *              to it is a note like any other, marked as being about the
+ *              brain, and the assistant fixes the fact (and learns how it got
+ *              it wrong).
  *   any other message    is a note to the assistant, filed as an answered
  *              "question" so its next run reads it.
  *
@@ -274,6 +280,7 @@ async function onMessage(ctx: Ctx, m: NonNullable<Update["message"]>) {
         "• <b>Reply to a draft</b> to say what to change — a new version follows.\n" +
         "• <b>Reply to a question</b>, or tap an option, to answer it.\n" +
         "• <b>/now</b> shows what needs you right now.\n" +
+        "• <b>/brain</b> shows what I know about you — reply to correct it.\n" +
         "• Anything else you send me is a note I read on my next run.",
     );
     return { outcome: "help" };
@@ -283,6 +290,12 @@ async function onMessage(ctx: Ctx, m: NonNullable<Update["message"]>) {
     const { html, items } = nowCard(ctx);
     await api.reply(m.message_id, html);
     return { outcome: "now", items };
+  }
+
+  if (/^\/brain(@\w+)?$/i.test(text)) {
+    const { messages, facts } = brainCards(ctx);
+    for (const html of messages) await api.reply(m.message_id, html);
+    return { outcome: "brain", facts, messages: messages.length };
   }
 
   const replied = m.reply_to_message?.message_id;
@@ -313,6 +326,11 @@ async function onMessage(ctx: Ctx, m: NonNullable<Update["message"]>) {
     // A card with no row behind it — the weekly lessons, a /now answer —
     // is still what the reply is about, so it is quoted from Telegram.
     const shown = m.reply_to_message?.text?.replace(/\s+/g, " ").trim();
+    // The brain is longer than a quote, and the assistant has it whole; what
+    // it needs is to know this is a correction to it.
+    if (shown?.startsWith(BRAIN_TITLE)) {
+      return note(ctx, text, m.message_id, null, "(your reply to /brain — a correction to what I know about you)");
+    }
     if (shown) return note(ctx, text, m.message_id, null, `(your reply to: “${shown.slice(0, 600)}”)`);
   }
 

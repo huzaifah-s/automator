@@ -21,6 +21,14 @@
  * is only accepted for a chat in `people`: the model cannot be handed a page
  * id in a message and write to it.
  *
+ * ## Memory
+ *
+ * Three kinds, kept apart: `lessons` is how to act, `brain` is what is true
+ * about him and his world (roles, companies, projects, who people are), and
+ * `loops` is what is still in flight. All three are read at the start of a
+ * run and written by the assistant as it works; a fact that changes replaces
+ * the old one rather than being appended, so the brain stays a page long.
+ *
  * ## Learning
  *
  * `lessons` is the part that improves. Every draft that ends — sent as
@@ -175,6 +183,7 @@ const DIGEST_SECTIONS = [
   { key: "overdue", title: "⏰ Overdue", help: "Overdue To Do tasks, as [[Task title]], most important first. Add a few words when you did something on it." },
   { key: "today", title: "📅 Due today", help: "Morning: tasks due today, as [[Task title]], most important first." },
   { key: "tomorrow", title: "📅 Tomorrow", help: "Night: tomorrow's tasks and commitments, most important first." },
+  { key: "loops", title: "🔄 Open loops", help: "From `loops`: what waits on him and is due or overdue, and what has waited on them over 2 days (say when you drafted a nudge). One line each, most overdue first; not what is already in needs_you." },
   { key: "handled", title: "✅ Handled today", help: "Night: what got done today — drafts he sent, tasks finished, things you did." },
   { key: "fyi", title: "👀 Good to know", help: "Things that matter but need nothing from him. Rarely needed." },
 ] as const;
@@ -388,6 +397,56 @@ const unlearned = (r: Row) => FINISHED.has(String(r.status)) && !r.learned;
 /** `kind` is NULL on rows from before it existed, which were all questions. */
 const kindOf = (q: Row) => String(q.kind ?? "question");
 
+/* ---------------------------------------------------------- brain, loops */
+
+const BRAIN_TOPICS = ["me", "work", "project", "person", "preference"] as const;
+const BRAIN_SOURCES = ["you", "answer", "chat", "task"] as const;
+/** How `brain` titles each topic — the same words as `/brain` on his phone (_bot.ts). */
+const BRAIN_TITLES: Record<string, string> = {
+  me: "Him",
+  work: "Work",
+  project: "Projects",
+  person: "People",
+  preference: "Preferences",
+};
+/**
+ * About 3k tokens. The brain is read whole at the start of every run, so past
+ * this it costs every run and buries what matters: merge facts and retire the
+ * old ones instead of letting it grow.
+ */
+const BRAIN_BUDGET = 12_000;
+/** Waiting on somebody else this long with no due date: time to offer a nudge. */
+const NUDGE_AFTER_MS = 2 * 24 * 3_600_000;
+
+const activeFacts = () => table("brain").query({ limit: 1000 }).filter((f) => !f.retired);
+const brainSize = (facts: Row[]) => facts.reduce((n, f) => n + String(f.fact).length + String(f.subject ?? "").length + 4, 0);
+
+/** Open loops, oldest first. */
+const openLoops = () =>
+  table("loops")
+    .query({ limit: 1000 })
+    .filter((l) => l.status === "open")
+    .sort((a, b) => Number(a.created_at) - Number(b.created_at));
+
+/**
+ * What a loop needs: overdue (its due date passed) or a nudge — waiting on
+ * them, overdue or quiet for two days, and not nudged in the last two.
+ */
+function loopState(l: Row, today: string): { overdue: boolean; nudge: boolean } {
+  const due = l.due ? String(l.due) : null;
+  const overdue = Boolean(due && due < today);
+  const quiet = Date.now() - Math.max(Number(l.created_at), Number(l.nudged_at ?? 0)) > NUDGE_AFTER_MS;
+  const nudge = l.waiting_on === "them" && quiet && (overdue || !due);
+  return { overdue, nudge };
+}
+
+/** One line of text for a fact or a loop: no newlines, within `max`. */
+function oneLine(args: Record<string, unknown>, key: string, max: number, what: string): string | undefined {
+  const v = str(args, key)?.replace(/\s+/g, " ");
+  if (v && v.length > max) throw new Error(`${what} is at most ${max} characters — one line`);
+  return v;
+}
+
 /* ----------------------------------------------------------------- tools */
 
 interface Tool {
@@ -419,6 +478,13 @@ function tools(registry: Registry): Tool[] {
           digest = digestSentToday(due)
             ? `The ${due} digest was already sent today — do not send another.`
             : `The ${due} digest is due: send it with the digest tool (not brief).`;
+          const today = isoDay(Date.now());
+          const states = openLoops().map((l) => ({ l, ...loopState(l, today) }));
+          const mine = states.filter((x) => x.l.waiting_on === "him" && x.l.due && String(x.l.due) <= today).length;
+          const nudge = states.filter((x) => x.nudge).length;
+          if (!digestSentToday(due) && (mine || nudge)) {
+            digest += ` Open loops: ${mine} on him due or overdue, ${nudge} waiting on them to nudge — they go in its loops section.`;
+          }
         }
         return `${now.text} (${TZ}).\n${digest}`;
       },
@@ -501,12 +567,16 @@ function tools(registry: Registry): Tool[] {
         const person = peopleByKey().get(key);
         const messages = chatThread(channel, chat, num(args, "limit", 30, 100));
         const own = lessonsFor(key).filter((l) => l.chat_key === key);
+        const loops = openLoops().filter((l) => l.chat_key === key);
         const head =
           (person
             ? `${person.name} (${person.kind}, priority ${person.priority ?? "not set"})` +
               (person.notes ? `\nNotes: ${person.notes}` : "")
             : `${key} — not in people`) +
-          (own.length ? `\nLessons for this chat:\n${own.map((l) => `- ${l.lesson}`).join("\n")}` : "");
+          (own.length ? `\nLessons for this chat:\n${own.map((l) => `- ${l.lesson}`).join("\n")}` : "") +
+          (loops.length
+            ? `\nOpen loops with them:\n${loops.map((l) => `- ${l.id} (waiting on ${l.waiting_on}${l.due ? `, due ${l.due}` : ""}) ${l.what}`).join("\n")}`
+            : "");
         const byId = new Map(messages.map((m) => [m.id, m]));
         const whoWrote = (m: StoredMessage) => (m.outgoing ? "me" : (m.senderName ?? m.chatName ?? "them"));
         const lines = messages.map((m) => {
@@ -566,8 +636,8 @@ function tools(registry: Registry): Tool[] {
       scope: "write",
       description:
         "Sets a chat's priority (from the user's answer — not your own guess), replaces its notes, " +
-        "or names it when the user told you who it is. Keep notes short: who they are, what is " +
-        "pending, what was promised. same_as: when he says a WhatsApp hidden number is somebody " +
+        "or names it when the user told you who it is. Notes say who they are in one line (his " +
+        "role, in a group); what is pending is a loop (open_loop). same_as: when he says a WhatsApp hidden number is somebody " +
         "already in people, pass that chat — the two become one person, kept under the phone number.",
       inputSchema: {
         type: "object",
@@ -1128,6 +1198,346 @@ function tools(registry: Registry): Tool[] {
     },
 
     {
+      name: "brain",
+      scope: "read",
+      description:
+        "What you know is true about him and his world — his roles and companies, projects, who " +
+        "people are to him, his preferences — grouped by topic. Read at the start of every run. " +
+        "Never ask him something this already answers.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          topic: { type: "string", enum: [...BRAIN_TOPICS] },
+          search: { type: "string", description: "Part of a subject or fact." },
+        },
+        additionalProperties: false,
+      },
+      run(args) {
+        const all = activeFacts();
+        const topic = str(args, "topic");
+        const search = str(args, "search")?.toLowerCase();
+        const facts = all
+          .filter((f) => !topic || f.topic === topic)
+          .filter((f) => !search || `${f.subject ?? ""} ${f.fact}`.toLowerCase().includes(search));
+        const size = brainSize(all);
+        const groups = BRAIN_TOPICS.map((t) => {
+          const rows = facts
+            .filter((f) => f.topic === t)
+            .sort((a, b) => String(a.subject ?? "").localeCompare(String(b.subject ?? "")));
+          if (!rows.length) return null;
+          return `# ${BRAIN_TITLES[t]}\n${rows
+            .map((f) => `- ${f.id}  ${f.subject ? `[${line(String(f.subject), 40)}] ` : ""}${line(String(f.fact), 300)}`)
+            .join("\n")}`;
+        }).filter((g): g is string => g !== null);
+        const head =
+          `${facts.length} fact(s)${topic || search ? ` of ${all.length}` : ""}. ` +
+          (size > BRAIN_BUDGET
+            ? `The brain is ${size} characters, over its ~${BRAIN_BUDGET} budget: merge facts with remember (replaces) and retire the old ones.`
+            : `${size} of ~${BRAIN_BUDGET} characters.`);
+        return clip(
+          `${head}\n\n${groups.length ? groups.join("\n\n") : "Nothing yet — remember facts as he tells you them."}`,
+          MAX_BYTES,
+        );
+      },
+    },
+
+    {
+      name: "remember",
+      scope: "write",
+      description:
+        "Adds one lasting fact to the brain — something true about him or his world that he told " +
+        "you or a chat made plain: a role, a company, a project, who someone is to him, a " +
+        "preference. One line, in English, never a quote. When it updates or merges facts already " +
+        "there, pass their ids in replaces and they are retired — replace, don't append. How to " +
+        "act is a lesson (learn), not a fact; what is still pending is a loop (open_loop).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          topic: { type: "string", enum: [...BRAIN_TOPICS] },
+          subject: { type: "string", description: "The company, project or person it is about. Omit for a fact about him." },
+          fact: { type: "string", description: "One line, in English. Max 300 characters." },
+          source: { type: "string", enum: [...BRAIN_SOURCES] },
+          evidence: { type: "string", description: "The note or question id, chat key or task id it came from." },
+          replaces: {
+            type: "array",
+            items: { type: "string" },
+            description: "Ids of facts this one updates or merges; they are retired.",
+          },
+        },
+        required: ["topic", "fact", "source"],
+        additionalProperties: false,
+      },
+      run(args, identity) {
+        const topic = str(args, "topic");
+        if (!BRAIN_TOPICS.includes(topic as (typeof BRAIN_TOPICS)[number])) {
+          throw new Error(`topic is ${BRAIN_TOPICS.join(", ")}`);
+        }
+        const source = str(args, "source");
+        if (!BRAIN_SOURCES.includes(source as (typeof BRAIN_SOURCES)[number])) {
+          throw new Error(`source is ${BRAIN_SOURCES.join(", ")}`);
+        }
+        const fact = oneLine(args, "fact", 300, "A fact");
+        if (!fact) throw new Error("fact is empty");
+        const subject = oneLine(args, "subject", 80, "subject") ?? null;
+        const raw = args["replaces"];
+        const replaces = (Array.isArray(raw) ? raw : raw === undefined ? [] : [raw]).map(String).filter((r) => r.trim());
+        // Resolved before anything is written, so a bad id changes nothing.
+        const old = replaces.map((id) => rowId("brain", id.trim()));
+        const facts = activeFacts();
+        const same = facts.find(
+          (f) => String(f.fact).toLowerCase() === fact.toLowerCase() && String(f.subject ?? "").toLowerCase() === (subject ?? "").toLowerCase(),
+        );
+        const out: string[] = [];
+        let id: string;
+        if (same) {
+          id = String(same.id);
+          out.push(`Already known (${id}).`);
+        } else {
+          const { row } = table("brain").insert(
+            { topic, subject, fact, source, evidence: str(args, "evidence") ?? null },
+            { writtenBy: identity.label },
+          );
+          id = String(row.id);
+          out.push(`Remembered (${id}).`);
+        }
+        for (const o of old) {
+          if (String(o.id) === id || o.retired) continue;
+          table("brain").update(String(o.id), { retired: true, retired_why: `Replaced by ${id}` }, { writtenBy: identity.label });
+          out.push(`Retired ${o.id}.`);
+        }
+        const size = brainSize(activeFacts());
+        if (size > BRAIN_BUDGET) {
+          out.push(`The brain is ${size} characters, over its ~${BRAIN_BUDGET} budget — merge related facts (replaces) soon.`);
+        }
+        return out.join(" ");
+      },
+    },
+
+    {
+      name: "forget",
+      scope: "write",
+      description:
+        "Retires a fact that is no longer true or was wrong — he corrected it, or it stopped " +
+        "being so. When there is a right version, use remember with replaces instead. When he " +
+        "corrected how you came to believe it, also learn the lesson.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "The fact's id, as brain prints it." },
+          reason: { type: "string", description: "Why it is no longer true. Max 200 characters." },
+        },
+        required: ["id", "reason"],
+        additionalProperties: false,
+      },
+      run(args, identity) {
+        const f = rowId("brain", str(args, "id"));
+        const reason = oneLine(args, "reason", 200, "reason");
+        if (!reason) throw new Error("reason is empty — say why");
+        if (f.retired) return `${f.id} was already retired (${f.retired_why ?? "no reason given"}).`;
+        table("brain").update(String(f.id), { retired: true, retired_why: reason }, { writtenBy: identity.label });
+        return `Forgot ${f.id}.`;
+      },
+    },
+
+    {
+      name: "loops",
+      scope: "read",
+      description:
+        "Things in flight — what is waiting on him or on somebody else — oldest first. `state` " +
+        "marks overdue ones and those waiting on them for over 2 days (offer a nudge draft, then " +
+        "update_loop nudged). " +
+        "status closed shows recently settled ones.",
+      inputSchema: {
+        type: "object",
+        properties: { status: { type: "string", enum: ["open", "closed", "all"] } },
+        additionalProperties: false,
+      },
+      run(args) {
+        const status = str(args, "status") ?? "open";
+        const today = isoDay(Date.now());
+        const people = peopleByKey();
+        const tasks = new Map(table("tasks").query({ limit: 1000 }).map((t) => [String(t.page_id), String(t.title)]));
+        const rows =
+          status === "open"
+            ? openLoops()
+            : table("loops")
+                .query({ limit: 1000 })
+                .filter((l) => status === "all" || l.status !== "open")
+                .sort((a, b) => Number(b.closed_at ?? b.created_at) - Number(a.closed_at ?? a.created_at))
+                .slice(0, 50);
+        const about = (l: Row) => {
+          if (l.chat_key) {
+            const key = String(l.chat_key);
+            const p = people.get(canonicalKey(key));
+            const app = key.startsWith("whatsapp:") ? "WhatsApp" : "Telegram";
+            return `${line(String(p?.name ?? key), 24)} (${app}${p?.kind && p.kind !== "person" ? ` ${p.kind}` : ""})`;
+          }
+          if (l.task_id) return `[[${line(tasks.get(String(l.task_id)) ?? "a task", 40)}]]`;
+          return "-";
+        };
+        const open = rows.filter((l) => l.status === "open");
+        const flagged = open.map((l) => loopState(l, today));
+        return clip(
+          (status === "open" ? `${open.length} open loop(s)` : `${rows.length} loop(s), newest first`) +
+            (status === "open" && open.length
+              ? `: ${flagged.filter((f) => f.overdue).length} overdue, ${flagged.filter((f) => f.nudge).length} to nudge`
+              : "") +
+            `. Today is ${today}.\n\n` +
+            asTable(
+              ["id", "on", "since", "due", "state", "about", "what", "note"],
+              rows.map((l) => {
+                const st = l.status === "open" ? loopState(l, today) : null;
+                return [
+                  String(l.id),
+                  String(l.waiting_on),
+                  ago(Number(l.created_at)),
+                  l.due ? String(l.due) : "-",
+                  st
+                    ? [st.overdue ? "overdue" : "", st.nudge ? "nudge?" : ""].filter(Boolean).join(", ") || "open"
+                    : `${l.status} ${l.closed_at ? `${ago(Number(l.closed_at))} ago` : ""}`.trim(),
+                  about(l),
+                  line(String(l.what), 120),
+                  line(l.note as string | null, 120),
+                ];
+              }),
+            ),
+          MAX_BYTES,
+        );
+      },
+    },
+
+    {
+      name: "open_loop",
+      scope: "write",
+      description:
+        "Records something now in flight, so it is not lost once the chat scrolls past: somebody " +
+        "owes him a reply, a document or a time (waiting_on them), or he owes somebody (him). One " +
+        "line, no quotes. Give the chat or the To Do task it belongs to, and due when a date was " +
+        "said. Close it with close_loop when a later chat settles it.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          what: { type: "string", description: "Who owes what, e.g. “Partner to send the client's free times”. Max 200 characters." },
+          waiting_on: { type: "string", enum: ["him", "them"] },
+          ...CHAT_ARG,
+          task: { type: "string", description: "A To Do task's id, as `todo` prints it." },
+          due: { type: "string", description: "YYYY-MM-DD, when a date was said or is obvious." },
+          note: { type: "string", description: "Anything worth knowing. Max 300 characters." },
+        },
+        required: ["what", "waiting_on"],
+        additionalProperties: false,
+      },
+      run(args, identity) {
+        const what = oneLine(args, "what", 200, "what");
+        if (!what) throw new Error("what is empty");
+        const waiting = str(args, "waiting_on");
+        if (waiting !== "him" && waiting !== "them") throw new Error("waiting_on is him or them");
+        let chat: string | null = null;
+        if (args["chat"] !== undefined) {
+          chat = chatArg(args).key;
+          if (!peopleByKey().has(chat)) throw new Error(`${chat} is not in people`);
+        }
+        const task = args["task"] !== undefined ? String(taskArg(str(args, "task")).page_id) : null;
+        const due = str(args, "due") ?? null;
+        if (due && !/^\d{4}-\d{2}-\d{2}$/.test(due)) throw new Error("due is YYYY-MM-DD");
+        const already = openLoops().find(
+          (l) => String(l.what).toLowerCase() === what.toLowerCase() && (l.chat_key ?? null) === chat,
+        );
+        if (already) return `Already open (${already.id}, since ${ago(Number(already.created_at))}).`;
+        const { row } = table("loops").insert(
+          {
+            what,
+            waiting_on: waiting,
+            chat_key: chat,
+            task_id: task,
+            due,
+            status: "open",
+            note: oneLine(args, "note", 300, "note") ?? null,
+          },
+          { writtenBy: identity.label },
+        );
+        return `Loop ${row.id} open — waiting on ${waiting}${due ? `, due ${due}` : ""}.`;
+      },
+    },
+
+    {
+      name: "update_loop",
+      scope: "write",
+      description:
+        "Changes an open loop: nudged true once you drafted a nudge for it (the next is offered two " +
+        "days later); a new due date; waiting_on when the next move changed sides; a better what; " +
+        "a note. Settled or no longer mattering is close_loop instead.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "The loop's id, as loops prints it." },
+          nudged: { type: "boolean", description: "True when you just drafted a nudge for it." },
+          due: { type: "string", description: "YYYY-MM-DD." },
+          waiting_on: { type: "string", enum: ["him", "them"] },
+          what: { type: "string", description: "Max 200 characters." },
+          note: { type: "string", description: "Replaces the note. Max 300 characters." },
+        },
+        required: ["id"],
+        additionalProperties: false,
+      },
+      run(args, identity) {
+        const l = rowId("loops", str(args, "id"));
+        if (l.status !== "open") throw new Error(`${l.id} is ${l.status} — open a new loop instead`);
+        const patch: Record<string, unknown> = {};
+        if (args["nudged"] === true) patch.nudged_at = Date.now();
+        const due = str(args, "due");
+        if (due !== undefined) {
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(due)) throw new Error("due is YYYY-MM-DD");
+          patch.due = due;
+        }
+        const waiting = str(args, "waiting_on");
+        if (waiting !== undefined) {
+          if (waiting !== "him" && waiting !== "them") throw new Error("waiting_on is him or them");
+          patch.waiting_on = waiting;
+        }
+        const what = oneLine(args, "what", 200, "what");
+        if (what) patch.what = what;
+        const note = oneLine(args, "note", 300, "note");
+        if (note) patch.note = note;
+        if (Object.keys(patch).length === 0) throw new Error("Nothing to change — pass nudged, due, waiting_on, what or note");
+        table("loops").update(String(l.id), patch, { writtenBy: identity.label });
+        return `Updated ${l.id}: ${Object.keys(patch).map((k) => (k === "nudged_at" ? "nudged" : k)).join(", ")}.`;
+      },
+    },
+
+    {
+      name: "close_loop",
+      scope: "write",
+      description:
+        "Closes a loop: done when it settled (they sent it, he replied, the meeting is booked), " +
+        "dropped when it stopped mattering. Say how it ended in note. When it settled into " +
+        "something new — they answered, now he owes a decision — open the new loop too.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "The loop's id, as loops prints it." },
+          status: { type: "string", enum: ["done", "dropped"], description: "Default done." },
+          note: { type: "string", description: "How it ended, one line. Max 300 characters." },
+        },
+        required: ["id"],
+        additionalProperties: false,
+      },
+      run(args, identity) {
+        const l = rowId("loops", str(args, "id"));
+        if (l.status !== "open") return `${l.id} is already ${l.status}.`;
+        const status = str(args, "status") ?? "done";
+        if (status !== "done" && status !== "dropped") throw new Error("status is done or dropped");
+        const note = oneLine(args, "note", 300, "note");
+        table("loops").update(
+          String(l.id),
+          { status, closed_at: Date.now(), ...(note ? { note } : {}) },
+          { writtenBy: identity.label },
+        );
+        return `Closed ${l.id} as ${status}.`;
+      },
+    },
+
+    {
       name: "brief",
       scope: "write",
       description:
@@ -1302,6 +1712,11 @@ function tools(registry: Registry): Tool[] {
           task_notes: table("task_work")
             .query({ limit: 500 })
             .filter((w) => after(w) && w.kind !== "created").length,
+          facts: table("brain").query({ limit: 1000 }).filter(after).length,
+          loops_opened: table("loops").query({ limit: 1000 }).filter(after).length,
+          loops_closed: table("loops")
+            .query({ limit: 1000 })
+            .filter((l) => Number(l.closed_at) > since).length,
         };
         table("run_log").insert(
           { summary, trigger: str(args, "trigger") ?? null, problems: str(args, "problems") ?? null, ...counts },
@@ -1310,7 +1725,8 @@ function tools(registry: Registry): Tool[] {
         return (
           `Logged. Waiting: ${counts.waiting_whatsapp} WhatsApp, ${counts.waiting_telegram} Telegram. ` +
           `Since the last run: ${counts.drafts} drafts, ${counts.questions} questions, ` +
-          `${counts.lessons} lessons, ${counts.tasks} tasks, ${counts.task_notes} task notes.`
+          `${counts.lessons} lessons, ${counts.tasks} tasks, ${counts.task_notes} task notes, ` +
+          `${counts.facts} facts, ${counts.loops_opened} loops opened, ${counts.loops_closed} closed.`
         );
       },
     },
@@ -1644,8 +2060,10 @@ const rpcError = (id: Rpc["id"], code: number, message: string) => ({
 
 const INSTRUCTIONS =
   "A personal assistant's view of the user's WhatsApp and Telegram, their Notion To Do list, " +
-  "and the tables people (who matters, with notes), drafts, questions, lessons, run_log. Read `lessons` " +
-  "first and follow them; work through `outcomes` with `learn` so every correction is kept. " +
+  "and the tables people (who matters, with notes), drafts, questions, lessons, brain, loops, run_log. " +
+  "Read `lessons` (how to act), `brain` (what is true about him and his world) and `loops` (what is " +
+  "in flight) first; never ask him what the brain already answers, and `remember` what he tells you. " +
+  "Work through `outcomes` with `learn` so every correction is kept. " +
   "Then `waiting`, and read a chat with `thread` before drafting. In a group, draft or make a task " +
   "only from a message to the user — a reply to him (↩ me), his name, or a 1:1 chat — never one " +
   "asked of somebody else. You cannot send anything on " +

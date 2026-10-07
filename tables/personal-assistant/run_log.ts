@@ -9,7 +9,7 @@ import { defineTable, int, text } from "../../src/core/define.ts";
  *
  * The numbers are counted by the runner, not reported by the model: chats
  * waiting at the moment the run logged, and drafts, questions, lessons,
- * tasks and task notes made since the previous entry. A model that misremembers what it did
+ * tasks, task notes, facts and loops made since the previous entry. A model that misremembers what it did
  * cannot make this table say otherwise. `summary` is the model's own account,
  * which is where "no tasks: nothing was promised" lives.
  */
@@ -34,6 +34,9 @@ export default defineTable({
     lessons: int({ default: 0, label: "Lessons" }),
     tasks: int({ default: 0, label: "Tasks" }),
     task_notes: int({ default: 0, label: "Task notes", help: "Notes written on To Do tasks." }),
+    facts: int({ default: 0, label: "Facts", help: "Facts added to the brain." }),
+    loops_opened: int({ default: 0, label: "Loops opened" }),
+    loops_closed: int({ default: 0, label: "Loops closed" }),
     problems: text({ nullable: true, label: "Problems", help: "Anything that failed or got in the way." }),
   },
 

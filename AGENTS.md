@@ -260,6 +260,15 @@ with `same_as`. A link comes from Evolution (`chatAlt`, a message's
 chats already in `people` — never from a matching name, which is how a reply
 reaches the wrong person.
 
+**The assistant's memory is three tables, and each holds one kind of thing.**
+`lessons` is how to act, `brain` is what is true (one line per fact, about
+3k tokens in all — `remember` with `replaces` retires the fact it updates
+rather than appending), `loops` is what is in flight, and `people.notes` is
+only who that chat is. None of them quote messages: the chat log is the only
+copy. Keep a new kind of memory out of the wrong one — a fact in `lessons` is
+followed as an order, and a pending thing in `notes` is never closed. Loops
+carry a `chat_key`, so `linkChats` moves them with the rest.
+
 **The bot acts only for the credential's chat id, one update at a time.**
 `personal-assistant-bot` drops anything not from the `maria`
 credential's Default chat id without replying (a reply confirms the bot is

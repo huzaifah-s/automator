@@ -426,6 +426,8 @@ access — and refuses the operations and data-table ones, as they refuse it.
 | `todo` / `task` | Your open To Do tasks, most urgent first; one task with its page text, the assistant's notes on it and its questions about it |
 | `task_note` | Writes the assistant's work on a task's page — a draft, a plan, its questions, your answer — through `personal-assistant-task-note` |
 | `lessons` / `outcomes` / `learn` | What you have taught it; drafts that ended and task notes you reacted to that are not learned from yet; recording a lesson |
+| `brain` / `remember` / `forget` | What it knows is true about you — roles, companies, projects, who people are to you, preferences — one line per fact, grouped by topic. A changed fact replaces the old one, which is retired with the reason, so it stays about a page (~3k tokens) |
+| `loops` / `open_loop` / `update_loop` / `close_loop` | What is in flight — waiting on you or on them, with its chat or task and due date — so it is not lost when the chat scrolls past. Overdue ones, and ones waiting on them for two days (and not nudged in the last two), are marked |
 | `brief` | An update to you, or an answer threaded under your note (`reply_to`), in a few marks — `# heading`, `- bullet`, `> quote`, `*bold*`, `_italic_`, `[[Task title]]` (a link to the task) — that every card renders the same way |
 | `digest` | The morning or night digest: the assistant gives the items per section, the endpoint lays them out (title and date, headings, bullets, five per section, empty ones left out) |
 | `now` | Your local time, and whether a digest is due and already sent |
@@ -493,7 +495,8 @@ back:
 | Tap an option on a question card | The answer — always / normal / ignore is applied to `people` at once |
 | Tap a numbered button on the "How important are these chats?" card | The same, for that chat; the card is redrawn with the answer and keeps buttons only for the chats still open |
 | Reply to a question card, a digest or an answered card | A note about that card (on the chats card, it lists every chat on it, and even a bare `normal` is left to the assistant to place). The assistant decides whether it answers the question (`answer_question`, and the card is rewritten) or asks something back (answered under your message) — by meaning, not by a "?". A bare `always` / `normal` / `ignore` is applied at once, like a tap |
-| `/now` (also in the bot's menu) | What needs you right now — drafts waiting, open questions, overdue and due-today tasks — read from the tables on the spot, without waiting for a run |
+| `/now` (also in the bot's menu) | What needs you right now — drafts waiting, open questions, overdue and due-today tasks, loops you owe that are due — read from the tables on the spot, without waiting for a run |
+| `/brain` (also in the bot's menu) | Everything the assistant believes about you, grouped by topic. Reply to it to correct a fact; the assistant fixes it on its next run |
 | 🗑 / ↩ on the Sunday lessons card | Retires that lesson, or brings it back; replying to the card is a note asking to reword one |
 | Any other message | A note the assistant reads on its next run, and answers under your message |
 
@@ -541,6 +544,14 @@ decided there is none). Lessons are rows in
 `tables/personal-assistant/lessons.ts`, read at the start of every run, and
 yours to edit or retire on the Tables tab. Replying to a card you already
 sent or skipped records the reason, which is exactly what it learns from.
+
+**It remembers.** Three kinds of memory, kept apart and read at the start of
+every run: `lessons` (how to act), `brain` (what is true about you and your
+world) and `loops` (what is still in flight). What you tell it that stays
+true goes into the brain, so it does not ask twice; `/brain` shows you all of
+it. A thread left hanging — "partner to send his client's free times" — is a
+loop until a later run sees it settle; the digest lists the ones overdue on
+you and the ones where it is time to nudge them.
 
 **It starts early** when you comment on a draft, send the bot a note, or a
 chat marked `always` gets a message — if the routine has an API trigger and

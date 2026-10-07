@@ -15,16 +15,17 @@ import { defineTable, enumOf, text } from "../../src/core/define.ts";
  * row keeps only `same_as`, pointing at the number's row, which holds
  * everything else (src/core/chat-link.ts).
  *
- * `notes` is the assistant's memory of the chat. The messages themselves are
- * forgotten after two weeks (see src/core/chat-log.ts); what is still going on
- * with somebody is kept here, short, where it can be read and corrected.
+ * `notes` says who the chat is, in a line — his role in a group, who a
+ * person is. The messages themselves are forgotten after two weeks (see
+ * src/core/chat-log.ts); what is still pending with them is a `loops` row,
+ * and lasting facts about his world are in `brain`.
  */
 export default defineTable({
   name: "people",
   description:
     "WhatsApp and Telegram chats and how much they matter: always (checked every run, never " +
     "waits), normal (looked at when they spoke last), ignore (never read). Empty means not " +
-    "decided yet — ask. Notes are what is going on with them, kept short.",
+    "decided yet — ask. Notes say who they are, in a line.",
 
   columns: {
     name: text({ label: "Name", help: "The person's or group's name, as the chat shows it." }),
@@ -38,7 +39,7 @@ export default defineTable({
     notes: text({
       nullable: true,
       label: "Notes",
-      help: "What is going on with them — who they are, what is pending, what was promised.",
+      help: "Who they are, in a line — and his role, in a group. What is pending is in loops.",
     }),
     chat_key: text({
       label: "Chat",

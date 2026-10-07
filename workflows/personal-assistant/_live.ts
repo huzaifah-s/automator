@@ -13,8 +13,11 @@ import { rich, taskLinks, type botApi } from "./_bot.ts";
  *
  * Each message runs the Claude Code CLI headless (`claude -p`) in this
  * container, signed in with `CLAUDE_CODE_OAUTH_TOKEN` — a token made once
- * with `claude setup-token` on the account whose plan pays for it. No API
- * key, no per-token bill; it counts against that account's usage limits.
+ * with `claude setup-token` on the account whose plan pays for it — and,
+ * optionally, `CLAUDE_CODE_OAUTH_TOKEN_2` from a second account, used only
+ * when the first fails before doing anything (a usage limit, a lapsed
+ * sign-in). No API key, no per-token bill; each counts against its own
+ * account's usage limits.
  *
  * ## Same tools, over the same endpoint
  *
@@ -139,13 +142,14 @@ function recent(ctx: Pick<Ctx, "table">, skip: string | null): string {
 export async function answerLive(
   ctx: Ctx,
   api: Bot,
-  oauthToken: string,
+  oauthTokens: readonly string[],
   arrived: { messageId: number; task: string; note: Row | null; writes?: boolean },
 ): Promise<LiveResult> {
   // ASSISTANT_LIVE_LOGIN=1 is for a developer's machine: use the CLI's own
   // login instead of a token. Never set it on the server.
   const ownLogin = process.env.ASSISTANT_LIVE_LOGIN === "1";
-  if (!oauthToken && !ownLogin) return { answered: false, why: "no token" };
+  const accounts = ownLogin ? [""] : oauthTokens.filter(Boolean);
+  if (accounts.length === 0) return { answered: false, why: "no token" };
   const { usage, ok } = await budget(ctx);
   if (!ok) return { answered: false, why: "cap" };
 
@@ -183,17 +187,19 @@ export async function answerLive(
     JSON.stringify({ mcpServers: { assistant: { type: "http", url: conn.url, headers: { Authorization: `Bearer ${conn.token}` } } } }),
     { mode: 0o600 },
   );
-  const env: Record<string, string> = ownLogin
-    ? // A Mac keeps the login in the keychain, which needs who the user is.
-      Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "TMPDIR"].map((k) => [k, process.env[k] ?? ""]))
-    : {
-        PATH: process.env.PATH ?? "",
-        HOME: home,
-        CLAUDE_CONFIG_DIR: join(home, ".claude"),
-        CLAUDE_CODE_OAUTH_TOKEN: oauthToken,
-      };
-  env.DISABLE_AUTOUPDATER = "1";
-  env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+  const envFor = (oauthToken: string): Record<string, string> => ({
+    ...(ownLogin
+      ? // A Mac keeps the login in the keychain, which needs who the user is.
+        Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "TMPDIR"].map((k) => [k, process.env[k] ?? ""]))
+      : {
+          PATH: process.env.PATH ?? "",
+          HOME: home,
+          CLAUDE_CONFIG_DIR: join(home, ".claude"),
+          CLAUDE_CODE_OAUTH_TOKEN: oauthToken,
+        }),
+    DISABLE_AUTOUPDATER: "1",
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+  });
 
   const args = [
     "-p",
@@ -216,73 +222,96 @@ export async function answerLive(
   let text = "";
   let turns = 0;
   let tokens = 0;
+  let account = 0;
   const used: string[] = [];
 
   await api.typing();
   const typing = setInterval(() => void api.typing(), 4_500);
-  let timedOut = false;
   try {
-    const proc = Bun.spawn([CLAUDE, ...args], {
-      cwd: home,
-      env,
-      stdin: new Blob([prompt]),
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const kill = () => proc.kill();
-    const timer = setTimeout(() => {
-      timedOut = true;
-      kill();
-    }, DEADLINE_MS);
-    ctx.signal.addEventListener("abort", kill, { once: true });
-    const out = await new Response(proc.stdout).text();
-    await proc.exited;
-    clearTimeout(timer);
-    ctx.signal.removeEventListener("abort", kill);
-
-    // One JSON object per line: assistant turns (for the tool names) and,
-    // last, the result.
-    let result: { subtype?: string; is_error?: boolean; result?: string; num_turns?: number; usage?: Record<string, number> } | null = null;
-    for (const raw of out.split("\n")) {
-      if (!raw.startsWith("{")) continue;
-      let msg: any;
-      try {
-        msg = JSON.parse(raw);
-      } catch {
-        continue;
-      }
-      if (msg.type === "assistant") {
-        for (const b of msg.message?.content ?? []) {
-          if (b?.type === "tool_use") used.push(String(b.name).replace(/^mcp__assistant__/, ""));
-        }
-      } else if (msg.type === "result") result = msg;
+    // The first account is the main one; the next is tried only when one
+    // failed before any tool ran — a usage limit, a lapsed sign-in — so a
+    // retry can never do anything twice.
+    for (account = 0; account < accounts.length; account++) {
+      const left = DEADLINE_MS - (Date.now() - started);
+      if (account > 0 && left < 20_000) break;
+      const run = await once(accounts[account]!, left);
+      tokens += run.tokens;
+      turns = run.turns;
+      used.push(...run.used);
+      why = run.why;
+      text = run.text;
+      if (run.why !== "failed" || run.used.length > 0) break;
     }
-    if (result) {
-      const u = result.usage ?? {};
-      tokens = (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
-      turns = result.num_turns ?? 0;
-    }
-    if (timedOut) why = "slow";
-    else if (!result || result.is_error || result.subtype !== "success") {
-      why = "failed";
-      // The CLI's own words ("Not logged in"), or its exit — never the prompt.
-      const said = result?.is_error ? String(result.result ?? "").slice(0, 120) : `exit ${proc.exitCode}`;
-      ctx.log.warn(`Live Maria could not answer: ${result?.subtype ?? "no result"} — ${said}`);
-    } else {
-      text = String(result.result ?? "").trim();
-      if (!text) why = "empty";
-    }
-  } catch (err) {
-    ctx.log.warn(`Live Maria could not start Claude Code: ${String((err as Error)?.message).slice(0, 160)}`);
-    why = "failed";
   } finally {
     clearInterval(typing);
     await ctx.state.set(USAGE, { day: usage.day, messages: usage.messages + 1, tokens: usage.tokens + tokens }, { ttlSeconds: 3 * 86_400 });
   }
 
+  /** One run of the CLI on one account. */
+  async function once(oauthToken: string, deadline: number) {
+    const run = { why: null as typeof why, text: "", turns: 0, tokens: 0, used: [] as string[] };
+    let timedOut = false;
+    try {
+      const proc = Bun.spawn([CLAUDE, ...args], {
+        cwd: home,
+        env: envFor(oauthToken),
+        stdin: new Blob([prompt]),
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const kill = () => proc.kill();
+      const timer = setTimeout(() => {
+        timedOut = true;
+        kill();
+      }, deadline);
+      ctx.signal.addEventListener("abort", kill, { once: true });
+      const out = await new Response(proc.stdout).text();
+      await proc.exited;
+      clearTimeout(timer);
+      ctx.signal.removeEventListener("abort", kill);
+
+      // One JSON object per line: assistant turns (for the tool names) and,
+      // last, the result.
+      let result: { subtype?: string; is_error?: boolean; result?: string; num_turns?: number; usage?: Record<string, number> } | null = null;
+      for (const raw of out.split("\n")) {
+        if (!raw.startsWith("{")) continue;
+        let msg: any;
+        try {
+          msg = JSON.parse(raw);
+        } catch {
+          continue;
+        }
+        if (msg.type === "assistant") {
+          for (const b of msg.message?.content ?? []) {
+            if (b?.type === "tool_use") run.used.push(String(b.name).replace(/^mcp__assistant__/, ""));
+          }
+        } else if (msg.type === "result") result = msg;
+      }
+      if (result) {
+        const u = result.usage ?? {};
+        run.tokens = (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
+        run.turns = result.num_turns ?? 0;
+      }
+      if (timedOut) run.why = "slow";
+      else if (!result || result.is_error || result.subtype !== "success") {
+        run.why = "failed";
+        // The CLI's own words ("Not logged in", a usage limit), or its exit — never the prompt.
+        const said = result?.is_error ? String(result.result ?? "").slice(0, 120) : `exit ${proc.exitCode}`;
+        ctx.log.warn(`Live Maria could not answer on account ${account + 1}: ${result?.subtype ?? "no result"} — ${said}`);
+      } else {
+        run.text = String(result.result ?? "").trim();
+        if (!run.text) run.why = "empty";
+      }
+    } catch (err) {
+      ctx.log.warn(`Live Maria could not start Claude Code: ${String((err as Error)?.message).slice(0, 160)}`);
+      run.why = "failed";
+    }
+    return run;
+  }
+
   // Tool names only: arguments and results are messages.
   ctx.log.info(
-    `Live Maria (${model}): ${turns} turn(s), tools ${used.join(", ") || "none"}, ${tokens} tokens, ${Date.now() - started}ms` +
+    `Live Maria (${model}, account ${Math.min(account, accounts.length - 1) + 1}): ${turns} turn(s), tools ${used.join(", ") || "none"}, ${tokens} tokens, ${Date.now() - started}ms` +
       (why ? `, gave up: ${why}` : ""),
   );
   if (why) return { answered: false, why, turns, tokens };

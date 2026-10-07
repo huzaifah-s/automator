@@ -316,7 +316,9 @@ are one contract kept in two places.
 `workflows/personal-assistant/_live.ts` answers his notes and draft comments
 inside `personal-assistant-bot`'s run by spawning the Claude Code CLI
 headless, signed in with the optional secret `CLAUDE_CODE_OAUTH_TOKEN` (from
-`claude setup-token`) — no API key. Its tools are /mcp/assistant itself, on
+`claude setup-token`) — no API key. `CLAUDE_CODE_OAUTH_TOKEN_2`, from a
+second account, is tried only when the first failed before any tool ran (a
+usage limit, a lapsed sign-in): a retry after a tool call could draft twice. Its tools are /mcp/assistant itself, on
 127.0.0.1, with a token `mintProcessToken` keeps in memory (never stored,
 gone on restart) and limited by `McpIdentity.tools`, which the endpoint
 enforces on `tools/list` and `tools/call`. Do not give it a tool of its

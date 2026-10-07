@@ -106,8 +106,12 @@ const routineToken = () => routine.ASSISTANT_ROUTINE_TOKEN ?? "";
  * account whose plan she runs on. Without it every message starts the
  * routine, as before. Declared here so the redactor knows it.
  */
-const claude = defineSecrets({ CLAUDE_CODE_OAUTH_TOKEN: z.string().min(20).optional() });
-const claudeToken = () => claude.CLAUDE_CODE_OAUTH_TOKEN ?? "";
+const claude = defineSecrets({
+  CLAUDE_CODE_OAUTH_TOKEN: z.string().min(20).optional(),
+  /** Optional: a second account's token, used when the first hits its limit. */
+  CLAUDE_CODE_OAUTH_TOKEN_2: z.string().min(20).optional(),
+});
+const claudeTokens = () => [claude.CLAUDE_CODE_OAUTH_TOKEN ?? "", claude.CLAUDE_CODE_OAUTH_TOKEN_2 ?? ""];
 
 const update = z.looseObject({
   update_id: z.number().optional(),
@@ -416,7 +420,7 @@ async function note(ctx: Ctx, text: string, messageId: number, about: Row | null
     { writtenBy: ctx.workflow },
   );
   const api = botApi(ctx, bot);
-  const live = await answerLive(ctx, api, claudeToken(), {
+  const live = await answerLive(ctx, api, claudeTokens(), {
     messageId,
     note: row,
     task:
@@ -478,7 +482,7 @@ async function comment(ctx: Ctx, d: Row, text: string, messageId: number) {
   const feedback = d.status === "revise" && d.feedback ? `${d.feedback}\n${text}` : text;
   const row = drafts.update(String(d.id), { status: "revise", feedback }, { writtenBy: ctx.workflow });
   if (d.card_id) await api.edit(String(d.card_id), draftOutcome(row, "revise"));
-  const live = await answerLive(ctx, api, claudeToken(), {
+  const live = await answerLive(ctx, api, claudeTokens(), {
     messageId,
     note: null,
     writes: true,

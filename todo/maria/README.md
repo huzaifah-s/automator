@@ -19,7 +19,7 @@ and deployed, tick its box here.
 
 ## The jobs
 
-- [ ] **01 · Push her latest playbook.** 5 min. Chat (needs your OK to push).
+- [x] **01 · Push her latest playbook.** 5 min. Chat (needs your OK to push).
       She's running yesterday's rules; this is the cheapest fix of all.
 - [ ] **02 · One person = one chat.** ~2 h. Chat.
       Merge hidden WhatsApp ids (`@lid`) with the real number, so lessons and

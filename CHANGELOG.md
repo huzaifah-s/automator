@@ -6,6 +6,40 @@ Entries record the *reasoning*, not just the diff — `git log` already has the
 diff. If a change settled a question, say what was settled and what the losing
 option was, so nobody relitigates it from scratch.
 
+## 2026-10-07
+
+### Maria can fix and trash her own tasks, starts on time, and sorts chats on one card
+
+All four came from one afternoon of messages to the bot. Maria made a task, and
+drafted a reply as the user, from a group message that asked somebody else
+(Amin) to look at a server error. She then could not remove the task. Five of
+the user's notes waited for the next hourly run, one of them 25 minutes. And
+about ten "is this chat important?" questions arrived as ten cards.
+
+- **`trash_task`, and `update_task` takes a title.** Both reach only tasks
+  with a `created` row in `task_work`, and they find the task through that
+  row rather than the mirror, so a task made two minutes ago can be fixed
+  straight away. Trash is Notion's (30 days, restorable), never a delete. The
+  reason the user gave is put in `outcomes` as a `deleted` outcome, so it
+  becomes a lesson. *Considered:* letting her trash any task he asks about.
+  Declined for now, for the same reason she cannot mark tasks Done: his own
+  tasks stay his until he decides otherwise.
+- **An early start asked for during the two-minute cooldown is owed, not
+  dropped.** `deliver-cards` already runs every minute, so it makes the owed
+  start once the cooldown is over, with every queued reason in one fire.
+  *Considered:* waiting until the running session calls `log_run`. That is
+  safer against two sessions overlapping, but a session that dies without
+  logging would hold every note until the hour.
+- **Replies say who they answer.** `waiting` gains a "replies to" column and
+  `thread` prints `↩ me` or `↩ <name>`, looked up in the chat log. The
+  playbook rule is to draft or make a task in a group only when the message
+  is to him. *Considered:* Telegram's own "mentioned" flag. That needs a
+  chat-log column and only works on one of the two apps. Replies are recorded
+  on both.
+- **Chats to sort share one card.** Two or more priority questions from the
+  same minute go on one card with numbered button rows, up to eight. This made
+  `card_id` non-unique; see AGENTS.md for what that means for lookups.
+
 ## 2026-09-30
 
 ### A local server no longer runs workflows on a timer

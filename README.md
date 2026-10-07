@@ -414,13 +414,14 @@ access — and refuses the operations and data-table ones, as they refuse it.
 
 | Tool | Does |
 |---|---|
-| `waiting` | Chats where they spoke last, priority first, then longest wait |
-| `thread` | One chat's messages, with what `people` knows about it |
+| `waiting` | Chats where they spoke last, priority first, then longest wait — and whose message the newest one replies to |
+| `thread` | One chat's messages, with what `people` knows about it; a reply says who it answers (`↩ me`, `↩ Amin`) |
 | `people` / `update_person` | Priorities and notes |
 | `drafts` / `draft_reply` | Replies waiting for approval; a new one, or a revision |
 | `questions` / `ask` / `answer_question` / `close_question` | Asking you something, recording an answer you typed, and acting on it |
 | `create_task` | A task in the Notion To Do database, through the `personal-assistant-create-task` workflow |
-| `update_task` | The category or due date of a task the assistant created itself, once you have said — never your own tasks |
+| `update_task` | The title, category or due date of a task the assistant created itself, once you have said — never your own tasks |
+| `trash_task` | Moves a task the assistant created to Notion's trash when you ask (restorable for 30 days), with your reason, which it then learns from — never your own tasks |
 | `todo` / `task` | Your open To Do tasks, most urgent first; one task with its page text, the assistant's notes on it and its questions about it |
 | `task_note` | Writes the assistant's work on a task's page — a draft, a plan, its questions, your answer — through `personal-assistant-task-note` |
 | `lessons` / `outcomes` / `learn` | What you have taught it; drafts that ended and task notes you reacted to that are not learned from yet; recording a lesson |
@@ -443,7 +444,10 @@ and asked about, then set with `update_task` from your answer. Every task it
 creates is announced on Telegram — title, due date, category, where it came
 from — with an **Open in Notion** button, and when you change the category
 or due date it chose, the next sync records it as a correction to learn
-from. The same title within a week returns the existing task.
+from. The same title within a week returns the existing task. Both
+`update_task` and `trash_task` work on a task made minutes ago, before the
+sync has mirrored it — the assistant's own record of creating it is what lets
+it touch the task at all.
 The page is made from the database's **default template** (marked "Default"
 in Notion's template menu), so it gets that template's icon and content;
 notes and the source are added below them. With no default template the
@@ -484,11 +488,18 @@ back:
 | **Skip** | Closed; nothing is sent |
 | Reply to a draft card | Your words go in `feedback`, the draft goes to `revise`, and the assistant writes a new version — whose card says what you asked for, while the old card's buttons are removed |
 | Tap an option on a question card | The answer — always / normal / ignore is applied to `people` at once |
-| Reply to a question card, a digest or an answered card | A note about that card. The assistant decides whether it answers the question (`answer_question`, and the card is rewritten) or asks something back (answered under your message) — by meaning, not by a "?". A bare `always` / `normal` / `ignore` is applied at once, like a tap |
+| Tap a numbered button on the "How important are these chats?" card | The same, for that chat; the card is redrawn with the answer and keeps buttons only for the chats still open |
+| Reply to a question card, a digest or an answered card | A note about that card (on the chats card, it lists every chat on it, and even a bare `normal` is left to the assistant to place). The assistant decides whether it answers the question (`answer_question`, and the card is rewritten) or asks something back (answered under your message) — by meaning, not by a "?". A bare `always` / `normal` / `ignore` is applied at once, like a tap |
 | Any other message | A note the assistant reads on its next run, and answers under your message |
 
+Two or more "how important is this chat?" questions from the same minute
+arrive as one card — up to eight chats, each with its own numbered row of
+always / normal / ignore buttons — instead of a card each.
+
 Every message you send gets a reply straight away — "on it now" when the
-assistant was started early, "on my next run" when it was not. Every card
+assistant was started early, "within a couple of minutes" when it was just
+started and the next start is queued, "on my next run" when early starts are
+not configured. Every card
 about a chat names its app ("ANSARA Lounge · WhatsApp group"), and the
 assistant is refused a second question about a chat within a week, or about
 one that already has a priority.
@@ -526,7 +537,9 @@ automator knows it: the variable `ASSISTANT_ROUTINE_FIRE_URL` and the secret
 `ASSISTANT_ROUTINE_TOKEN`, both shown once when the trigger is added. Both are
 read on every run, so setting them needs no restart. Without them the hourly
 schedule still does everything, a little later. At most one early start every
-two minutes.
+two minutes; one asked for inside those two minutes is queued, not dropped,
+and `deliver-cards` makes it (once, for everything queued) as soon as they
+are up.
 
 ## Checkpoints and resume
 

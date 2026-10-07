@@ -284,7 +284,9 @@ mechanism.
 enforced by absence too.** `task_note` appends one callout to the end of a
 page through `personal-assistant-task-note` and has no way to change a
 property, edit a block or archive anything; there is no tool that sets a
-status. A note is only accepted for a page in the `tasks` mirror — the same
+status. The one way anything leaves the list is `trash_task`, and only for a
+task the assistant created (see `update_task` below) — the user asked for it
+on 2026-10-07 after it made a task from a message meant for somebody else. A note is only accepted for a page in the `tasks` mirror — the same
 rule as drafts and `people` — so a page id handed to the model in a message
 cannot become somewhere it writes. Do not add "mark done" because a task
 looked finished; completing tasks is a separate decision the user has not
@@ -303,9 +305,16 @@ the last read, not when the timestamp moves; and "who edited" is
 read as the user's feedback. A callout missing from a page cut at
 `MAX_BLOCKS` is not "removed"; `readBlocks` says when it cut.
 
-**`update_task` only reaches tasks the assistant created.** The tool refuses a
-page without a `created` row in `task_work`, and the workflow sets two
-properties, category and due date. Two details keep its feedback honest:
+**`update_task` and `trash_task` only reach tasks the assistant created.**
+Both resolve the id through `myTaskArg`, which looks for a `created` row in
+`task_work` — not the `tasks` mirror, so a task made minutes ago, before the
+sync has read it, can be fixed at once — and refuses anything else. The
+workflow sets three properties, title, category and due date, or moves the
+page to Notion's trash (`in_trash`; the API has no permanent delete, and
+this must not grow one). A trash removes the mirror row and marks every
+`task_work` row for the page `deleted` with the user's reason in `detail`,
+left unlearned: it reaches `outcomes`, so why the task was wrong becomes a
+lesson rather than a silent removal. Two details keep its feedback honest:
 it moves the row's `seen_text` only for the field it changed (Notion's
 answer may already carry a change of yours to the other one, which the sync
 must still see), and the sync counts a changed category or due date as
@@ -320,10 +329,23 @@ it. Change one without the other and every monthly task collects empty
 
 **The routine is started early at most every two minutes, never retried.**
 `_routine.ts`: the fire endpoint has no idempotency key, so a retry after a
-lost reply is a second session working the same drafts. The fire text names a
+lost reply is a second session working the same drafts. A start asked for
+inside the two minutes is *owed*, not dropped — its reason goes in shared
+state and `deliver-cards` calls `firePending` every minute. Dropping it was a
+real bug: a note sent while a session was running waited up to an hour,
+because that session had already read `questions`. The fire text names a
 reason, never message content — it becomes the opening of a session log kept
 on claude.ai. Missing URL or token means "not configured", not an error: the
 hourly schedule is the mechanism, the fire is a shortcut.
+
+**A card can carry several questions, so `card_id` is not unique.** Two or
+more "how important is this chat?" questions (`isPriorityQuestion`) posted in
+the same minute share one card. Anything that goes from a card back to its
+question — a tap redraw, a typed reply, `card_outdated` — goes through
+`cardQuestions` and redraws the whole card with `batchCard`; a `limit: 1`
+lookup by `card_id` would answer or redraw an arbitrary chat on it. The
+numbering on the buttons is `byAsked` order, so it must be the same order
+when the card is first posted and every time it is redrawn.
 
 **`create_task` returns `refused` for bad input instead of throwing.** A
 throw is a failed run and a failed run is an alert; a model picking a

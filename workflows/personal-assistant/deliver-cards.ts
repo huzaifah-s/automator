@@ -1,10 +1,16 @@
-import { cron, defineCredential, defineWorkflow, type Row } from "../../src/core/define.ts";
+import { z } from "zod";
+import { cron, defineCredential, defineSecrets, defineWorkflow, type Row } from "../../src/core/define.ts";
 import {
+  BATCH_MAX,
+  batchCard,
   botApi,
+  byAsked,
+  cardQuestions,
   chatLabel,
   draftButtons,
   draftCard,
   draftOutcome,
+  isPriorityQuestion,
   linkButtons,
   questionButtons,
   questionCard,
@@ -12,6 +18,7 @@ import {
   taskLabel,
   updateCard,
 } from "./_bot.ts";
+import { firePending } from "./_routine.ts";
 
 /**
  * Personal assistant — posts a Telegram card for every draft and question the
@@ -29,9 +36,15 @@ import {
  *
  * A revision's card says what you asked to change, and the card of the draft
  * it replaces is closed so that only one Send button is live per reply.
+ *
+ * It is also the minute clock for the assistant's early starts: a start asked
+ * for during the two-minute cooldown is owed, and made here once it is over
+ * (see _routine.ts).
  */
 
 const bot = defineCredential("telegram", "maria");
+/** Optional, as in bot.ts: without it there are no early starts to make. */
+const routine = defineSecrets({ ASSISTANT_ROUTINE_TOKEN: z.string().min(20).optional() });
 
 export default defineWorkflow({
   name: "personal-assistant-deliver-cards",
@@ -81,7 +94,21 @@ export default defineWorkflow({
       });
       posted++;
     }
-    for (const q of [...newQuestions].reverse()) {
+    // "How important is this chat?" comes a run's worth at a time: two or
+    // more go on one card, each keeping its own row of buttons.
+    const oldestFirst = [...newQuestions].reverse();
+    const sorting = oldestFirst.filter(isPriorityQuestion).sort(byAsked);
+    const batched = sorting.length > 1 ? sorting.slice(0, BATCH_MAX) : [];
+    if (batched.length) {
+      await ctx.step(`chats ${batched[0]!.id}`, async () => {
+        const { html, buttons } = batchCard(batched, aboutOf);
+        const cardId = await api.send(html, buttons);
+        for (const q of batched) questions.update(String(q.id), { card_id: String(cardId) }, { writtenBy: ctx.workflow });
+      });
+      posted++;
+    }
+    const inBatch = new Set(batched.map((q) => String(q.id)));
+    for (const q of oldestFirst.filter((q) => !inBatch.has(String(q.id)))) {
       await ctx.step(`question ${q.id}`, async () => {
         const cardId = await api.send(questionCard(q, aboutOf(q)), questionButtons(q));
         questions.update(String(q.id), { card_id: String(cardId) }, { writtenBy: ctx.workflow });
@@ -110,15 +137,30 @@ export default defineWorkflow({
     // Answers the assistant recognised in a reply you typed: the card it
     // answers is rewritten to show it, and loses its buttons, the same as a
     // tap would have done.
+    // A shared card is redrawn whole, once, however many of its chats changed.
     const outdated = questions.query({ limit: 200 }).filter((q) => q.card_outdated && q.card_id);
+    const redrawn = new Set<string>();
     for (const q of outdated) {
       await ctx.step(`answered ${q.id}`, async () => {
-        await api.edit(String(q.card_id), questionOutcome(q, aboutOf(q)));
+        const card = String(q.card_id);
+        if (!redrawn.has(card)) {
+          redrawn.add(card);
+          const onCard = cardQuestions(ctx, card);
+          if (onCard.length > 1) {
+            const { html, buttons } = batchCard(onCard, aboutOf);
+            await api.edit(card, html, buttons);
+          } else {
+            await api.edit(card, questionOutcome(q, aboutOf(q)));
+          }
+        }
         questions.update(String(q.id), { card_outdated: false }, { writtenBy: ctx.workflow });
       });
     }
 
+    const fired = await ctx.step("owed start", () => firePending(ctx, routine.ASSISTANT_ROUTINE_TOKEN ?? ""));
+
     return {
+      fired,
       drafts: newDrafts.length,
       questions: newQuestions.length,
       updates: updates.length,

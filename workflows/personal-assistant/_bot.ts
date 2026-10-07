@@ -286,6 +286,79 @@ export function questionOutcome(q: Row, about?: string | null): string {
     .join("\n");
 }
 
+/* --------------------------------------------------- chats to sort, batched */
+
+const PRIORITY_OPTIONS = ["always", "normal", "ignore"];
+/** Chats on one card. Three buttons each, and a card past this is a wall. */
+export const BATCH_MAX = 8;
+
+/**
+ * "How important is this chat?" — a question about one chat whose choices are
+ * exactly always / normal / ignore. The assistant asks a run's worth of these
+ * at once, and one card each was a screen of cards; `deliver-cards` puts them
+ * on one card instead, every question keeping its own row and `card_id`.
+ */
+export function isPriorityQuestion(q: Row): boolean {
+  const options = Array.isArray(q.options) ? (q.options as unknown[]) : [];
+  return (
+    Boolean(q.chat_key) &&
+    String(q.kind ?? "question") === "question" &&
+    options.length === PRIORITY_OPTIONS.length &&
+    options.every((o, i) => o === PRIORITY_OPTIONS[i])
+  );
+}
+
+/**
+ * The shared card, drawn from every question on it — so a tap, or an answer
+ * the assistant took from your reply, redraws it whole: answered chats show
+ * the answer, open ones keep their row of buttons. `qs` oldest first; the
+ * numbers on the buttons are the numbers in the list.
+ */
+export function batchCard(
+  qs: Row[],
+  aboutOf: (q: Row) => string | null,
+): { html: string; buttons: Button[][] } {
+  const open = qs.filter((q) => q.status === "open");
+  const lines = qs.map((q, i) => {
+    const head = `<b>${i + 1}.</b> ${esc(aboutOf(q) ?? String(q.chat_key))}`;
+    const status = q.status === "open" ? "" : ` — <b>${esc(String(q.answer ?? ""))}</b>`;
+    const asked = String(q.question).replace(/\s+/g, " ");
+    // Eight of these and the card's own lines stay inside Telegram's 4096.
+    return `${head}${status}\n<i>${bold(esc(asked.length > 280 ? `${asked.slice(0, 280)}…` : asked))}</i>`;
+  });
+  const html = [
+    `❓ <b>How important are these chats?</b>`,
+    open.length
+      ? "<i>One tap per chat — or reply to this card to tell me who someone is.</i>"
+      : "<i>All sorted.</i>",
+    "",
+    lines.join("\n\n"),
+  ].join("\n");
+  const buttons = qs.flatMap((q, i) =>
+    q.status === "open"
+      ? [PRIORITY_OPTIONS.map((o, j) => ({ text: `${i + 1} · ${o}`, callback_data: `q:${q.id}:${j}` }))]
+      : [],
+  );
+  return { html, buttons };
+}
+
+/**
+ * The order of the chats on a shared card — and so their numbers. Ties on
+ * the millisecond are broken by id, so the card is numbered the same when it
+ * is first posted and every time it is redrawn.
+ */
+export const byAsked = (a: Row, b: Row) =>
+  Number(a.created_at) - Number(b.created_at) || String(a.id).localeCompare(String(b.id));
+
+/** Every question posted on one card, oldest first — more than one for a batch of chats. */
+export function cardQuestions(ctx: Pick<Ctx, "table">, cardId: string): Row[] {
+  return ctx
+    .table("questions")
+    .query({ where: [{ column: "card_id", op: "=", value: cardId }], limit: BATCH_MAX * 2 })
+    .filter((q) => String(q.kind ?? "question") === "question")
+    .sort(byAsked);
+}
+
 /** The button under an update that carries a link — a task the assistant added. */
 export function linkButtons(url: unknown): Button[][] | undefined {
   if (typeof url !== "string" || !/^https:\/\//.test(url)) return undefined;

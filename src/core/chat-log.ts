@@ -223,6 +223,14 @@ export function chatThread(channel: ChatChannel, chat: string, limit: number): S
   return (threadQuery.all(channel, chat, limit) as Raw[]).map(toStored);
 }
 
+const messageQuery = db.prepare(`SELECT * FROM chat_messages WHERE channel = ? AND chat = ? AND id = ?`);
+
+/** One message by its id — what a reply answers. Null once pruned, or never recorded. */
+export function chatMessage(channel: ChatChannel, chat: string, id: string): StoredMessage | null {
+  const r = messageQuery.get(channel, chat, id) as Raw | null;
+  return r ? toStored(r) : null;
+}
+
 /** Days of chat log kept when `CHAT_LOG_RETENTION_DAYS` says nothing usable. */
 const DEFAULT_RETENTION_DAYS = 14;
 

@@ -9,7 +9,9 @@ import {
   type Row,
 } from "../../src/core/define.ts";
 import {
+  batchCard,
   botApi,
+  cardQuestions,
   chatLabel,
   taskLabel,
   draftButtons,
@@ -195,13 +197,13 @@ async function onButton(ctx: Ctx, cb: NonNullable<Update["callback_query"]>) {
     }
     const row = answer(ctx, q, choice);
     const priority = applyPriority(ctx, row);
-    if (q.card_id) await api.edit(String(q.card_id), questionOutcome(row, about(ctx, row)));
+    if (q.card_id) await redraw(ctx, row);
     if (priority) {
-      await api.answer(cb.id, `Noted — set to ${priority}.`);
+      await api.answer(cb.id, `Noted — ${about(ctx, row)?.split(" · ")[0] ?? "that chat"} set to ${priority}.`);
       return { question: id, outcome: "answered", priority };
     }
     const fired = await fireAssistant(ctx, routineToken(), "The user answered a question. Read `questions` and act on it.");
-    await api.answer(cb.id, fired === "fired" ? "Noted — on it now." : "Noted.");
+    await api.answer(cb.id, fired === "fired" || fired === "cooling down" ? "Noted — on it now." : "Noted.");
     return { question: id, outcome: "answered", fired };
   }
 
@@ -253,6 +255,10 @@ async function onMessage(ctx: Ctx, m: NonNullable<Update["message"]>) {
     const card = String(replied);
     const d = ctx.table("drafts").query({ where: [{ column: "card_id", op: "=", value: card }], limit: 1 })[0];
     if (d) return comment(ctx, d, text, m.message_id);
+    // A card about several chats: a typed reply could be about any of them,
+    // so even a bare "normal" is the assistant's to place, not this one's.
+    const onCard = cardQuestions(ctx, card);
+    if (onCard.length > 1) return note(ctx, text, m.message_id, null, batchQuote(ctx, onCard));
     const q = ctx.table("questions").query({ where: [{ column: "card_id", op: "=", value: card }], limit: 1 })[0];
     // Typed in words, a reply may answer the card or ask something back —
     // "telegram or whatsapp", with or without the "?". Telling those apart
@@ -281,10 +287,12 @@ async function onMessage(ctx: Ctx, m: NonNullable<Update["message"]>) {
  * "telegram or whatsapp?" arrives with what it was asking about. `card_id`
  * is your message, which the assistant's answer is threaded under.
  */
-async function note(ctx: Ctx, text: string, messageId: number, about: Row | null) {
-  const quoted = about
-    ? `(your reply to: “${String(about.question).replace(/\s+/g, " ").slice(0, 300)}”)`
-    : "(a message from you)";
+async function note(ctx: Ctx, text: string, messageId: number, about: Row | null, quote?: string) {
+  const quoted =
+    quote ??
+    (about
+      ? `(your reply to: “${String(about.question).replace(/\s+/g, " ").slice(0, 300)}”)`
+      : "(a message from you)");
   const { row } = ctx.table("questions").insert(
     {
       kind: "note",
@@ -310,9 +318,10 @@ async function note(ctx: Ctx, text: string, messageId: number, about: Row | null
 
 /** What you are told after a message: whether the assistant is already on it. */
 function heard(fired: Awaited<ReturnType<typeof fireAssistant>>): string {
-  return fired === "fired"
-    ? "Got it — on it now."
-    : "Got it — I'll pick this up on my next run (hourly, 08:00–23:00).";
+  if (fired === "fired") return "Got it — on it now.";
+  // Owed, not dropped: deliver-cards fires it once the cooldown is over.
+  if (fired === "cooling down") return "Got it — I'll start on it within a couple of minutes.";
+  return "Got it — I'll pick this up on my next run (hourly, 08:00–23:00).";
 }
 
 /** Your reply to a draft card: what to change. */
@@ -344,11 +353,34 @@ async function comment(ctx: Ctx, d: Row, text: string, messageId: number) {
   );
   await api.reply(
     messageId,
-    fired === "fired"
+    fired === "fired" || fired === "cooling down"
       ? "Got it — a new version is coming."
       : "Got it — I'll send a new version on my next run (hourly, 08:00–23:00).",
   );
   return { draft: d.id, outcome: "revise", fired };
+}
+
+/**
+ * What a reply to a card about several chats is about: each chat with its
+ * question id, so the assistant can `answer_question` the one meant.
+ */
+function batchQuote(ctx: Ctx, qs: Row[]): string {
+  const list = qs
+    .map((q, i) => `${i + 1}. ${about(ctx, q) ?? q.chat_key} [question ${q.id}${q.status === "open" ? "" : `, answered ${q.answer}`}]`)
+    .join("; ");
+  return `(your reply to the card asking how important these chats are: ${list})`.slice(0, 1500);
+}
+
+/** Rewrites the card a question was asked on — whole, when it shares it with other chats. */
+async function redraw(ctx: Ctx, q: Row) {
+  const api = botApi(ctx, bot);
+  const onCard = cardQuestions(ctx, String(q.card_id));
+  if (onCard.length > 1) {
+    const { html, buttons } = batchCard(onCard, (r) => about(ctx, r));
+    await api.edit(String(q.card_id), html, buttons);
+  } else {
+    await api.edit(String(q.card_id), questionOutcome(q, about(ctx, q)));
+  }
 }
 
 function answer(ctx: Ctx, q: Row, value: string): Row {

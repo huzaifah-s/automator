@@ -576,6 +576,33 @@ export function evolutionMessage(event: unknown): EvolutionMessage | undefined {
 }
 
 /**
+ * The words in a business account's template, button or list message. They
+ * carry no `conversation` or `text` of their own, so without this a promo, a
+ * delivery update or a bank's OTP notice was stored as an empty "[template]"
+ * — and a chat known only by such messages could not be recognised at all.
+ * Title and body, as the phone shows them; a footer is boilerplate.
+ */
+function businessText(message: Record<string, any>): string | undefined {
+  const t = message.templateMessage;
+  const tpl = t?.hydratedTemplate ?? t?.hydratedFourRowTemplate;
+  const i = message.interactiveMessage ?? t?.interactiveMessageTemplate;
+  const parts: unknown[] = tpl
+    ? [tpl.hydratedTitleText, tpl.hydratedContentText]
+    : i
+      ? [i.header?.title, i.body?.text]
+      : message.buttonsMessage
+        ? [message.buttonsMessage.contentText ?? message.buttonsMessage.text]
+        : message.listMessage
+          ? [message.listMessage.title, message.listMessage.description]
+          : [];
+  const text = parts
+    .filter((p): p is string => typeof p === "string" && p.trim() !== "")
+    .map((p) => p.trim())
+    .join("\n");
+  return text || undefined;
+}
+
+/**
  * One stored or delivered message, or `undefined` for one that is not a chat
  * message at all. `own` decides whether this account's messages count: a
  * webhook must skip them, a history wants both sides of the conversation.
@@ -616,6 +643,7 @@ function toMessage(data: unknown, own: boolean): EvolutionMessage | undefined {
     message.extendedTextMessage?.text ??
     inner?.caption ??
     inner?.text ??
+    businessText(message) ??
     "";
   const replyTo =
     inner?.contextInfo?.stanzaId ??

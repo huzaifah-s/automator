@@ -203,6 +203,57 @@ export function chatWhere(chatKey: string, person?: Row | null): string {
  */
 const bold = (html: string) => html.replace(/\*([^*\n]+)\*/g, "<b>$1</b>");
 
+/** Notion links for task titles, by lower-cased title. */
+export type TaskLinks = Map<string, string>;
+
+export function taskLinks(tasks: Row[]): TaskLinks {
+  return new Map(tasks.map((t) => [String(t.title).trim().toLowerCase(), String(t.url)]));
+}
+
+/**
+ * What the assistant writes to you, as Telegram HTML. Its text is plain with
+ * a few marks, and every message to you goes through here, so a digest, an
+ * answer and a card read the same way:
+ *
+ *   # Heading          a bold line
+ *   - item / • item    a bullet
+ *   > their words      a quote; consecutive lines are one quote
+ *   *bold*  _italic_
+ *   [[Task title]]     the task, linked to its Notion page when it is one
+ *
+ * Escaped first, so the text can only ever gain the tags added here.
+ */
+export function rich(text: string, links?: TaskLinks): string {
+  const inline = (s: string) =>
+    bold(s)
+      .replace(/(^|[\s(])_([^_\n]+)_(?=$|[\s).,!?:;])/g, "$1<i>$2</i>")
+      .replace(/\[\[([^\]\n]+)\]\]/g, (_, title: string) => {
+        const url = links?.get(title.trim().toLowerCase().replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">"));
+        return url && /^https:\/\//.test(url) ? `<a href="${url.replace(/"/g, "&quot;")}">${title}</a>` : `<b>${title}</b>`;
+      });
+  const out: string[] = [];
+  let quote: string[] = [];
+  const flush = () => {
+    if (quote.length) out.push(`<blockquote>${quote.join("\n")}</blockquote>`);
+    quote = [];
+  };
+  for (const raw of esc(text.replace(/\r/g, "")).split("\n")) {
+    const l = raw.trimEnd();
+    const q = l.match(/^\s*&gt; ?(.*)$/);
+    if (q) {
+      quote.push(inline(q[1]!));
+      continue;
+    }
+    flush();
+    const h = l.match(/^\s*#{1,3}\s+(.+)$/);
+    const b = l.match(/^\s*[-•]\s+(.+)$/);
+    out.push(h ? `<b>${inline(h[1]!.replace(/\*/g, ""))}</b>` : b ? `• ${inline(b[1]!)}` : inline(l));
+  }
+  flush();
+  // A blank line between groups reads as a gap; three in a row read as a bug.
+  return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 /**
  * A draft as shown on a card. Telegram refuses a message over 4096
  * characters, and a draft may be 4000 before the card's own lines; what is
@@ -229,11 +280,13 @@ export function draftCard(d: Row, previousFeedback?: string | null, person?: Row
   return [
     `✉️ <b>Reply to ${esc(String(d.chat_name))}</b> · ${chatWhere(String(d.chat_key), person)}`,
     d.why ? `<i>${esc(String(d.why))}</i>` : null,
-    previousFeedback ? `Revised after: “${esc(previousFeedback)}”` : null,
+    d.quote ? `\n<b>They wrote</b>\n${quoted(d.quote)}` : null,
+    previousFeedback ? `\nRevised after: “${esc(previousFeedback)}”` : null,
     "",
+    "<b>Your reply</b>",
     `<blockquote>${esc(shown(d.text))}</blockquote>`,
     "",
-    "Reply to this message to ask for changes.",
+    "<i>Reply to this message to ask for changes.</i>",
   ]
     .filter((l) => l !== null)
     .join("\n");
@@ -251,6 +304,27 @@ export function draftOutcome(d: Row, outcome: "sent" | "skipped" | "revise" | "r
   return `${head}\n\n<blockquote>${esc(shown(d.text))}</blockquote>`;
 }
 
+/** A draft the assistant took back itself, and why. */
+export function draftWithdrawn(d: Row): string {
+  return [
+    `🗑 <b>Withdrawn</b> — reply to ${esc(String(d.chat_name))}`,
+    d.reason ? `<i>${esc(String(d.reason))}</i>` : null,
+    "",
+    `<blockquote>${esc(shown(d.text))}</blockquote>`,
+  ]
+    .filter((l) => l !== null)
+    .join("\n");
+}
+
+/**
+ * The messages a card is about — what they wrote, stored on the row by the
+ * endpoint as `Name: text` lines — as one quote.
+ */
+function quoted(quote: unknown): string {
+  const lines = String(quote).split("\n").filter((l) => l.trim());
+  return `<blockquote>${lines.map((l) => bold(esc(l))).join("\n")}</blockquote>`;
+}
+
 /** Options in rows of two, `q:<id>:<index>` — the index, because an option can be long. */
 export function questionButtons(q: Row): Button[][] | undefined {
   const options = Array.isArray(q.options) ? (q.options as string[]) : [];
@@ -264,23 +338,24 @@ export function questionButtons(q: Row): Button[][] | undefined {
 }
 
 /** `about` is a chatLabel (which chat, in which app) or a taskLabel (which To Do task). */
-export function questionCard(q: Row, about?: string | null): string {
+export function questionCard(q: Row, about?: string | null, links?: TaskLinks): string {
   const options = Array.isArray(q.options) ? q.options : [];
   return [
-    `❓ ${bold(esc(String(q.question)))}`,
+    `❓ ${rich(String(q.question), links)}`,
     about ? `<i>About ${esc(about)}</i>` : null,
-    options.length ? null : "\nReply to this message with your answer.",
+    q.quote ? `\n<b>Their latest</b>\n${quoted(q.quote)}` : null,
+    options.length ? null : "\n<i>Reply to this message with your answer.</i>",
   ]
     .filter((l) => l !== null)
     .join("\n");
 }
 
-export function questionOutcome(q: Row, about?: string | null): string {
+export function questionOutcome(q: Row, about?: string | null, links?: TaskLinks): string {
   return [
-    `❓ ${bold(esc(String(q.question)))}`,
+    `❓ ${rich(String(q.question), links)}`,
     about ? `<i>About ${esc(about)}</i>` : null,
     "",
-    `<b>Answer:</b> ${esc(String(q.answer ?? ""))}`,
+    q.answer ? `<b>Answer:</b> ${esc(String(q.answer))}` : "🗑 <i>No longer needed — I dropped this question.</i>",
   ]
     .filter((l) => l !== null)
     .join("\n");
@@ -321,10 +396,11 @@ export function batchCard(
   const open = qs.filter((q) => q.status === "open");
   const lines = qs.map((q, i) => {
     const head = `<b>${i + 1}.</b> ${esc(aboutOf(q) ?? String(q.chat_key))}`;
-    const status = q.status === "open" ? "" : ` — <b>${esc(String(q.answer ?? ""))}</b>`;
+    const status = q.status === "open" ? "" : ` — <b>${esc(String(q.answer ?? "dropped"))}</b>`;
     const asked = String(q.question).replace(/\s+/g, " ");
     // Eight of these and the card's own lines stay inside Telegram's 4096.
-    return `${head}${status}\n<i>${bold(esc(asked.length > 280 ? `${asked.slice(0, 280)}…` : asked))}</i>`;
+    const said = q.quote && q.status === "open" ? `\n${quoted(clipLines(String(q.quote), 160))}` : "";
+    return `${head}${status}\n<i>${bold(esc(asked.length > 220 ? `${asked.slice(0, 220)}…` : asked))}</i>${said}`;
   });
   const html = [
     `❓ <b>How important are these chats?</b>`,
@@ -365,5 +441,20 @@ export function linkButtons(url: unknown): Button[][] | undefined {
   return [[{ text: /notion\.(so|com)\//.test(url) ? "Open in Notion" : "Open", url }]];
 }
 
-/** An update from the assistant — a digest, or its answer to something you asked. */
-export const updateCard = (u: Row) => `🗒 ${bold(esc(String(u.question)))}`;
+/** Each line of a quote cut to `max` characters, so a batch card stays inside Telegram's limit. */
+const clipLines = (text: string, max: number) =>
+  text
+    .split("\n")
+    .map((l) => (l.length > max ? `${l.slice(0, max)}…` : l))
+    .join("\n");
+
+/**
+ * An update from the assistant — a digest, its answer to something you asked,
+ * a task it added. One that opens with its own title (a digest, `# ➕ Added
+ * to your To Do`) keeps it; anything else gets the notepad, so a message from
+ * Maria is recognisable at a glance.
+ */
+export const updateCard = (u: Row, links?: TaskLinks) => {
+  const body = rich(String(u.question), links);
+  return /^\s*(🌅|🌙|#)/.test(String(u.question)) ? body : `🗒 ${body}`;
+};

@@ -10,12 +10,14 @@ import {
   draftButtons,
   draftCard,
   draftOutcome,
+  draftWithdrawn,
   isPriorityQuestion,
   linkButtons,
   questionButtons,
   questionCard,
   questionOutcome,
   taskLabel,
+  taskLinks,
   updateCard,
 } from "./_bot.ts";
 import { firePending } from "./_routine.ts";
@@ -58,7 +60,10 @@ export default defineWorkflow({
     const drafts = ctx.table("drafts");
     const questions = ctx.table("questions");
     const people = new Map(ctx.table("people").query({ limit: 1000 }).map((p) => [String(p.chat_key), p]));
-    const tasks = new Map(ctx.table("tasks").query({ limit: 1000 }).map((t) => [String(t.page_id), t.title]));
+    const taskRows = ctx.table("tasks").query({ limit: 1000 });
+    const tasks = new Map(taskRows.map((t) => [String(t.page_id), t.title]));
+    /** `[[Task title]]` in anything the assistant wrote opens that task in Notion. */
+    const links = taskLinks(taskRows);
     /** Which chat — and in which app — or which To Do task a question is about. */
     const aboutOf = (q: Row): string | null =>
       q.chat_key
@@ -110,7 +115,7 @@ export default defineWorkflow({
     const inBatch = new Set(batched.map((q) => String(q.id)));
     for (const q of oldestFirst.filter((q) => !inBatch.has(String(q.id)))) {
       await ctx.step(`question ${q.id}`, async () => {
-        const cardId = await api.send(questionCard(q, aboutOf(q)), questionButtons(q));
+        const cardId = await api.send(questionCard(q, aboutOf(q), links), questionButtons(q));
         questions.update(String(q.id), { card_id: String(cardId) }, { writtenBy: ctx.workflow });
       });
       posted++;
@@ -125,7 +130,7 @@ export default defineWorkflow({
         const answers: Row | null = u.reply_to ? questions.get(String(u.reply_to)) : null;
         const under = Number(answers?.card_id);
         const cardId = await api.send(
-          updateCard(u),
+          updateCard(u, links),
           linkButtons(u.link),
           Number.isFinite(under) && under > 0 ? under : undefined,
         );
@@ -150,10 +155,19 @@ export default defineWorkflow({
             const { html, buttons } = batchCard(onCard, aboutOf);
             await api.edit(card, html, buttons);
           } else {
-            await api.edit(card, questionOutcome(q, aboutOf(q)));
+            await api.edit(card, questionOutcome(q, aboutOf(q), links));
           }
         }
         questions.update(String(q.id), { card_outdated: false }, { writtenBy: ctx.workflow });
+      });
+    }
+
+    // Drafts the assistant took back: the card says so and loses its Send.
+    const withdrawn = drafts.query({ limit: 200 }).filter((d) => d.card_outdated && d.card_id);
+    for (const d of withdrawn) {
+      await ctx.step(`withdrawn ${d.id}`, async () => {
+        await api.edit(String(d.card_id), draftWithdrawn(d));
+        drafts.update(String(d.id), { card_outdated: false }, { writtenBy: ctx.workflow });
       });
     }
 
@@ -165,7 +179,7 @@ export default defineWorkflow({
       questions: newQuestions.length,
       updates: updates.length,
       posted,
-      cardsUpdated: outdated.length,
+      cardsUpdated: outdated.length + withdrawn.length,
     };
   },
 });

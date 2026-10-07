@@ -233,12 +233,17 @@ function announcement(task: z.infer<typeof input>, category: string | null): str
   const due = task.due
     ? `${dayFmt.format(new Date(`${task.due}T00:00:00Z`)).replace(",", "")}${task.due_guess ? " (my guess)" : ""}`
     : "none";
+  // Written in the assistant's marks (see `rich` in _bot.ts): the card shows
+  // a heading, the task, then one fact per line.
   return [
-    `Added to your To Do: *${task.title}*`,
-    `Due: ${due} · Category: ${category ?? "not set — I'll ask you"}`,
-    task.source ? `From ${task.source}` : null,
-    task.notes ? (task.notes.length > 300 ? `${task.notes.slice(0, 299)}…` : task.notes) : null,
+    "# ➕ Added to your To Do",
+    `*${task.title}*`,
+    "",
+    `📅 ${due}`,
+    `🏷 ${category ?? "No category yet — I'll ask you"}`,
+    task.source ? `💬 From ${task.source}` : null,
+    task.notes ? `\n${task.notes.length > 300 ? `${task.notes.slice(0, 299)}…` : task.notes}` : null,
   ]
-    .filter(Boolean)
+    .filter((l) => l !== null)
     .join("\n");
 }

@@ -143,6 +143,32 @@ describe("evolutionMessage", () => {
     const sticker = { ...dm, messageType: "stickerMessage", message: { stickerMessage: { mimetype: "image/webp" } } };
     expect(evolutionMessage(envelope(sticker))?.text).toBe("");
   });
+
+  test("a business template's title and body are its text, without the footer", () => {
+    const promo = {
+      ...dm,
+      messageType: "templateMessage",
+      message: {
+        templateMessage: {
+          hydratedTemplate: {
+            hydratedTitleText: "Contoh Motors",
+            hydratedContentText: "Pandu uji model baharu hujung minggu ini.",
+            hydratedFooterText: "Balas STOP untuk berhenti",
+          },
+        },
+      },
+    };
+    expect(evolutionMessage(envelope(promo))?.text).toBe("Contoh Motors\nPandu uji model baharu hujung minggu ini.");
+  });
+
+  test("an interactive message reads its body", () => {
+    const notice = {
+      ...dm,
+      messageType: "interactiveMessage",
+      message: { interactiveMessage: { body: { text: "Pesanan anda sudah dihantar." } } },
+    };
+    expect(evolutionMessage(envelope(notice))?.text).toBe("Pesanan anda sudah dihantar.");
+  });
 });
 
 /**

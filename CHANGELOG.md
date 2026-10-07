@@ -8,6 +8,41 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-10-07
 
+### Everything Maria sends is laid out for a phone
+
+The user's verdict on the night digest: "not structured, hard to see on
+Telegram" — and it was one block of nine run-on lines. Then, asked who two
+hidden numbers were with nothing but "Hidden number" on the card: "at least
+attach some texts from them". Both are formatting the model was left to
+improvise, so both moved into code.
+
+- **A few marks, rendered once.** Everything the assistant writes to him —
+  briefs, digests, question cards, task cards — goes through `rich()` in
+  `_bot.ts`: `# heading`, `- bullet`, `> quote`, `*bold*`, `_italic_`, and
+  `[[Task title]]`, which becomes a link to the task's Notion page. Escaped
+  first, so the text can only gain those tags. *Considered:* letting the model
+  write Telegram HTML. One unbalanced tag and Telegram refuses the message.
+- **`digest` is its own tool.** The model passes items per section; the
+  endpoint writes the title, the headings and the bullets, keeps five per
+  section ("+N more"), and drops empty sections, so every digest looks the
+  same. It also owns "already sent today", which `brief` used to rely on the
+  model to prefix. `brief` refuses a digest.
+- **Cards quote the chat.** `ask` about a chat and `draft_reply` store their
+  latest messages (two at most, one line each) in a `quote` column, and the
+  card shows them. `ask` about a `@lid` chat with no words at all is refused
+  — there is nothing he could recognise. *Considered:* reading the chat log
+  from `deliver-cards`. The log is deliberately not on `ctx`; two lines on a
+  row the assistant already writes is the smaller leak.
+- **Business messages have words.** WhatsApp template, interactive, button
+  and list messages were stored as an empty "[template]", which is why those
+  two numbers had nothing to show. The title and body are now the text.
+- **`withdraw_draft`.** A draft he said was not his ("Hariz is asking Amin")
+  sat in `revise` for seven hours and was listed in the digest, because the
+  only way out of `revise` was a new version. Withdrawn drafts say so on the
+  card and lose their Send; his comment still reaches `outcomes`.
+- **Closing an open question drops it**, and its card says it is no longer
+  needed, instead of waiting for an answer forever.
+
 ### Maria can fix and trash her own tasks, starts on time, and sorts chats on one card
 
 All four came from one afternoon of messages to the bot. Maria made a task, and

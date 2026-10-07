@@ -331,7 +331,7 @@ async function comment(ctx: Ctx, d: Row, text: string, messageId: number) {
   // After it ended, a reply is not a request to change it but a reason —
   // "skipped: he already called me" — and the reason is what the assistant
   // learns from. Kept on the draft, which is not reopened.
-  if (d.status === "sent" || d.status === "skipped") {
+  if (d.status === "sent" || d.status === "skipped" || d.status === "withdrawn") {
     const feedback = d.feedback ? `${d.feedback}\n${text}` : text;
     drafts.update(String(d.id), { feedback, learned: false }, { writtenBy: ctx.workflow });
     await api.reply(messageId, "Noted — I'll learn from that.");

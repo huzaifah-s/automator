@@ -417,15 +417,17 @@ access — and refuses the operations and data-table ones, as they refuse it.
 | `waiting` | Chats where they spoke last, priority first, then longest wait — and whose message the newest one replies to |
 | `thread` | One chat's messages, with what `people` knows about it; a reply says who it answers (`↩ me`, `↩ Amin`) |
 | `people` / `update_person` | Priorities and notes |
-| `drafts` / `draft_reply` | Replies waiting for approval; a new one, or a revision |
-| `questions` / `ask` / `answer_question` / `close_question` | Asking you something, recording an answer you typed, and acting on it |
+| `drafts` / `draft_reply` | Replies waiting for approval; a new one, or a revision. The card quotes what it answers |
+| `withdraw_draft` | Takes back a draft that should not be sent at all ("that was for Amin"), with a reason shown on its card |
+| `questions` / `ask` / `answer_question` / `close_question` | Asking you something, recording an answer you typed, and acting on it. A question about a chat quotes their latest messages on its card; one about a hidden number with no words to show is refused. Closing an open one drops it, and its card says so |
 | `create_task` | A task in the Notion To Do database, through the `personal-assistant-create-task` workflow |
 | `update_task` | The title, category or due date of a task the assistant created itself, once you have said — never your own tasks |
 | `trash_task` | Moves a task the assistant created to Notion's trash when you ask (restorable for 30 days), with your reason, which it then learns from — never your own tasks |
 | `todo` / `task` | Your open To Do tasks, most urgent first; one task with its page text, the assistant's notes on it and its questions about it |
 | `task_note` | Writes the assistant's work on a task's page — a draft, a plan, its questions, your answer — through `personal-assistant-task-note` |
 | `lessons` / `outcomes` / `learn` | What you have taught it; drafts that ended and task notes you reacted to that are not learned from yet; recording a lesson |
-| `brief` | An update to you — the morning and night digests, or an answer threaded under your note (`reply_to`) |
+| `brief` | An update to you, or an answer threaded under your note (`reply_to`), in a few marks — `# heading`, `- bullet`, `> quote`, `*bold*`, `_italic_`, `[[Task title]]` (a link to the task) — that every card renders the same way |
+| `digest` | The morning or night digest: the assistant gives the items per section, the endpoint lays them out (title and date, headings, bullets, five per section, empty ones left out) |
 | `now` | Your local time, and whether a digest is due and already sent |
 | `log_run` | Called last every run: a row in `run_log` with its own account of what it did and why, and counts the runner measures itself |
 

@@ -41,6 +41,11 @@ export default defineTable({
       label: "About task",
       help: "The Notion page id, when the question is about one To Do task.",
     }),
+    quote: text({
+      nullable: true,
+      label: "Their latest",
+      help: "question about a chat: its latest messages from them, shown on the card so you can tell who it is.",
+    }),
     answer: text({ nullable: true, label: "Answer" }),
     status: enumOf(["open", "answered", "done"], { default: "open", label: "Status" }),
     answered_at: datetime({ nullable: true, label: "Answered" }),

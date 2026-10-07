@@ -1,44 +1,61 @@
-import { cron, defineCredential, defineWorkflow } from "../../src/core/define.ts";
-import { botApi, chatLabel, LESSONS_MAX, lessonsCard } from "./_bot.ts";
+import { cron, defineCredential, defineWorkflow, SCORECARD_CRON, scorecard, scorecardMarks } from "../../src/core/define.ts";
+import { botApi, chatLabel, LESSONS_MAX, lessonsCard, rich } from "./_bot.ts";
 
 /**
- * Personal assistant — once a week, the lessons it learned that week, on one
- * card, so you can see what it now believes and strike out what it got wrong.
+ * Personal assistant — twice a week, Wednesday and Sunday at 20:00: the
+ * scorecard, then the lessons it learned since the last card.
  *
- * Lessons are written by the assistant from your comments, skips and answers,
- * and it follows every one of them from then on. One drawn the wrong way
- * ("say nothing about hidden numbers", from "show me their texts") is worse
- * than none, and until now the only place to notice it was the table. Each
- * lesson gets a 🗑 button that retires it (and ↩ to bring it back) — handled
- * by `personal-assistant-bot`, which redraws this card from its own buttons.
- * Replying to the card is a note to the assistant, quoting it, for rewording.
+ * **The scorecard** (src/core/scorecard.ts) says in numbers whether Maria got
+ * better over the half-week — drafts sent as written, questions per day,
+ * tasks kept as made, how fast she answered your notes, outcomes she has not
+ * learned from, her sorting kept — against the same days a week earlier.
+ * She reads the same numbers with her `scorecard` tool and writes one lesson
+ * aimed at the worst. Twice a week rather than weekly because a change made
+ * on Monday should show by Wednesday, not the Sunday after.
  *
- * Nothing new that week, no card.
+ * **The lessons** are written by the assistant from your comments, skips and
+ * answers, and it follows every one of them from then on. One drawn the
+ * wrong way ("say nothing about hidden numbers", from "show me their texts")
+ * is worse than none, and until now the only place to notice it was the
+ * table. Each lesson gets a 🗑 button that retires it (and ↩ to bring it
+ * back) — handled by `personal-assistant-bot`, which redraws that card from
+ * its own buttons, so it is a message of its own and the scorecard is not on
+ * it. Replying to either card is a note to the assistant, quoting it.
+ *
+ * No new lessons, no lessons card; the scorecard always goes.
  */
 
 const bot = defineCredential("telegram", "maria");
-const WEEK_MS = 7 * 24 * 3_600_000;
 
 export default defineWorkflow({
   name: "personal-assistant-lessons-review",
-  description: "Sundays at 8pm: the assistant's lessons from the week, each one a tap to forget",
-  trigger: cron("0 20 * * 0", { tz: "Asia/Kuala_Lumpur" }),
+  description: "Wednesdays and Sundays at 8pm: Maria's scorecard, and her lessons since the last card, each a tap to forget",
+  trigger: cron(SCORECARD_CRON, { tz: "Asia/Kuala_Lumpur" }),
   retries: 0,
   timeoutMs: 30_000,
 
   async run(ctx) {
-    const since = Date.now() - WEEK_MS;
+    const card = scorecard("last");
+    const api = botApi(ctx, bot);
+    const scoreId = await ctx.step("scorecard", () => api.send(rich(scorecardMarks(card))));
+
     const lessons = ctx
       .table("lessons")
       .query({ limit: 500 })
-      .filter((l) => Number(l.created_at) >= since && !l.retired)
+      .filter((l) => Number(l.created_at) >= card.period.from && !l.retired)
       .sort((a, b) => Number(a.created_at) - Number(b.created_at))
       .slice(-LESSONS_MAX);
-    if (lessons.length === 0) return { lessons: 0, posted: false };
+    const result = {
+      scorecard: scoreId,
+      worst: card.worst?.key ?? null,
+      onTarget: card.headlines.filter((h) => h.onTarget).length,
+      lessons: lessons.length,
+    };
+    if (lessons.length === 0) return { ...result, posted: false };
 
     const people = new Map(ctx.table("people").query({ limit: 1000 }).map((p) => [String(p.chat_key), p]));
     const { html, buttons } = lessonsCard(lessons, (key) => chatLabel(key, people.get(key)));
-    const cardId = await ctx.step("card", () => botApi(ctx, bot).send(html, buttons));
-    return { lessons: lessons.length, posted: true, card: cardId };
+    const cardId = await ctx.step("card", () => api.send(html, buttons));
+    return { ...result, posted: true, card: cardId };
   },
 });

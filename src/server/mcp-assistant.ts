@@ -52,6 +52,12 @@
  * So no piece of feedback is read once and forgotten: it is either turned
  * into a lesson or still on the list next run.
  *
+ * Twice a week she also gets numbers: `scorecard` (src/core/scorecard.ts)
+ * is the half-week's drafts, questions, tasks, reply times and sorting
+ * against the same days a week before, and `now` reminds her until she has
+ * written one `scorecard` lesson aimed at the worst of them — how she
+ * improves between his corrections.
+ *
  * **It cannot send a message on your behalf.** `draft_reply` writes a
  * `pending` row and stops; only your approval sends anything, and that path
  * does not go through here. (`brief` writes an update *to you*, which the bot
@@ -74,6 +80,7 @@ import { log } from "../core/logger.ts";
 import { chatMessage, chatThread, waitingChats, type ChatChannel, type StoredMessage } from "../core/chat-log.ts";
 import { table, type Row } from "../core/tables.ts";
 import { canonicalKey, linkChats } from "../core/chat-link.ts";
+import { scorecard, scorecardText } from "../core/scorecard.ts";
 import { runWorkflow } from "../core/runner.ts";
 import { store } from "../core/db.ts";
 import {
@@ -520,6 +527,20 @@ function loopState(l: Row, today: string): { overdue: boolean; nudge: boolean } 
 }
 
 /** One line of text for a fact or a loop: no newlines, within `max`. */
+/**
+ * For `now`: a scorecard came out in the last day and she has not written its
+ * lesson yet. Said until she has, so a run that misses it is caught by the
+ * next; nothing to say when every number is on target.
+ */
+function scorecardDue(): string {
+  const card = scorecard("last");
+  if (Date.now() - card.period.to > 24 * 3_600_000 || card.lesson || !card.worst) return "";
+  return (
+    `\nA new scorecard is out (${card.period.label}); your worst number is ${card.worst.label.toLowerCase()} at ` +
+    `${card.worst.display}. Read \`scorecard\`, then \`learn\` one lesson aimed at it (source scorecard, evidence the number).`
+  );
+}
+
 function oneLine(args: Record<string, unknown>, key: string, max: number, what: string): string | undefined {
   const v = str(args, key)?.replace(/\s+/g, " ");
   if (v && v.length > max) throw new Error(`${what} is at most ${max} characters — one line`);
@@ -565,7 +586,7 @@ function tools(registry: Registry): Tool[] {
             digest += ` Open loops: ${mine} on him due or overdue, ${nudge} waiting on them to nudge — they go in its loops section.`;
           }
         }
-        return `${now.text} (${TZ}).\n${digest}`;
+        return `${now.text} (${TZ}).\n${digest}${scorecardDue()}`;
       },
     },
 
@@ -1324,18 +1345,46 @@ function tools(registry: Registry): Tool[] {
     },
 
     {
+      name: "scorecard",
+      scope: "read",
+      description:
+        "Your numbers for the last half-week (Sun→Wed or Wed→Sun, ending 20:00), against the same days " +
+        "a week earlier: drafts sent as written, questions per day, tasks kept as made, minutes to answer " +
+        "his notes, outcomes not learned, your sorting kept. The card he gets twice a week shows the same. " +
+        "When `now` says a new one is out: read it, then `learn` ONE lesson aimed at the worst number " +
+        "(source scorecard, evidence = the number) — what you will do differently, not a promise to try harder.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          period: {
+            type: "string",
+            enum: ["last", "current"],
+            description: "last (default): the half-week that ended at the last card. current: the one in progress.",
+          },
+        },
+        additionalProperties: false,
+      },
+      run(args) {
+        const card = scorecard(str(args, "period") === "current" ? "current" : "last");
+        const done = card.lesson ? `\n\nYou already wrote this scorecard's lesson (${card.lesson.id}): ${line(String(card.lesson.lesson), 200)}` : "";
+        return clip(scorecardText(card) + done, MAX_BYTES);
+      },
+    },
+
+    {
       name: "learn",
       scope: "write",
       description:
         "Records a lesson — one instruction you will follow from now on — and marks the drafts it " +
         "came from as learned. Omit lesson to mark drafts learned with nothing new to take from them. " +
         "from_sorting: the chats you sorted and he changed (outcomes) that it came from. " +
-        "Pass retire to replace a lesson this one supersedes.",
+        "Pass retire to replace a lesson this one supersedes. source scorecard: your one lesson aimed " +
+        "at the worst number on a new scorecard, with evidence = that number.",
       inputSchema: {
         type: "object",
         properties: {
           lesson: { type: "string", description: "Imperative, specific, short. Max 300 characters." },
-          source: { type: "string", enum: ["comment", "skip", "sent", "answer", "you", "task", "sorting"] },
+          source: { type: "string", enum: ["comment", "skip", "sent", "answer", "you", "task", "sorting", "scorecard"] },
           ...CHAT_ARG,
           from_drafts: { type: "array", items: { type: "string" }, description: "Draft ids this came from." },
           from_tasks: {
@@ -1366,7 +1415,7 @@ function tools(registry: Registry): Tool[] {
         if (lesson) {
           if (lesson.length > 300) throw new Error("A lesson is at most 300 characters — one instruction");
           const source = str(args, "source");
-          if (!source) throw new Error("source is comment, skip, sent, answer, you, task or sorting");
+          if (!source) throw new Error("source is comment, skip, sent, answer, you, task, sorting or scorecard");
           const chat = args["chat"] !== undefined ? chatArg(args).key : null;
           const same = lessonsFor(chat).find(
             (l) => String(l.lesson).toLowerCase() === lesson.toLowerCase() && (l.chat_key ?? null) === chat,
@@ -2281,7 +2330,8 @@ const INSTRUCTIONS =
   "and the tables people (who matters, with notes), drafts, questions, lessons, brain, loops, run_log. " +
   "Read `lessons` (how to act), `brain` (what is true about him and his world) and `loops` (what is " +
   "in flight) first; never ask him what the brain already answers, and `remember` what he tells you. " +
-  "Work through `outcomes` with `learn` so every correction is kept. " +
+  "Work through `outcomes` with `learn` so every correction is kept; when `now` says a scorecard " +
+  "is out, read `scorecard` and learn one lesson aimed at the worst number. " +
   "Sort new chats yourself — update_person with a priority and a one-line reason — and `ask` only " +
   "what you cannot work out; `ask` has an hourly budget. " +
   "Then `waiting`, and read a chat with `thread` before drafting. In a group, draft or make a task " +

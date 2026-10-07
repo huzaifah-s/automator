@@ -57,7 +57,7 @@ import { fireAssistant } from "./_routine.ts";
  *              choice, agrees with it. Either way it is now yours, and she
  *              can no longer change it; a change is kept for her to learn
  *              from. A reply to that card is a note listing its chats.
- *   🗑 / ↩ on the weekly lessons card    retires a lesson, or brings it back.
+ *   🗑 / ↩ on the lessons card (Wed and Sun)    retires a lesson, or brings it back.
  *   /now       what needs you right now, read from the tables on the spot —
  *              no run of the assistant, so no wait.
  *   /brain     what the assistant believes about you and your world. A reply
@@ -358,7 +358,7 @@ async function onMessage(ctx: Ctx, m: NonNullable<Update["message"]>) {
       }
     }
     if (q) return note(ctx, text, m.message_id, q);
-    // A card with no row behind it — the weekly lessons, a /now answer —
+    // A card with no row behind it — the lessons, the scorecard, a /now answer —
     // is still what the reply is about, so it is quoted from Telegram.
     const shown = m.reply_to_message?.text?.replace(/\s+/g, " ").trim();
     // The brain is longer than a quote, and the assistant has it whole; what

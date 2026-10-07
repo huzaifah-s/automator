@@ -92,6 +92,7 @@ min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .stat{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 14px}
 .stat b{display:block;font-size:21px;font-weight:600;letter-spacing:-.02em;
 font-variant-numeric:tabular-nums;line-height:1.25}
+.stat b.good{color:var(--green)}.stat b.bad{color:var(--red)}.stat b.warn{color:var(--yellow)}
 .stat span{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
 
 /* ---- panels ---- */

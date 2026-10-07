@@ -269,6 +269,16 @@ copy. Keep a new kind of memory out of the wrong one — a fact in `lessons` is
 followed as an order, and a pending thing in `notes` is never closed. Loops
 carry a `chat_key`, so `linkChats` moves them with the rest.
 
+**The scorecard is counted in one place.** `src/core/scorecard.ts` is the
+only code that adds up how the assistant did — the dashboard view, the
+Wednesday and Sunday card (`personal-assistant-lessons-review`) and her
+`scorecard` tool all call `scorecard()`, so the three cannot disagree. A
+period ends at a card (`SCORECARD_CRON`) and is compared with the same days
+a week earlier, not the half before, so both sides have the same length and
+weekdays. The worst number is ranked by the code, and `now` reminds her
+until a `scorecard` lesson exists for it. A new number goes there, not into
+one of its readers.
+
 **His priority beats hers, and `setBy` decides whose a priority is.** The
 assistant sorts new chats itself (`update_person` with `reason` →
 `priority_by` maria, and a `sorting` row for the "I sorted these" card);

@@ -574,7 +574,7 @@ export const updateCard = (u: Row, links?: TaskLinks) => {
   return /^\s*(🌅|🌙|#)/.test(String(u.question)) ? body : `🗒 ${body}`;
 };
 
-/* ------------------------------------------------------- lessons, weekly */
+/* ------------------------------------------------- lessons, twice a week */
 
 /** Lesson buttons per row: "🗑 1"… fits four across a phone. */
 const LESSON_ROW = 4;
@@ -582,8 +582,8 @@ const LESSON_ROW = 4;
 export const LESSONS_MAX = 15;
 
 /**
- * "What I learned this week": every lesson on the card, numbered, with a
- * button each that retires it — or, once retired (struck through), brings it
+ * "What I learned lately": every lesson since the last card, numbered, with
+ * a button each that retires it — or, once retired (struck through), brings it
  * back. `l:<id>:t` toggles, so a mistaken tap is one more tap to undo, and
  * the card is drawn from the same list every time.
  */
@@ -600,7 +600,7 @@ export function lessonsCard(
     return `<b>${i + 1}.</b> ${l.retired ? `<s>${text}</s>` : text}`;
   });
   const html = [
-    "🧠 <b>What I learned this week</b>",
+    "🧠 <b>What I learned lately</b>",
     "<i>Tap 🗑 to make me forget one — or reply to this card to reword it.</i>",
     "",
     lines.join("\n\n"),

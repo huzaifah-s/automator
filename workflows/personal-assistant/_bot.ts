@@ -217,8 +217,37 @@ const channelOf = (chatKey: string) => CHANNEL[chatKey.split(":")[0]!] ?? "chat"
  * not say which sends you searching both apps.
  */
 export function chatLabel(chatKey: string, person?: Row | null): string {
-  const name = person?.name ? String(person.name) : chatKey.slice(chatKey.indexOf(":") + 1);
+  const id = chatKey.slice(chatKey.indexOf(":") + 1);
+  const number = id.match(/^(\d+)@s\.whatsapp\.net$/)?.[1];
+  const name = person?.name ? String(person.name) : number ? `+${number}` : id;
   return `${name} · ${chatWhere(chatKey, person)}`;
+}
+
+/**
+ * Where tapping a chat should take you, when there is somewhere: the chat
+ * itself on WhatsApp (wa.me, by number), or the person's profile on
+ * Telegram (tg://user, which Telegram opens only for someone it can show
+ * you). A hidden WhatsApp id (@lid) has no number, so no link.
+ */
+export function chatHref(chatKey: unknown): string | null {
+  const key = String(chatKey ?? "");
+  const wa = key.match(/^whatsapp:(\d+)@s\.whatsapp\.net$/)?.[1];
+  if (wa) return `https://wa.me/${wa}`;
+  const tg = key.match(/^telegram:(\d+)$/)?.[1];
+  return tg ? `tg://user?id=${tg}` : null;
+}
+
+/**
+ * A chat label as card HTML. When the name is only a number — nobody has
+ * said who it is — the number links to the chat, so one tap shows who it
+ * is. A named chat stays plain: a card of blue names is harder to read.
+ */
+export function chatLabelHtml(label: string, chatKey: unknown): string {
+  const cut = label.indexOf(" · ");
+  const name = cut < 0 ? label : label.slice(0, cut);
+  const rest = cut < 0 ? "" : label.slice(cut);
+  const href = /\p{L}/u.test(name) ? null : chatHref(chatKey);
+  return href ? `<a href="${href}">${esc(name)}</a>${esc(rest)}` : esc(label);
 }
 
 /** "Renew road tax · Notion To Do" — a question about a task, not a chat. */
@@ -263,6 +292,8 @@ export function rich(text: string, links?: TaskLinks): string {
   const inline = (s: string) =>
     bold(s)
       .replace(/(^|[\s(])_([^_\n]+)_(?=$|[\s).,!?:;])/g, "$1<i>$2</i>")
+      // A number she writes ("+60 11-2733 0060") opens that WhatsApp chat.
+      .replace(/(^|[\s(>])(\+\d[\d -]{6,}\d)(?!\d)/g, (_, pre: string, n: string) => `${pre}<a href="https://wa.me/${n.replace(/\D/g, "")}">${n}</a>`)
       .replace(/\[\[([^\]\n]+)\]\]/g, (_, title: string) => {
         const url = links?.get(title.trim().toLowerCase().replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">"));
         return url && /^https:\/\//.test(url) ? `<a href="${url.replace(/"/g, "&quot;")}">${title}</a>` : `<b>${title}</b>`;
@@ -320,7 +351,7 @@ export const draftButtons = (id: string, chatUrl?: unknown): Button[][] => [
  */
 export function draftCard(d: Row, previousFeedback?: string | null, person?: Row | null): string {
   return [
-    `✉️ <b>Reply to ${esc(String(d.chat_name))}</b> · ${chatWhere(String(d.chat_key), person)}`,
+    `✉️ <b>Reply to ${chatLabelHtml(String(d.chat_name), d.chat_key)}</b> · ${chatWhere(String(d.chat_key), person)}`,
     d.why ? `<i>${esc(String(d.why))}</i>` : null,
     d.quote ? `\n<b>They wrote</b>\n${quoted(d.quote)}` : null,
     previousFeedback ? `\nRevised after: “${esc(previousFeedback)}”` : null,
@@ -335,7 +366,7 @@ export function draftCard(d: Row, previousFeedback?: string | null, person?: Row
 }
 
 export function draftOutcome(d: Row, outcome: "sent" | "skipped" | "revise" | "replaced" | "failed"): string {
-  const to = esc(String(d.chat_name));
+  const to = chatLabelHtml(String(d.chat_name), d.chat_key);
   const head = {
     sent: `✅ <b>Sent to ${to}</b> · ${clock(Date.now())}`,
     skipped: `⏭ <b>Skipped</b> — reply to ${to}\n<i>Reply to this message to say why, and I'll learn from it.</i>`,
@@ -349,7 +380,7 @@ export function draftOutcome(d: Row, outcome: "sent" | "skipped" | "revise" | "r
 /** A draft the assistant took back itself, and why. */
 export function draftWithdrawn(d: Row): string {
   return [
-    `🗑 <b>Withdrawn</b> — reply to ${esc(String(d.chat_name))}`,
+    `🗑 <b>Withdrawn</b> — reply to ${chatLabelHtml(String(d.chat_name), d.chat_key)}`,
     d.reason ? `<i>${esc(String(d.reason))}</i>` : null,
     "",
     `<blockquote>${esc(shown(d.text))}</blockquote>`,
@@ -384,7 +415,7 @@ export function questionCard(q: Row, about?: string | null, links?: TaskLinks): 
   const options = Array.isArray(q.options) ? q.options : [];
   return [
     `❓ ${rich(String(q.question), links)}`,
-    about ? `<i>About ${esc(about)}</i>` : null,
+    about ? `<i>About ${chatLabelHtml(about, q.chat_key)}</i>` : null,
     q.quote ? `\n<b>Their latest</b>\n${quoted(q.quote)}` : null,
     options.length ? null : "\n<i>Reply to this message with your answer.</i>",
   ]
@@ -395,7 +426,7 @@ export function questionCard(q: Row, about?: string | null, links?: TaskLinks): 
 export function questionOutcome(q: Row, about?: string | null, links?: TaskLinks): string {
   return [
     `❓ ${rich(String(q.question), links)}`,
-    about ? `<i>About ${esc(about)}</i>` : null,
+    about ? `<i>About ${chatLabelHtml(about, q.chat_key)}</i>` : null,
     "",
     q.answer
       ? `<b>Answer:</b> ${esc(String(q.answer))}`
@@ -448,7 +479,7 @@ export function batchCard(
 ): { html: string; buttons: Button[][] } {
   const open = qs.filter((q) => q.status === "open");
   const lines = qs.map((q, i) => {
-    const head = `<b>${i + 1}.</b> ${esc(aboutOf(q) ?? String(q.chat_key))}`;
+    const head = `<b>${i + 1}.</b> ${chatLabelHtml(aboutOf(q) ?? String(q.chat_key), q.chat_key)}`;
     const status =
       q.status === "open" ? "" : ` — <b>${esc(String(q.answer ?? (q.expired_at ? "expired" : "dropped")))}</b>`;
     const asked = String(q.question).replace(/\s+/g, " ");
@@ -531,7 +562,7 @@ export function sortedCard(
         : `→ <s>${mine}</s> <b>${esc(String(r.answer))}</b> <i>(you)</i>`;
     const said =
       quotes && r.quote && !r.answer ? `\n${quoted(clipLines(String(r.quote).split("\n").slice(-1).join("\n"), 120))}` : "";
-    return `<b>${i + 1}.</b> ${esc(aboutOf(r))} ${verdict}\n<i>${esc(String(r.reason))}</i>${said}`;
+    return `<b>${i + 1}.</b> ${chatLabelHtml(aboutOf(r), r.chat_key)} ${verdict}\n<i>${esc(String(r.reason))}</i>${said}`;
   });
   const named = more.slice(0, 12).map((r) => `${clipLines(aboutOf(r).split(" · ")[0]!, 40)} (${r.choice})`);
   const extra = more.length

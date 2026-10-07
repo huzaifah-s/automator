@@ -35,7 +35,7 @@ and deployed, tick its box here.
       Claude account, then a chat.
       Real free times instead of "let me check my schedule", plus Gmail drafts
       and meeting prep.
-- [ ] **06 · Scorecard, twice a week.** ~2 h. Chat.
+- [x] **06 · Scorecard, twice a week.** ~2 h. Chat.
       Numbers every Wednesday and Sunday that show whether she's actually
       getting better. She reads them too.
 - [x] **07 · Live Maria.** About half a day. Chat.

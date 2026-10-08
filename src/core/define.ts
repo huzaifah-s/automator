@@ -293,6 +293,8 @@ export type { Area, CountLine, Headline, Scorecard, ScorecardSpan, ScorecardWhic
 export { assistantTools, liveConnection } from "../server/mcp-assistant.ts";
 /** For a workflow that starts something a practice run cannot gate itself, like a child process. */
 export { holdBack, isPractice } from "./practice.ts";
+export { askClaude, CLAUDE_MODEL, claudeHome, claudeOwnLogin, holdClaudeSpawn, runClaude } from "./claude-code.ts";
+export type { ClaudeCaller, ClaudeRun } from "./claude-code.ts";
 export type { AssistantToolSpec } from "../server/mcp-assistant.ts";
 export type { OAuthConfig, OAuthCredential, TokenStatus } from "../integrations/oauth.ts";
 export type {

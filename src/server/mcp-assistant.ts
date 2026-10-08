@@ -82,10 +82,11 @@
 
 import { Hono } from "hono";
 import { log } from "../core/logger.ts";
-import { chatMessage, chatThread, lastWordMine, waitingChats, type ChatChannel, type StoredMessage } from "../core/chat-log.ts";
+import { chatMessage, chatThread, hisMessages, lastWordMine, waitingChats, type ChatChannel, type StoredMessage } from "../core/chat-log.ts";
 import { table, type Row } from "../core/tables.ts";
 import { canonicalKey, linkChats } from "../core/chat-link.ts";
 import { scorecard, scorecardText } from "../core/scorecard.ts";
+import { checkDraft } from "./assistant-check.ts";
 import { currentRegistry, runWorkflow } from "../core/runner.ts";
 import { store } from "../core/db.ts";
 import {
@@ -170,6 +171,8 @@ function asTable(headers: string[], rows: string[][]): string {
 
 /** Fewer of his own messages than this in a 1:1 WhatsApp thread: point at find_chat older. */
 const FEW_OF_HIS = 3;
+/** A lesson is one instruction of at most 300 characters (`learn`); this only stops a runaway row. */
+const LESSON_MAX = 600;
 /** How far back a chat's drafts and his comments on them are shown with its thread. */
 const DRAFT_HISTORY_MS = 3 * 86_400_000;
 
@@ -199,6 +202,201 @@ function draftHistory(key: string): string {
     "a new version never brings back what he struck out, and \"like before\" means an earlier version with his later changes kept. " +
     "A sent one is what he approved, in the words he chose:\n" +
     lines.join("\n")
+  );
+}
+
+/**
+ * A chat's messages as `thread` prints them, oldest first: time, who, and
+ * "↩ me" on a reply to him — in a group, a reply to someone else is theirs.
+ */
+function threadLines(channel: ChatChannel, chat: string, messages: StoredMessage[], ids: boolean): string[] {
+  const byId = new Map(messages.map((m) => [m.id, m]));
+  const whoWrote = (m: StoredMessage) => (m.outgoing ? "me" : (m.senderName ?? m.chatName ?? "them"));
+  return messages.map((m) => {
+    const who = whoWrote(m);
+    const id = ids ? `#${m.id} ` : "";
+    const to = m.replyTo ? (byId.get(m.replyTo) ?? chatMessage(channel, chat, m.replyTo)) : null;
+    const reply = m.replyTo ? ` ↩ ${to ? whoWrote(to) : "an older message"}` : "";
+    return `${id}${clock(m.sentAt)}  ${who}${reply}: ${line(body(m), 600)}`;
+  });
+}
+
+/**
+ * The thread within MAX_BYTES, dropping its oldest messages first. A plain
+ * cut takes the end — and the end is his own words and what he said about
+ * every draft, the parts a draft most needs.
+ */
+function fitThread(head: string, lines: string[], tail: string[]): string {
+  const kept = [...lines];
+  const join = () =>
+    [head, kept.length ? kept.join("\n") : "No messages in the log for this chat.", ...tail].join("\n\n");
+  let dropped = 0;
+  while (kept.length > 5 && Buffer.byteLength(join()) > MAX_BYTES - 100) {
+    kept.shift();
+    dropped++;
+  }
+  if (dropped) kept.unshift(`(${dropped} older message(s) left out to fit)`);
+  return clip(join(), MAX_BYTES);
+}
+
+/* ------------------------------------------------------- his own words */
+
+/**
+ * What a draft has to sound like is shown, not described. A style lesson
+ * says "casual Manglish, lowercase"; his messages *are* that, and a model
+ * copies examples far better than descriptions — on 8 Oct none of four
+ * drafts went out as written. So the thread a draft is written from carries
+ * his own words: his earlier messages to this chat (the log keeps his for
+ * 90 days, theirs for 14), his messages to chats like it when he has
+ * written little here, and the drafts he had to correct — her first try,
+ * what he said, and what he sent in the end. All read from the chat log and
+ * the drafts table when asked; nothing is copied anywhere.
+ */
+const HIS_HERE = 10;
+const HIS_CHARS = 300;
+/** Fewer of his messages than this in the whole log for a chat: show chats like it too. */
+const FEW_HERE = 5;
+const HIS_ELSEWHERE = 8;
+/** Corrected drafts: how far back, and how many. */
+const CORRECTION_MS = 30 * 86_400_000;
+const CORRECTIONS = 3;
+/** His own message this soon after a draft he did not send is what he wrote instead. */
+const INSTEAD_MS = 12 * 3_600_000;
+
+/** `whatsapp:<jid>` → its channel and chat, or null for a key that is neither. */
+function splitKey(key: string): { channel: ChatChannel; chat: string } | null {
+  const m = key.match(/^(whatsapp|telegram):(.+)$/);
+  return m ? { channel: m[1] as ChatChannel, chat: m[2]! } : null;
+}
+
+const appOf = (key: string) => (key.startsWith("telegram:") ? "Telegram" : "WhatsApp");
+
+interface Voice {
+  /** His messages here, newest first, leaving out those the thread already shows. */
+  here: StoredMessage[];
+  /** His messages with words anywhere in the log for this chat. */
+  hereTotal: number;
+  /** His messages to chats of the same kind and priority, when few here. */
+  elsewhere: { to: string; m: StoredMessage }[];
+  /** Drafts he corrected or wrote himself instead of, rendered one per line. */
+  corrections: string[];
+}
+
+/** Chats like this one: the same kind (1:1 or group) and priority. */
+function alike(person: Row | undefined, other: Row | undefined): boolean {
+  if (!person || !other) return false;
+  if (other.kind !== person.kind) return false;
+  return person.priority ? other.priority === person.priority : other.priority !== "ignore";
+}
+
+function voiceOf(key: string, person: Row | undefined, shownIds: ReadonlySet<string>): Voice {
+  const where = splitKey(key);
+  const all = where ? hisMessages(where.channel, where.chat, 60) : [];
+  const here = all.filter((m) => !shownIds.has(m.id)).slice(0, HIS_HERE);
+
+  const elsewhere: Voice["elsewhere"] = [];
+  if (all.length < FEW_HERE) {
+    const people = peopleByKey();
+    const found: { to: string; m: StoredMessage }[] = [];
+    for (const [k, p] of people) {
+      if (k === key || !alike(person, p)) continue;
+      const w = splitKey(k);
+      if (!w) continue;
+      const label = `${line(String(p.name), 28)} (${appOf(k)}${p.kind === "group" ? " group" : ""})`;
+      for (const m of hisMessages(w.channel, w.chat, 2)) found.push({ to: label, m });
+    }
+    elsewhere.push(...found.sort((a, b) => b.m.sentAt - a.m.sentAt).slice(0, HIS_ELSEWHERE));
+  }
+  return { here, hereTotal: all.length, elsewhere, corrections: corrected(key, person) };
+}
+
+/**
+ * Drafts he did not take as written, newest first, this chat's before
+ * others: a chain he commented on and then sent, or a draft he passed over
+ * and wrote his own message instead of. From this chat or chats like it.
+ */
+function corrected(key: string, person: Row | undefined): string[] {
+  const since = Date.now() - CORRECTION_MS;
+  const rows = table("drafts")
+    .query({ limit: 500 })
+    .filter((d) => Number(d.created_at) >= since);
+  const next = new Map<string, Row>();
+  for (const d of rows) if (d.revision_of) next.set(String(d.revision_of), d);
+  const people = peopleByKey();
+  const out: { at: number; same: boolean; text: string }[] = [];
+
+  for (const first of rows.filter((d) => !d.revision_of)) {
+    const chain = [first];
+    while (chain.length < 20 && next.has(String(chain.at(-1)!.id))) chain.push(next.get(String(chain.at(-1)!.id))!);
+    const last = chain.at(-1)!;
+    const ck = String(first.chat_key);
+    const same = ck === key;
+    const p = people.get(ck);
+    if (!same && !alike(person, p)) continue;
+    const said = chain.map((d) => d.feedback).filter(Boolean).map(String);
+
+    let final: string;
+    let how: string;
+    if (last.status === "sent") {
+      if (said.length === 0) continue; // taken as written: nothing to correct
+      final = String(last.text);
+      how = "he approved";
+    } else if (OPEN_DRAFT.has(String(last.status)) || last.status === "skipped" || last.status === "withdrawn") {
+      const w = splitKey(ck);
+      const from = Number(first.created_at);
+      const instead = w
+        ? hisMessages(w.channel, w.chat, 30)
+            .filter((m) => m.sentAt > from && m.sentAt <= from + INSTEAD_MS)
+            .sort((a, b) => a.sentAt - b.sentAt)[0]
+        : undefined;
+      if (!instead) continue;
+      final = instead.text;
+      how = "he wrote himself instead";
+    } else continue;
+
+    const to = `${line(String(p?.name ?? first.chat_name ?? "?"), 28)} (${appOf(ck)})`;
+    out.push({
+      at: Number(last.updated_at ?? last.created_at),
+      same,
+      text:
+        `- to ${to}: you wrote "${line(String(first.text), 220)}"` +
+        (said.length ? ` · he said "${line(said.join(" / "), 220)}"` : "") +
+        ` · ${how}: "${line(final, 260)}"`,
+    });
+  }
+  return out
+    .sort((a, b) => Number(b.same) - Number(a.same) || b.at - a.at)
+    .slice(0, CORRECTIONS)
+    .map((o) => o.text);
+}
+
+/** The voice as the thread and the draft check show it. Empty when there is nothing of his. */
+function voiceText(v: Voice, name: string): string {
+  const parts: string[] = [];
+  if (v.here.length) {
+    parts.push(
+      `His earlier messages to ${name}, newest first:\n` +
+        v.here.map((m) => `- ${clock(m.sentAt)}: ${line(m.text, HIS_CHARS)}`).join("\n"),
+    );
+  }
+  if (v.elsewhere.length) {
+    parts.push(
+      `He has written little here, so — his messages to chats like this one, newest first:\n` +
+        v.elsewhere.map(({ to, m }) => `- to ${to}: ${line(m.text, HIS_CHARS)}`).join("\n"),
+    );
+  }
+  if (v.corrections.length) {
+    parts.push(
+      "Drafts he did not take as written — your first try, what he said, what went out. Examples to copy, not " +
+        `outcomes: learning from them is outcomes' job, so no learn for these:\n${v.corrections.join("\n")}`,
+    );
+  }
+  if (parts.length === 0) return "";
+  return (
+    "How he writes — his own words. Copy these, not your idea of him: the language mix, his words for \"I\" and " +
+    "\"you\" with this person, length, greeting, sign-off, emoji. A draft that would look out of place among " +
+    "them is wrong.\n\n" +
+    parts.join("\n\n")
   );
 }
 
@@ -712,6 +910,46 @@ function tasksNaming(person: Row | undefined): string[] {
     .map((t) => String(t.title));
 }
 
+/**
+ * A refusal whose text holds somebody's words — the draft check's issues.
+ * The model gets the whole text; the log gets `logAs`, which holds none.
+ */
+class Refusal extends Error {
+  constructor(
+    message: string,
+    readonly logAs: string,
+  ) {
+    super(message);
+  }
+}
+
+/** A draft the check sent back this recently makes the next one for that chat its rewrite. */
+const RECHECK_MS = 20 * 60_000;
+/** Lessons about sorting chats, To Do tasks and follow-ups say nothing about how a draft reads. */
+const NOT_ABOUT_DRAFTS = new Set(["sorting", "task", "followup"]);
+
+/**
+ * Everything the draft check holds a draft against, and nothing else: who
+ * it is for, the lessons, the conversation it answers, his own words, and
+ * the earlier drafts to this chat with what he said about each.
+ */
+function checkContext(key: string, channel: ChatChannel, chat: string, person: Row): { context: string; his: string[] } {
+  const messages = chatThread(channel, chat, 15);
+  const lessons = lessonsFor(key).filter((l) => !NOT_ABOUT_DRAFTS.has(String(l.source)));
+  const voice = voiceOf(key, person, new Set(messages.map((m) => m.id)));
+  const name = String(person.name);
+  const context = [
+    `## Who it is for\n${name} — ${appOf(key)} ${person.kind === "group" ? "group" : "1:1"}` +
+      (person.notes ? `\nWho they are: ${line(String(person.notes), 400)}` : ""),
+    `## Lessons — how he wants things done\n${lessons.length ? lessons.map((l) => `- ${line(String(l.lesson), LESSON_MAX)}`).join("\n") : "None."}`,
+    `## The conversation, oldest first ("me" is him; "↩ me" replies to him)\n` +
+      (messages.length ? threadLines(channel, chat, messages, false).join("\n") : "No messages in the log."),
+    `## How he writes\n${voiceText(voice, name) || "Nothing of his in the log for this chat or chats like it."}`,
+    draftHistory(key) && `## Earlier drafts to this chat\n${draftHistory(key)}`,
+  ].filter(Boolean);
+  return { context: context.join("\n\n"), his: hisMessages(channel, chat, 60).map((m) => m.text) };
+}
+
 /* ----------------------------------------------------------------- tools */
 
 interface Tool {
@@ -844,31 +1082,19 @@ function tools(registry: Registry): Tool[] {
           (loops.length
             ? `\nOpen loops with them:\n${loops.map((l) => `- ${l.id} (waiting on ${l.waiting_on}${l.due ? `, due ${l.due}` : ""}) ${l.what}`).join("\n")}`
             : "");
-        const byId = new Map(messages.map((m) => [m.id, m]));
-        const whoWrote = (m: StoredMessage) => (m.outgoing ? "me" : (m.senderName ?? m.chatName ?? "them"));
-        const lines = messages.map((m) => {
-          const who = whoWrote(m);
-          const id = args["ids"] === true ? `#${m.id} ` : "";
-          // Who a reply answers is who it is to — "↩ me" is the one that
-          // is his to answer; a reply to someone else in a group is not.
-          const to = m.replyTo ? (byId.get(m.replyTo) ?? chatMessage(channel, chat, m.replyTo)) : null;
-          const reply = m.replyTo ? ` ↩ ${to ? whoWrote(to) : "an older message"}` : "";
-          return `${id}${clock(m.sentAt)}  ${who}${reply}: ${line(body(m), 600)}`;
-        });
-        // His own words are what a draft copies; with few of them, the log
-        // is missing the older part of a WhatsApp chat (8 Oct: one message
-        // from Arief, none of his, and a draft in a register he never uses).
-        const mine = messages.filter((m) => m.outgoing).length;
+        const lines = threadLines(channel, chat, messages, args["ids"] === true);
+        // His own words are what a draft copies: his earlier messages here,
+        // and what he did with drafts he did not take as written (voiceOf).
+        // With few of them, the log is missing the older part of a WhatsApp
+        // chat (8 Oct: one message from Arief, none of his, and a draft in a
+        // register he never uses).
+        const voice = voiceOf(key, person, new Set(messages.map((m) => m.id)));
         const fewOfHis =
-          channel === "whatsapp" && !chat.endsWith("@g.us") && mine < FEW_OF_HIS
-            ? `\n\nOnly ${mine} of his own message(s) here. Before drafting, find_chat with this number and older: true reads the chat again from WhatsApp.`
+          channel === "whatsapp" && !chat.endsWith("@g.us") && voice.hereTotal < FEW_OF_HIS
+            ? `Only ${voice.hereTotal} of his own message(s) here. Before drafting, find_chat with this number and older: true reads the chat again from WhatsApp.`
             : "";
-        const history = draftHistory(key);
-        return clip(
-          `${head}\n\n${lines.length ? lines.join("\n") : "No messages in the log for this chat."}${fewOfHis}` +
-            (history ? `\n\n${history}` : ""),
-          MAX_BYTES,
-        );
+        const tail = [fewOfHis, voiceText(voice, String(person?.name ?? "them")), draftHistory(key)].filter(Boolean);
+        return fitThread(head, lines, tail);
       },
     },
 
@@ -1212,8 +1438,9 @@ function tools(registry: Registry): Tool[] {
       scope: "write",
       description:
         "Saves a reply for the user to approve. Sends NOTHING — the user approves, edits or skips " +
-        "it. Write it the way they write to this person. One open draft per chat: to redo one, " +
-        "pass replaces.",
+        "it. Write it the way they write to this person (thread shows his own words). One open draft per chat: to redo one, " +
+        "pass replaces. A second reader checks every draft against his messages, the lessons and his comments first; " +
+        "a draft it fails is NOT saved — fix exactly what it lists and call draft_reply again (checked once more, then saved).",
       inputSchema: {
         type: "object",
         properties: {
@@ -1226,7 +1453,7 @@ function tools(registry: Registry): Tool[] {
         required: ["chat", "text", "why"],
         additionalProperties: false,
       },
-      run(args, identity) {
+      async run(args, identity) {
         const { key, channel, chat } = chatArg(args);
         const person = peopleByKey().get(key);
         // Only somebody who is already a chat — see the header.
@@ -1251,6 +1478,50 @@ function tools(registry: Registry): Tool[] {
           );
         }
 
+        // The second reader (src/server/assistant-check.ts). A first try it
+        // fails goes back with what to fix; the rewrite is checked again and
+        // saved either way, so a check never stops a draft reaching him.
+        const checks = table("draft_checks");
+        const failedBefore = checks
+          .query({ where: [{ column: "chat_key", op: "=", value: key }], limit: 10 })
+          .find((c) => c.verdict === "fail" && !c.draft_id && Date.now() - Number(c.created_at) < RECHECK_MS);
+        const attempt = failedBefore ? 2 : 1;
+        const { context, his } = checkContext(key, channel, chat, person);
+        const verdict = await checkDraft({
+          context,
+          draft: text,
+          why: str(args, "why") ?? null,
+          his,
+          to: String(person.name),
+          checksToday: checks.query({ where: [{ column: "created_at", op: ">=", value: Date.now() - 86_400_000 }], limit: 1000 }).length,
+        });
+        const { row: checked } = checks.insert(
+          {
+            chat_key: key,
+            chat_name: String(person.name),
+            text,
+            attempt,
+            verdict: verdict.verdict,
+            issues: verdict.issues.length ? verdict.issues.join("\n") : null,
+            skipped: verdict.skipped ?? null,
+            ms: verdict.ms,
+          },
+          { writtenBy: identity.label },
+        );
+        log.info(
+          `Draft check for ${key}: ${verdict.verdict}${verdict.skipped ? ` (${verdict.skipped})` : ""}, ` +
+            `${verdict.issues.length} issue(s), attempt ${attempt}, ${verdict.ms}ms`,
+        );
+        if (verdict.verdict === "fail" && attempt === 1) {
+          throw new Refusal(
+            `Not saved — a second reader checked it against his messages to ${person.name}, the lessons and what he ` +
+              `said about earlier drafts, and found:\n${verdict.issues.map((i) => `- ${i}`).join("\n")}\n\n` +
+              "Rewrite it to fix exactly these — keep everything else, and every change he asked for — and call " +
+              `draft_reply again${replaces ? ` with replaces: "${replaces}"` : ""}. The rewrite is checked once more, then saved either way.`,
+            `draft for ${key} failed its check (${verdict.issues.length} issue(s)), sent back`,
+          );
+        }
+
         const { row } = table("drafts").insert(
           {
             chat_key: key,
@@ -1267,7 +1538,12 @@ function tools(registry: Registry): Tool[] {
         if (previous) {
           table("drafts").update(String(previous.id), { status: "replaced" }, { writtenBy: identity.label });
         }
-        return `Draft ${row.id} for ${person.name} saved for approval. Nothing has been sent.`;
+        checks.update(String(checked.id), { draft_id: String(row.id) }, { writtenBy: identity.label });
+        const still =
+          verdict.verdict === "fail"
+            ? ` The check still saw:\n${verdict.issues.map((i) => `- ${i}`).join("\n")}\nHe will judge it.`
+            : "";
+        return `Draft ${row.id} for ${person.name} saved for approval${verdict.verdict === "pass" ? " (checked)" : ""}. Nothing has been sent.${still}`;
       },
     },
 
@@ -1641,10 +1917,14 @@ function tools(registry: Registry): Tool[] {
         const rows = chat
           ? lessonsFor(chat)
           : table("lessons").query({ limit: 1000 }).filter((l) => !l.retired);
+        // Whole, never cut: a lesson is one instruction of at most 300
+        // characters, and its end is often the example he gave. Cut at 220,
+        // "payment follow-up shape he sent: …" lost the very message it
+        // pointed at (8 Oct). LESSON_MAX only stops a runaway row.
         return clip(
           asTable(
             ["id", "chat", "from", "lesson"],
-            rows.map((l) => [String(l.id), String(l.chat_key ?? "everyone"), String(l.source), line(String(l.lesson), 220)]),
+            rows.map((l) => [String(l.id), String(l.chat_key ?? "everyone"), String(l.source), line(String(l.lesson), LESSON_MAX)]),
           ),
           MAX_BYTES,
         );
@@ -2834,7 +3114,7 @@ async function callTool(
     return { text: await tool.run(args, identity), isError: false };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    log.warn(`MCP assistant tool ${tool.name} refused: ${message.slice(0, 200)}`);
+    log.warn(`MCP assistant tool ${tool.name} refused: ${err instanceof Refusal ? err.logAs : message.slice(0, 200)}`);
     return { text: message, isError: true };
   }
 }

@@ -233,6 +233,21 @@ export function chatThread(channel: ChatChannel, chat: string, limit: number): S
   return (threadQuery.all(channel, chat, limit) as Raw[]).map(toStored);
 }
 
+const hisQuery = db.prepare(`
+  SELECT * FROM chat_messages
+  WHERE channel = ? AND chat = ? AND outgoing = 1 AND trim(text) <> ''
+  ORDER BY sent_at DESC LIMIT ?
+`);
+
+/**
+ * His own messages with words in one chat, newest first — what a draft to
+ * it has to sound like. They reach back `CHAT_LOG_OWN_RETENTION_DAYS`, past
+ * the window `chatThread` usually shows.
+ */
+export function hisMessages(channel: ChatChannel, chat: string, limit: number): StoredMessage[] {
+  return (hisQuery.all(channel, chat, limit) as Raw[]).map(toStored);
+}
+
 const newestQuery = db.prepare(`
   WITH newest AS (
     SELECT channel, chat, MAX(sent_at) AS at

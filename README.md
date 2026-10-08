@@ -555,6 +555,17 @@ decided there is none). Lessons are rows in
 yours to edit or retire on the Tables tab. Replying to a card you already
 sent or skipped records the reason, which is exactly what it learns from.
 
+**It writes like you, and a second reader checks.** The `thread` a draft is
+written from carries your own words — your earlier messages to that person
+(the chat log keeps yours 90 days), your messages to chats like it when you
+have written little there, and drafts you did not take as written: its first
+try, what you said, and what went out. Then every `draft_reply` goes past a
+second Claude that did not write it, holding it against those words, the
+lessons and your comments (`src/server/assistant-check.ts`), plus a code
+check for a Malay "aku/saya/awak…" you never use with that person. A draft
+it fails goes back to be rewritten before you see it; the rewrite is checked
+once more and saved either way. Every verdict is a row in `draft_checks`.
+
 **It remembers.** Three kinds of memory, kept apart and read at the start of
 every run: `lessons` (how to act), `brain` (what is true about you and your
 world) and `loops` (what is still in flight). What you tell it that stays

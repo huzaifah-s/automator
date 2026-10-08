@@ -350,6 +350,31 @@ stranger chose, and an agent with Bash in a sandbox that holds its MCP token
 and can reach the network is one persuasive message away from sending that
 token somewhere. Do not add Bash "just for the date".
 
+**Every draft goes past a second reader, and it fails open.** `draft_reply`
+runs `checkDraft` (`src/server/assistant-check.ts`) before it saves: a code
+check for a Malay pronoun he never uses with that person, then a fresh
+Claude with no tools holding the draft against `checkContext` — who it is
+for, the lessons, the conversation, his own words (`voiceOf`) and the
+chat's earlier drafts. A first try it fails is refused with the issues
+(a `Refusal`, so the log line holds no words) and saved nowhere but
+`draft_checks`; the next draft to that chat within `RECHECK_MS` is the
+rewrite, checked again and saved whatever the verdict. No token, a practice
+run, a cap (`ASSISTANT_CHECK_MAX_PER_DAY`), a slow or unreadable answer:
+the model's half is skipped and the draft saved. Never make the check able
+to stop a draft for good — a check that blocks is worse than none. All of
+Claude Code — `runClaude`, `askClaude`, the locked-down environment — is
+`src/core/claude-code.ts`, shared by live Maria, learn-style and the
+check; the endpoint reads the token with `secretValue`.
+
+**`thread` shows his words, not a description of them.** `voiceOf` adds his
+earlier messages to the chat (the log keeps his 90 days), his messages to
+chats of the same kind and priority when he has written little there, and
+drafts he did not take as written — a chain he commented on and then sent,
+or a draft followed within `INSTEAD_MS` by a message he wrote himself. All
+read at call time from the chat log and `drafts`; nothing is copied.
+`fitThread` drops the oldest messages to fit `MAX_BYTES`, because a plain
+cut takes the end, which is his words and his comments.
+
 **Feedback is never consumed and forgotten.** Drafts carry `learned`; a draft
 that ended stays in `outcomes` until `learn` names it. Anything new that
 carries the user's judgement — a new card action, a new kind of answer — needs
@@ -368,7 +393,7 @@ until `learn from_followups`.
 **Style lessons are derived, never quoted.** `personal-assistant-learn-style`
 reads his own last messages in a chat straight from Evolution or Telegram
 (private reads, not a step — a step's result is stored), asks Claude Code
-with no tools (`askClaude` in `_live.ts`) for one line on how he writes
+with no tools (`askClaude`, `src/core/claude-code.ts`) for one line on how he writes
 there, and keeps only that line as a `style` lesson for the chat. Its
 prompt forbids names, numbers and topics; keep it that way, because the
 lesson is shown on the dashboard and on the Sunday card.

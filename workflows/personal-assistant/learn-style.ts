@@ -1,6 +1,5 @@
 import { z } from "zod";
-import { cron, defineCredential, defineSecrets, defineWorkflow, type Ctx, type Row } from "../../src/core/define.ts";
-import { askClaude } from "./_live.ts";
+import { askClaude, cron, defineCredential, defineSecrets, defineWorkflow, type Ctx, type Row } from "../../src/core/define.ts";
 import { NOISE } from "./_whatsapp.ts";
 
 /**
@@ -25,7 +24,7 @@ import { NOISE } from "./_whatsapp.ts";
  * he can delete one from the Sunday lessons card like any other.
  *
  * The model is Claude Code on his subscription with no tools at all
- * (`askClaude` in _live.ts) — the same token as live Maria. Without one it
+ * (`askClaude`, src/core/claude-code.ts) — the same token as live Maria. Without one it
  * does nothing.
  */
 

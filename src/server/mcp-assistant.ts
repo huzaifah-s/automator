@@ -168,6 +168,40 @@ function asTable(headers: string[], rows: string[][]): string {
   return [fmt(headers), fmt(widths.map((w) => "-".repeat(w))), ...rows.map(fmt)].join("\n");
 }
 
+/** Fewer of his own messages than this in a 1:1 WhatsApp thread: point at find_chat older. */
+const FEW_OF_HIS = 3;
+/** How far back a chat's drafts and his comments on them are shown with its thread. */
+const DRAFT_HISTORY_MS = 3 * 86_400_000;
+
+/**
+ * Every draft to one chat in the last few days, oldest first, with what he
+ * said about each. A revision used to see only the comment that started it,
+ * so "too short, like before" brought back the first version — with the two
+ * things he had already struck out (8 Oct, Haziq). Shown with the thread,
+ * which is read before every draft, so the hourly run and live Maria both
+ * have it.
+ */
+function draftHistory(key: string): string {
+  const since = Date.now() - DRAFT_HISTORY_MS;
+  const rows = table("drafts")
+    .query({ where: [{ column: "chat_key", op: "=", value: key }], limit: 50 })
+    .filter((d) => Number(d.created_at) >= since)
+    // A revision after what it revises, even made in the same millisecond.
+    .sort((a, b) => Number(a.created_at) - Number(b.created_at) || (a.revision_of === b.id ? 1 : b.revision_of === a.id ? -1 : 0))
+    .slice(-8);
+  if (rows.length === 0) return "";
+  const lines = rows.map((d) => {
+    const said = d.feedback ? `\n  he said: ${line(String(d.feedback), 400)}` : "";
+    return `- ${d.id} ${clock(Number(d.created_at))} ${d.status}: ${line(String(d.text), 300)}${said}`;
+  });
+  return (
+    "Your drafts to this chat, oldest first, and what he said about each. Everything he said still holds — " +
+    "a new version never brings back what he struck out, and \"like before\" means an earlier version with his later changes kept. " +
+    "A sent one is what he approved, in the words he chose:\n" +
+    lines.join("\n")
+  );
+}
+
 function ago(ms: number): string {
   const m = Math.max(0, Math.round((Date.now() - ms) / 60_000));
   if (m < 60) return `${m}m`;
@@ -821,8 +855,18 @@ function tools(registry: Registry): Tool[] {
           const reply = m.replyTo ? ` ↩ ${to ? whoWrote(to) : "an older message"}` : "";
           return `${id}${clock(m.sentAt)}  ${who}${reply}: ${line(body(m), 600)}`;
         });
+        // His own words are what a draft copies; with few of them, the log
+        // is missing the older part of a WhatsApp chat (8 Oct: one message
+        // from Arief, none of his, and a draft in a register he never uses).
+        const mine = messages.filter((m) => m.outgoing).length;
+        const fewOfHis =
+          channel === "whatsapp" && !chat.endsWith("@g.us") && mine < FEW_OF_HIS
+            ? `\n\nOnly ${mine} of his own message(s) here. Before drafting, find_chat with this number and older: true reads the chat again from WhatsApp.`
+            : "";
+        const history = draftHistory(key);
         return clip(
-          `${head}\n\n${lines.length ? lines.join("\n") : "No messages in the log for this chat."}`,
+          `${head}\n\n${lines.length ? lines.join("\n") : "No messages in the log for this chat."}${fewOfHis}` +
+            (history ? `\n\n${history}` : ""),
           MAX_BYTES,
         );
       },
@@ -879,12 +923,15 @@ function tools(registry: Registry): Tool[] {
         "when he names somebody `people` does not have. A name matches the name they set on " +
         "WhatsApp, not his phone's contacts — when a name finds nothing, ask him for the number. " +
         "A number he has never chatted with is added only when it is in his own note to you: pass " +
-        "that note's id as `note`. WhatsApp only.",
+        "that note's id as `note`. With `older: true` and a chat already in people, it reads that " +
+        "chat again from WhatsApp, so his older messages there reach thread — do that before " +
+        "drafting when thread has few of his own. WhatsApp only.",
       inputSchema: {
         type: "object",
         properties: {
           search: { type: "string", description: "A name, or a phone number (+60…, 01…)." },
           note: { type: "string", description: "His note that gives the number, for a number with no chat yet." },
+          older: { type: "boolean", description: "Read a chat already in people again, for its older messages." },
         },
         required: ["search"],
         additionalProperties: false,
@@ -905,7 +952,15 @@ function tools(registry: Registry): Tool[] {
               ? String(r.chat_key).includes(number)
               : words.every((w) => fold(`${r.name} ${r.notes ?? ""}`).includes(w)),
           );
-        if (here.length > 0) {
+        // A chat she already has, read again for what the log is missing —
+        // one 1:1 WhatsApp chat, so the search cannot widen into others.
+        const again = args["older"] === true ? here : [];
+        if (again.length > 1) throw new Error("older reads one chat: search its full number");
+        const one = again[0];
+        if (one && !/^whatsapp:\d+@s\.whatsapp\.net$/.test(String(one.chat_key))) {
+          throw new Error("older works for a 1:1 WhatsApp chat only");
+        }
+        if (here.length > 0 && !one) {
           return (
             "Already in people — use these:\n" +
             here.slice(0, 10).map((r) => `- ${r.chat_key} ${r.name} (${r.kind}, ${priorityText(r)})`).join("\n")
@@ -927,7 +982,11 @@ function tools(registry: Registry): Tool[] {
         if (!wf) throw new Error(`${FIND_CHAT_WORKFLOW} is not loaded on this server`);
         const outcome = await runWorkflow(wf, {
           trigger: "manual",
-          input: number ? { number, new_number: fromHim } : { name: search },
+          input: one
+            ? { number: String(one.chat_key).slice("whatsapp:".length).split("@")[0] }
+            : number
+              ? { number, new_number: fromHim }
+              : { name: search },
         });
         if (outcome.status !== "success") {
           throw new Error(`Search failed (${outcome.status}): ${outcome.error?.message ?? "unknown error"}`);

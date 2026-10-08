@@ -544,8 +544,11 @@ async function comment(ctx: Ctx, d: Row, text: string, messageId: number) {
     note: null,
     task:
       `He replied to the card of draft ${d.id} (for chat ${d.chat_key}), asking for a change:\n> ${feedback.replace(/\n/g, "\n> ")}\n` +
-      `Revise it now: thread the chat, then draft_reply with replaces "${d.id}". Its new card reaches him within a minute. ` +
-      "Answer him in one line saying what you changed. (Learning from the comment is the hourly run's — it sees the replaced draft.)",
+      `Revise it now: thread the chat — it lists your earlier drafts there and everything he said about them, all of which still holds — ` +
+      `then draft_reply with replaces "${d.id}". Its new card reaches him within a minute. ` +
+      `If the comment says how he writes or what to leave out, learn it now (source comment, from_drafts ["${d.id}"]) — ` +
+      "for that kind of chat (work and clients, friends, family) or this one person — so your next draft of that kind follows it. " +
+      "Answer him in one line saying what you changed and, if you learned something, that you will keep doing it.",
   });
   if (live.answered) return { draft: d.id, outcome: "revise", live };
   const fired = await fireAssistant(

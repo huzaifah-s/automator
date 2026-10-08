@@ -1,7 +1,7 @@
 import { z } from "zod";
 import {
   canonicalKey,
-  chatLogKeepsFrom,
+  chatLogKeeps,
   defineCredential,
   defineWorkflow,
   linkChats,
@@ -28,9 +28,15 @@ import { NOISE, fromWhatsApp, isPlaceholder, placeholder } from "./_whatsapp.ts"
  * which it does only for a number written in his own note to her: the rule
  * that keeps a number in somebody's message from becoming a recipient.
  *
+ * **A chat already here** is read again when the endpoint asks for its older
+ * messages: the sync only takes what is new since it last looked, so history
+ * WhatsApp hands Evolution later (a re-link with full history) reaches the
+ * log only this way.
+ *
  * **What is kept.** Messages go to the chat log, which takes only what falls
- * inside its retention window. The run's result is chat keys, names and
- * counts — never message text — like the sync's.
+ * inside its retention window — his own for longer than theirs. The run's
+ * result is chat keys, names and counts — never message text — like the
+ * sync's.
  */
 
 const whatsappAccount = defineCredential("evolution", "huzaifah-evolution-api");
@@ -40,8 +46,11 @@ const PAGES = 10;
 const PAGE = 100;
 /** Chats added from one search: a name like "Ali" can match a dozen; past this, say so. */
 const MAX_MATCHES = 5;
-/** Messages read from each chat found. */
-const MESSAGES = 40;
+/**
+ * Messages read from each chat found. Enough that his own older ones —
+ * kept longer than theirs, for how he writes — come with it.
+ */
+const MESSAGES = 100;
 
 const input = z
   .object({
@@ -138,7 +147,6 @@ export default defineWorkflow({
 
     const found = await ctx.step("bring in", async () => {
       const out: FoundChat[] = [];
-      const from = chatLogKeepsFrom();
       let list = hits.chats;
       // No chat with that number, and he gave it himself: one he has never
       // written to — WhatsApp says whether it exists.
@@ -191,10 +199,10 @@ export default defineWorkflow({
           }
         }
 
-        const inWindow = messages.filter((m) => (m.timestamp ? m.timestamp * 1000 : Date.now()) >= from);
-        const recorded = ctx.chatLog.record(
-          inWindow.map((m) => ({ ...fromWhatsApp(m, c.name), chat: target.slice("whatsapp:".length) })),
-        );
+        const inWindow = messages
+          .map((m) => ({ ...fromWhatsApp(m, c.name), chat: target.slice("whatsapp:".length) }))
+          .filter((e) => chatLogKeeps(e));
+        const recorded = ctx.chatLog.record(inWindow);
         const newest = messages.at(-1)?.timestamp;
         out.push({
           chat_key: target,

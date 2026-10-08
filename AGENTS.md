@@ -227,8 +227,10 @@ input and replays store the schema's output, not the raw body, so the
 
 **Chat messages have exactly one copy, in the chat log.** `src/core/chat-log.ts`
 is deliberately not a data table: it has no tab and no route, and it forgets
-every message after `CHAT_LOG_RETENTION_DAYS`, a prune that cannot be switched
-off. Everything else that would keep a second copy has to be kept from doing
+every message after `CHAT_LOG_RETENTION_DAYS` — his own after the longer
+`CHAT_LOG_OWN_RETENTION_DAYS` — a prune that cannot be switched off.
+`record` drops what is already past its window, so `chatLogKeeps` is the one
+place that decides. Everything else that would keep a second copy has to be kept from doing
 it: the reads in `personal-assistant/sync-chats.ts` pass `private: true`, so
 the run page records each call's size rather than its body; its steps return
 counts, because a step's result is stored as its checkpoint; and it polls

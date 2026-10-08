@@ -389,7 +389,9 @@ An error's body is still recorded, because that is the provider talking.
 
 Where the messages go instead is `ctx.chatLog` — a store with no tab and no
 route, read only by the assistant, that forgets every message
-`CHAT_LOG_RETENTION_DAYS` (default 14, never off) after it was sent.
+`CHAT_LOG_RETENTION_DAYS` (default 14, never off) after it was sent — your
+own messages after `CHAT_LOG_OWN_RETENTION_DAYS` (default 90, never less
+than the first), because they are what a draft has to sound like.
 `ctx.chatLog.record(entries)` stores the ones it has not seen (a message is
 its channel, chat and id) and returns how many were new. Text is redacted on
 the way in. Keep what the step *returns* to counts, since a step's result is
@@ -417,7 +419,7 @@ access — and refuses the operations and data-table ones, as they refuse it.
 | `waiting` | Chats where they spoke last, priority first, then longest wait — and whose message the newest one replies to |
 | `thread` | One chat's messages, with what `people` knows about it; a reply says who it answers (`↩ me`, `↩ Amin`) |
 | `people` / `update_person` | Priorities and notes. A priority is the assistant's own call (with a one-line `reason`, shown on the "I sorted these" card and recorded in `sorting`) or yours (citing the question or note you said it in). Hers is refused on a chat you set |
-| `find_chat` | Brings in a WhatsApp chat the sync has not seen — somebody you have not written to lately — by name (as they set it on WhatsApp) or number, through `personal-assistant-find-chat`: added to `people`, with its messages from the last 14 days. A number you have never chatted with only when it is in your own note. A `people` search that finds nobody lists the chats nobody has named yet |
+| `find_chat` | Brings in a WhatsApp chat the sync has not seen — somebody you have not written to lately — by name (as they set it on WhatsApp) or number, through `personal-assistant-find-chat`: added to `people`, with its messages from the last 14 days and yours from the last 90. A number you have never chatted with only when it is in your own note. `older: true` reads a 1:1 chat already in `people` again, for older messages the sync never saw — `thread` suggests it when it holds fewer than three of yours. A `people` search that finds nobody lists the chats nobody has named yet |
 | `awaiting` / `offer_followup` | Chats where you wrote last and nobody has answered; a card offering to follow up — in 2 days, a week, two weeks, or no need. A tap opens a loop and adds the follow-up to your To Do for that day, at once, and what you chose is a correction it learns from |
 | `drafts` / `draft_reply` | Replies waiting for approval; a new one, or a revision. The card quotes what it answers |
 | `withdraw_draft` | Takes back a draft that should not be sent at all ("that was for Amin"), with a reason shown on its card |
@@ -497,7 +499,7 @@ logged its end; `personal-assistant-bot` handles what comes back:
 | **✅ Send** | Sent from your own WhatsApp or Telegram, exactly as drafted; the card says when |
 | **Skip** | Closed; nothing is sent |
 | **💬 Open chat** | Opens the conversation — on a draft to a WhatsApp number (wa.me) or a Telegram supergroup (t.me/c); there is no working link for a WhatsApp group, a hidden number or a Telegram person |
-| Reply to a draft card | Your words go in `feedback`, the draft goes to `revise`, and the assistant writes a new version — whose card says what you asked for, while the old card's buttons are removed |
+| Reply to a draft card | Your words go in `feedback`, the draft goes to `revise`, and the assistant writes a new version — whose card says what you asked for, while the old card's buttons are removed. `thread` shows every draft to that chat from the last three days with what you said about each, so a new version keeps all of it; a comment about how you write becomes a lesson at once, for every chat |
 | Tap an option on a question card | The answer — always / normal / ignore is applied to `people` at once |
 | Tap a numbered button on the "How important are these chats?" card | The same, for that chat; the card is redrawn with the answer and keeps buttons only for the chats still open |
 | Tap a numbered button on the "🗂 I sorted these" card | Changes the priority she chose for that chat (✓ marks hers), or agrees with it. Either way it is yours from then on; a change is listed in `outcomes` until she has learned from it. No tap: her choice stands. Changing a priority of hers on the dashboard counts the same |

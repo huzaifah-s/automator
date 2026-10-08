@@ -310,7 +310,8 @@ export interface Ctx<Input = unknown> extends Integrations {
   table(name: string): TableClient;
   /**
    * Messages read from WhatsApp and Telegram, kept for an assistant to read
-   * back and forgotten after `CHAT_LOG_RETENTION_DAYS` (default 14). Never
+   * back and forgotten after `CHAT_LOG_RETENTION_DAYS` (default 14) — his
+   * own after `CHAT_LOG_OWN_RETENTION_DAYS` (default 90). Never
    * shown on the dashboard. See src/core/chat-log.ts.
    */
   chatLog: ChatLog;

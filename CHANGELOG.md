@@ -8,6 +8,37 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-10-08
 
+### Maria keeps every correction on a draft, and his own messages for 90 days
+
+He had to say the same thing three times in ten minutes (Haziq, Telegram;
+Arief, WhatsApp): "no kau/aku", "no AI Division", "too short".
+
+- **A revision sees every version and every comment.** `thread` now ends
+  with the chat's drafts from the last three days, oldest first, each with
+  what he said about it. Before, a revision saw only the comment that
+  started it; "too short, like before" brought back the first version,
+  with both things he had struck out. Live Maria's "last exchanges" also
+  include drafts and his comments on their cards, which are not notes and
+  were missing.
+- **She learns from a comment at once.** Learning from draft comments was
+  the hourly run's, so "no kau/aku" said on Haziq's draft did not reach
+  Arief's draft a minute later. Live Maria now `learn`s a comment about how
+  he writes (source comment, from_drafts), for everyone unless it is about
+  one person. *Traded:* more lessons, some of them narrower than the hourly
+  run would have made them; the Sunday review prunes.
+- **His own messages are kept 90 days** (`CHAT_LOG_OWN_RETENTION_DAYS`),
+  theirs still 14. This reverses the "refused" above: he chose it, because
+  a draft copies how he writes and a chat he last wrote in weeks ago had
+  none of his left. `record` drops anything past its window, so a reader
+  cannot keep more by accident.
+- **`find_chat older: true`** reads a 1:1 WhatsApp chat already in
+  `people` again, for messages the sync never saw (it only takes what is
+  new since its last look) — the way history from a WhatsApp re-link with
+  Evolution's "Sync Full History" reaches the log. `thread` suggests it
+  when it holds fewer than three of his messages. Arief's chat had one
+  message, his from 25 Sept, because Evolution only has what arrived after
+  it was linked.
+
 ### Live Maria is always Opus; she learns how he writes; she offers follow-ups
 
 - **Opus for every live answer.** Sonnet took the short ones a few seconds

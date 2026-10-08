@@ -13,6 +13,11 @@ import { redact } from "./redact.ts";
  * it is invisible the way `ctx.state` is — no tab, no route — and it ages
  * out: `CHAT_LOG_RETENTION_DAYS` (default 14) after a message was sent, the
  * nightly prune deletes it, whatever happens to the run that recorded it.
+ * His own messages are kept longer — `CHAT_LOG_OWN_RETENTION_DAYS`, default
+ * 90 — because they are what a draft has to sound like, and a chat he last
+ * wrote in three weeks ago had none left (2026-10-08: "we dont call each
+ * other ko aku" — she had only the other side to copy). The other side
+ * still goes at 14.
  *
  * **Redacted on the way in.** A message is text a stranger typed, so it is
  * not credential-shaped by construction — but "nothing that reaches SQLite
@@ -49,8 +54,9 @@ export interface ChatLog {
   /**
    * Stores the messages not stored already — a message is its channel, chat
    * and id, so recording an overlapping page twice is free. Returns how many
-   * were new. A reader that can hand over months of history (find-chat)
-   * passes only what is newer than `chatLogKeepsFrom()`.
+   * were new. Anything older than the log keeps (`chatLogKeeps`) is
+   * dropped here, so a reader that hands over months of history (find-chat)
+   * cannot keep it past the prune.
    */
   record(entries: ChatLogEntry[]): number;
 }
@@ -83,15 +89,18 @@ const insert = db.prepare(
    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
    ON CONFLICT(channel, chat, id) DO NOTHING`,
 );
-const prune = db.prepare(`DELETE FROM chat_messages WHERE sent_at < ?`);
+// Theirs past the short window; his own past the long one.
+const prune = db.prepare(`DELETE FROM chat_messages WHERE sent_at < ? AND (outgoing = 0 OR sent_at < ?)`);
 
 /** One for the whole process: it is a store, not a per-run client. */
 export const chatLog: ChatLog = {
   record(entries) {
     const now = Date.now();
+    const keeps = { theirs: chatLogKeepsFrom(now), own: chatLogKeepsFrom(now, true) };
     const write = db.transaction((list: ChatLogEntry[]) => {
       let added = 0;
       for (const e of list) {
+        if (e.sentAt < (e.outgoing ? keeps.own : keeps.theirs)) continue;
         const clean = (v: string | undefined) => (v === undefined ? null : redact(v));
         added += insert.run(
           e.channel,
@@ -261,30 +270,44 @@ export function chatMessage(channel: ChatChannel, chat: string, id: string): Sto
 
 /** Days of chat log kept when `CHAT_LOG_RETENTION_DAYS` says nothing usable. */
 const DEFAULT_RETENTION_DAYS = 14;
+/** Days of his own messages kept when `CHAT_LOG_OWN_RETENTION_DAYS` says nothing usable. */
+const DEFAULT_OWN_RETENTION_DAYS = 90;
 
-function retentionDays(): number {
-  const raw = process.env.CHAT_LOG_RETENTION_DAYS;
-  if (raw === undefined || raw.trim() === "") return DEFAULT_RETENTION_DAYS;
+function days(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
   const n = Number(raw);
   // Unlike runs, there is no "keep forever": 0 or nonsense falls back rather
   // than switching the prune off, because the promise this store makes is
   // that it forgets.
   if (!Number.isFinite(n) || n <= 0) {
-    log.warn(
-      `CHAT_LOG_RETENTION_DAYS is "${raw}", which is not a positive number of days — ` +
-        `keeping ${DEFAULT_RETENTION_DAYS}`,
-    );
-    return DEFAULT_RETENTION_DAYS;
+    log.warn(`${name} is "${raw}", which is not a positive number of days — keeping ${fallback}`);
+    return fallback;
   }
   return n;
 }
 
-/** The oldest moment the log keeps: anything sent before it goes in the nightly prune. */
-export function chatLogKeepsFrom(now = Date.now()): number {
-  return now - retentionDays() * 86_400_000;
+function retentionDays(own: boolean): number {
+  const theirs = days("CHAT_LOG_RETENTION_DAYS", DEFAULT_RETENTION_DAYS);
+  // His own are never kept for less than theirs.
+  return own ? Math.max(theirs, days("CHAT_LOG_OWN_RETENTION_DAYS", DEFAULT_OWN_RETENTION_DAYS)) : theirs;
+}
+
+/**
+ * The oldest moment the log keeps: anything sent before it goes in the
+ * nightly prune. `own` for his own messages, which are kept longer.
+ */
+export function chatLogKeepsFrom(now = Date.now(), own = false): number {
+  return now - retentionDays(own) * 86_400_000;
+}
+
+/** Whether a message sent at `sentAt` is one the log keeps. */
+export function chatLogKeeps(m: { sentAt: number; outgoing: boolean }, now = Date.now()): boolean {
+  return m.sentAt >= chatLogKeepsFrom(now, m.outgoing);
 }
 
 /** Deletes messages older than the retention. Called by the nightly prune. */
 export function pruneChatLog(): number {
-  return prune.run(chatLogKeepsFrom()).changes;
+  const now = Date.now();
+  return prune.run(chatLogKeepsFrom(now), chatLogKeepsFrom(now, true)).changes;
 }

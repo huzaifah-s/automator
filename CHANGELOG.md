@@ -8,6 +8,32 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-10-08
 
+### Maria can find a chat she has not seen, and remembers the conversation
+
+His 20 minutes trying to get a draft to Faiz (8 Oct) showed three gaps.
+The sync only knows chats with a message since it started, so somebody he
+last wrote to weeks ago did not exist for her, and Evolution has no address
+book, so "I added his contact" changed nothing. When he then wrote to Faiz
+himself, the chat arrived as a bare number and her search for "Faiz" found
+nothing. And with only her last 8 lines of the conversation, cut at 400
+characters, she contradicted what she had said minutes before.
+
+- **`find_chat`** pages through every chat Evolution holds (348 today, not
+  the ~100 the sync looks at) by name or number, and brings the match into
+  `people` with its last 14 days of messages, a hidden id kept under its
+  number like the sync does. *Considered:* drafting to any number the model
+  passes — refused, because a number in somebody's message must never
+  become a recipient. A number he never chatted with is accepted only when
+  it is written in one of his own notes, which the endpoint checks.
+- **An empty `people` search lists the unnamed chats**, newest first with
+  their newest line — the person he means is usually the one he just wrote
+  to — and live Maria's prompt says to look there, name the chat, and say
+  plainly what she can and cannot see.
+- **Live Maria gets the whole day's exchange**, up to 30 lines and 14k
+  characters, her answers nearly whole (they carry the drafts he reacts
+  to). Asking her to text, tell, ask or send somebody now goes to Opus, like
+  "draft" always did.
+
 ### Maria decides, and asks only what she can't work out
 
 In the 24 hours to 8 Oct she sent about 30 "Is X important?" cards. Most

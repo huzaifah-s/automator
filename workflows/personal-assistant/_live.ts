@@ -70,7 +70,7 @@ const USAGE = "live:usage";
 
 /** Words that ask for writing or planning — those go to Opus; the rest to Sonnet for speed. */
 const WRITES =
-  /\b(draft|write|rewrite|reply|respond|email|plan|proposal|deck|summari[sz]e|outline|tulis|balas|karang|jawab|rancang)\b/i;
+  /\b(draft|write|rewrite|reply|respond|email|plan|proposal|deck|summari[sz]e|outline|text|message|say|tell|ask|send|tulis|balas|karang|jawab|rancang|mesej|hantar|cakap|bagitahu|bagitau|tanya)\b/i;
 
 const SYSTEM = `You are Maria, the user's personal assistant. He has just messaged you in his own Telegram chat with you, and you are answering him live: your final text is sent to him as your reply, within seconds. The hourly run does the sweep — triage, digests, learning from finished drafts — so you answer *him*: what is waiting, drafting a reply he asks for, a task, a reminder, what you know about someone.
 
@@ -86,6 +86,8 @@ Rules that always apply:
 9. You may rename, re-date or trash only tasks you created. When he says a task is done, started or on hold, set_task_status it — any open task, his too — with his words; if you cannot tell which task, ask him naming the candidates. Never set a status he did not ask for.
 10. Do what he asks and nothing else — he is waiting. The hourly run's housekeeping (the scorecard lesson, sorting new chats, learning from finished drafts) is not yours unless he asks for it. Do what he asks with your tools, then say it is done. If it needs more than a minute of work, do the first part and say the rest comes on the next run.
 11. He may reply to a card; his message then quotes it. The note's id is given — close_question it once you have acted, unless you are leaving it for the next run.
+12. Somebody he names is not in people? A name search is not the end. \`people\` then lists the chats nobody has named yet — he may have just written to them, and his own message there often says the name: thread it to be sure, then update_person its name. Else find_chat, by name or by number; a number he gave in this note goes in with the note's id. Ask him for the number only when that fails.
+13. Say plainly what you can and cannot see or do — "I can't see your chat with Faiz yet", never "I've got the text" when you mean his copy here. Never claim a reason you have not checked.
 
 Your reply is read on a phone. One-line answer first, then short lines. Marks: "# Heading" on its own line, "- item" bullets, "> quoted words" for what someone wrote, *bold*, _italic_, [[Task title]] for a To Do task. A blank line between groups, no paragraph over two lines, no greeting and no sign-off. Under 1200 characters unless he asked for a list.`;
 
@@ -116,7 +118,19 @@ async function budget(ctx: Pick<Ctx, "state">): Promise<{ usage: Usage; ok: bool
   return { usage, ok };
 }
 
-/** His last few notes and her answers to them, oldest first — so "and the other one?" means something. */
+/**
+ * His notes and her answers today, oldest first — so "and the other one?"
+ * means something, and a ten-message back-and-forth about one draft is still
+ * one conversation (2026-10-08: with 8 short lines she lost what she had told
+ * him minutes before). His notes are short; her answers carry the drafts he is
+ * reacting to, so they are kept nearly whole. The oldest go first when it is
+ * too long.
+ */
+const RECENT_ROWS = 30;
+const RECENT_CHARS = 14_000;
+const HIS_MAX = 600;
+const HERS_MAX = 1_500;
+
 function recent(ctx: Pick<Ctx, "table">, skip: string | null): string {
   const since = Date.now() - 24 * 3_600_000;
   const rows = ctx
@@ -124,13 +138,21 @@ function recent(ctx: Pick<Ctx, "table">, skip: string | null): string {
     .query({ where: [{ column: "created_at", op: ">=", value: since }], limit: 200 })
     .filter((q) => String(q.id) !== skip && (q.kind === "note" || (q.kind === "update" && q.reply_to)))
     .sort((a, b) => Number(a.created_at) - Number(b.created_at))
-    .slice(-8);
+    .slice(-RECENT_ROWS);
   const clock = (ms: number) =>
     new Intl.DateTimeFormat("en-GB", { timeZone: TZ, hour: "2-digit", minute: "2-digit" }).format(new Date(ms));
-  const one = (s: unknown) => String(s ?? "").replace(/\s+/g, " ").trim().slice(0, 400);
-  return rows
-    .map((q) => (q.kind === "note" ? `him ${clock(Number(q.created_at))}: ${one(q.answer)}` : `you ${clock(Number(q.created_at))}: ${one(q.question)}`))
-    .join("\n");
+  const one = (s: unknown, max: number) => {
+    const t = String(s ?? "").replace(/\s+/g, " ").trim();
+    return t.length > max ? `${t.slice(0, max)}…` : t;
+  };
+  const lines = rows.map((q) =>
+    q.kind === "note"
+      ? `him ${clock(Number(q.created_at))}: ${one(q.answer, HIS_MAX)}`
+      : `you ${clock(Number(q.created_at))}: ${one(q.question, HERS_MAX)}`,
+  );
+  let total = lines.reduce((n, l) => n + l.length + 1, 0);
+  while (lines.length > 2 && total > RECENT_CHARS) total -= lines.shift()!.length + 1;
+  return lines.join("\n");
 }
 
 /**

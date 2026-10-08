@@ -49,7 +49,8 @@ export interface ChatLog {
   /**
    * Stores the messages not stored already — a message is its channel, chat
    * and id, so recording an overlapping page twice is free. Returns how many
-   * were new.
+   * were new. A reader that can hand over months of history (find-chat)
+   * passes only what is newer than `chatLogKeepsFrom()`.
    */
   record(entries: ChatLogEntry[]): number;
 }
@@ -251,7 +252,12 @@ function retentionDays(): number {
   return n;
 }
 
+/** The oldest moment the log keeps: anything sent before it goes in the nightly prune. */
+export function chatLogKeepsFrom(now = Date.now()): number {
+  return now - retentionDays() * 86_400_000;
+}
+
 /** Deletes messages older than the retention. Called by the nightly prune. */
 export function pruneChatLog(): number {
-  return prune.run(Date.now() - retentionDays() * 86_400_000).changes;
+  return prune.run(chatLogKeepsFrom()).changes;
 }

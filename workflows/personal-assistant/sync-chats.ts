@@ -10,12 +10,12 @@ import {
   realName,
   type ChatLogEntry,
   type Ctx,
-  type EvolutionMessage,
   type LinkResult,
   type Row,
   type TelegramUserMessage,
 } from "../../src/core/define.ts";
 import { fireAssistant } from "./_routine.ts";
+import { NOISE, fromWhatsApp, isPlaceholder, placeholder } from "./_whatsapp.ts";
 
 /**
  * Personal assistant — copies new WhatsApp and Telegram messages into the
@@ -72,30 +72,11 @@ const OVERLAP_MS = 10 * 60_000;
 /** Messages taken from a Telegram chat seen for the first time. */
 const FIRST_SIGHT = 20;
 /**
- * WhatsApp message types that are bookkeeping, not something anybody said:
- * an edit, a deletion, a disappearing-messages setting.
- */
-const NOISE = new Set(["protocolMessage"]);
-
-/**
  * People rows still named by a phone number that get a contact lookup per
  * run, and how long before the same one is tried again.
  */
 const NAME_REPAIRS = 10;
 
-/**
- * What a person is called when WhatsApp gave no name at all — some people set
- * none, and Evolution has no address book. A phone number is shown as one;
- * a `@lid` is a privacy id, not a number, so it says the number is hidden
- * rather than showing digits that would be mistaken for one.
- */
-const HIDDEN = "Hidden number (WhatsApp)";
-function placeholder(jid: string): string {
-  const [id, server] = jid.split("@");
-  return server === "lid" ? HIDDEN : `+${id}`;
-}
-/** A people name that is only a stand-in, and may be replaced by a real one. */
-const isPlaceholder = (name: unknown) => name === HIDDEN || !realName(String(name ?? ""));
 const NAME_RETRY_SECONDS = 86_400;
 /** Unlinked `@lid` people rows looked up per run for their number. */
 const PAIR_REPAIRS = 10;
@@ -384,22 +365,6 @@ async function syncWhatsApp(ctx: Ctx, people: People): Promise<Synced> {
   return { chats: read, messages, newChats, urgent, renamed, linked, moved };
 }
 
-function fromWhatsApp(m: EvolutionMessage, chatName: string | undefined): ChatLogEntry {
-  return {
-    channel: "whatsapp",
-    chat: m.chat,
-    chatName,
-    isGroup: m.isGroup,
-    id: m.id,
-    sender: m.from,
-    senderName: m.name,
-    text: m.text,
-    type: m.type,
-    outgoing: m.outgoing,
-    replyTo: m.replyTo,
-    sentAt: m.timestamp ? m.timestamp * 1000 : Date.now(),
-  };
-}
 
 /* ---------------------------------------------------------------- telegram */
 

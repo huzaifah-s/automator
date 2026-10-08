@@ -113,14 +113,14 @@ export interface EvolutionClient {
   /**
    * Chats, most recently active first, each with its newest message. Read-only,
    * and nothing is marked as read. `since` keeps only chats with a message
-   * after it.
+   * after it; `skip` pages past the first `limit`.
    *
    * Evolution can only answer from its own database, so this is empty unless
    * the server runs with `DATABASE_SAVE_DATA_NEW_MESSAGE=true` — and holds only
    * what arrived after the phone was linked, plus whatever history sync
    * brought in if `DATABASE_SAVE_DATA_HISTORIC` was on at the time.
    */
-  chats(opts?: EvolutionCallOptions & { limit?: number; since?: Date }): Promise<EvolutionChat[]>;
+  chats(opts?: EvolutionCallOptions & { limit?: number; since?: Date; skip?: number }): Promise<EvolutionChat[]>;
   /**
    * Messages in one chat, **oldest first**, both directions — `outgoing`
    * says which. `chat` is a JID from `chats()` or a phone number. Without
@@ -248,6 +248,7 @@ export function createEvolution(http: HttpClient): EvolutionClient {
         {
           ...(opts.since ? { where: { messageTimestamp: sinceFilter(opts.since) } } : {}),
           take: limit,
+          ...(opts.skip ? { skip: opts.skip } : {}),
         },
         { headers: headers(c), private: opts.private },
       );

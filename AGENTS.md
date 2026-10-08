@@ -355,6 +355,22 @@ the same: somewhere the routine reads it back until it has been turned into a
 lesson. The user asked for an assistant that keeps improving, and that is the
 mechanism.
 
+**A follow-up tap is applied by the bot, not the model.** `offer_followup`
+writes a `followups` row; `deliver-cards` posts it; a tap on "in 2 days /
+1 week / 2 weeks" opens a loop waiting on them and starts
+`personal-assistant-create-task` with `announce: false` (the follow-up card
+says it instead), all inside the bot's run — so it happens in a second, not
+at the next hourly run. Every answer, "no" included, stays in `outcomes`
+until `learn from_followups`.
+
+**Style lessons are derived, never quoted.** `personal-assistant-learn-style`
+reads his own last messages in a chat straight from Evolution or Telegram
+(private reads, not a step — a step's result is stored), asks Claude Code
+with no tools (`askClaude` in `_live.ts`) for one line on how he writes
+there, and keeps only that line as a `style` lesson for the chat. Its
+prompt forbids names, numbers and topics; keep it that way, because the
+lesson is shown on the dashboard and on the Sunday card.
+
 **The assistant writes on To Do tasks and never finishes them, and that is
 enforced by absence too.** `task_note` appends one callout to the end of a
 page through `personal-assistant-task-note` and has no way to change a

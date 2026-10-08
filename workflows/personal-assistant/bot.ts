@@ -17,6 +17,9 @@ import {
   draftButtons,
   draftOutcome,
   esc,
+  FOLLOWUP_CHOICES,
+  followupOutcome,
+  linkButtons,
   lessonIds,
   lessonsCard,
   owner,
@@ -93,6 +96,8 @@ import { fireAssistant } from "./_routine.ts";
  */
 
 const bot = defineCredential("telegram", "maria");
+/** His day, for the date a follow-up falls on. */
+const TZ = process.env.ASSISTANT_TZ ?? "Asia/Kuala_Lumpur";
 const whatsappAccount = defineCredential("evolution", "huzaifah-evolution-api");
 const telegramAccount = defineCredential("telegram_user", "huzaifah-telegram-user-account");
 /**
@@ -268,6 +273,58 @@ async function onButton(ctx: Ctx, cb: NonNullable<Update["callback_query"]>) {
     const kept = choice === r.choice;
     await api.answer(cb.id, kept ? `Kept — ${name} stays ${choice}.` : `Changed — ${name} is now ${choice}. I'll learn from it.`);
     return { sorted: id, outcome: kept ? "kept" : "changed", priority: choice };
+  }
+
+  if (kind === "f" && id && action !== undefined) {
+    const followups = ctx.table("followups");
+    const f = followups.get(id);
+    const choice = FOLLOWUP_CHOICES[Number(action)];
+    if (!f || !choice) {
+      await api.answer(cb.id, "That follow-up no longer exists.");
+      return { followup: id, outcome: "missing" };
+    }
+    if (f.answer) {
+      await api.answer(cb.id, `Already chosen: ${f.answer}.`);
+      return { followup: id, outcome: "already answered" };
+    }
+    const about = chatLabel(String(f.chat_key), personFor(ctx, f.chat_key));
+    if (choice.days === 0) {
+      const row = followups.update(id, { answer: "no", answered_at: Date.now() }, { writtenBy: ctx.workflow });
+      if (f.card_id) await api.edit(String(f.card_id), followupOutcome(row, about));
+      await api.answer(cb.id, "OK — no follow-up. I'll learn from it.");
+      return { followup: id, outcome: "no" };
+    }
+
+    // Applied here, with no model: the loop first — it is the follow-up
+    // even if Notion is down — then the task, on the same day.
+    const due = new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(new Date(Date.now() + choice.days * 86_400_000));
+    const { row: loop } = ctx.table("loops").insert(
+      { what: f.what, waiting_on: "them", chat_key: f.chat_key, due, note: `He chose to follow up on ${due} if there is no reply.` },
+      { writtenBy: ctx.workflow },
+    );
+    let task: { url?: string; id?: string; refused?: string } | undefined;
+    try {
+      task = await ctx.run("personal-assistant-create-task", {
+        title: f.title,
+        due,
+        ...(f.category ? { category: f.category } : {}),
+        notes: `Follow up if there is still no reply. Waiting for: ${f.what}`,
+        source: about,
+        announce: false,
+      });
+      if (task?.refused) ctx.log.warn(`Follow-up ${id}: To Do task refused — ${task.refused}`);
+    } catch (err) {
+      ctx.log.warn(`Follow-up ${id}: To Do task not made — ${String((err as Error)?.message).slice(0, 160)}`);
+    }
+    if (task?.id) ctx.table("loops").update(String(loop.id), { task_id: task.id }, { writtenBy: ctx.workflow });
+    const row = followups.update(
+      id,
+      { answer: choice.answer, answered_at: Date.now(), due, loop_id: String(loop.id), task_url: task?.url ?? null },
+      { writtenBy: ctx.workflow },
+    );
+    if (f.card_id) await api.edit(String(f.card_id), followupOutcome(row, about), linkButtons(row.task_url));
+    await api.answer(cb.id, `Follow-up set for ${due}.`);
+    return { followup: id, outcome: choice.answer, task: Boolean(task?.url) };
   }
 
   if (kind === "l" && id && action === "t") {
@@ -485,7 +542,6 @@ async function comment(ctx: Ctx, d: Row, text: string, messageId: number) {
   const live = await answerLive(ctx, api, claudeTokens(), {
     messageId,
     note: null,
-    writes: true,
     task:
       `He replied to the card of draft ${d.id} (for chat ${d.chat_key}), asking for a change:\n> ${feedback.replace(/\n/g, "\n> ")}\n` +
       `Revise it now: thread the chat, then draft_reply with replaces "${d.id}". Its new card reaches him within a minute. ` +

@@ -29,13 +29,15 @@ export default defineTable({
       label: "Chat",
       help: "channel:id when it is about one chat. Empty means everywhere.",
     }),
-    source: enumOf(["comment", "skip", "sent", "answer", "you", "task", "sorting", "scorecard"], {
+    source: enumOf(["comment", "skip", "sent", "answer", "you", "task", "sorting", "scorecard", "style", "followup"], {
       label: "Learned from",
       help:
         "comment: you asked for a change. skip: you skipped a draft. sent: you sent it unchanged. " +
         "answer: a question. you: you said so directly. task: what you did to its note on a To Do task. " +
         "sorting: you moved a chat she had sorted to another priority. " +
-        "scorecard: her own, aimed at her worst number on the twice-weekly scorecard.",
+        "scorecard: her own, aimed at her worst number on the twice-weekly scorecard. " +
+        "style: how you write in that chat, read from your own messages there (personal-assistant-learn-style). " +
+        "followup: what you chose when she offered to follow up on a message of yours.",
 
     }),
     evidence: text({

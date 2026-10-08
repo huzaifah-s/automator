@@ -11,6 +11,8 @@ import {
   bySorted,
   cardQuestions,
   chatLabel,
+  followupButtons,
+  followupCard,
   draftButtons,
   draftCard,
   draftOutcome,
@@ -178,6 +180,22 @@ export default defineWorkflow({
       await ctx.step(`question ${q.id}`, async () => {
         const cardId = await api.send(questionCard(q, aboutOf(q), links), questionButtons(q));
         questions.update(String(q.id), { card_id: String(cardId) }, { writtenBy: ctx.workflow });
+      });
+      posted++;
+    }
+
+    // Follow-ups she offers on messages of his still waiting for a reply —
+    // one card each, answered with a tap that the bot applies at once.
+    const followups = ctx.table("followups");
+    const offers = followups
+      .query({ where: [{ column: "card_id", op: "is null" }], limit: 10 })
+      .filter((f) => !f.answer)
+      .reverse();
+    for (const f of offers) {
+      await ctx.step(`followup ${f.id}`, async () => {
+        const about = chatLabel(String(f.chat_key), people.get(String(f.chat_key)));
+        const cardId = await api.send(followupCard(f, about), followupButtons(String(f.id)));
+        followups.update(String(f.id), { card_id: String(cardId) }, { writtenBy: ctx.workflow });
       });
       posted++;
     }

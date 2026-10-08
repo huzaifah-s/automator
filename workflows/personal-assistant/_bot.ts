@@ -651,6 +651,52 @@ export const updateCard = (u: Row, links?: TaskLinks) => {
   return /^\s*(🌅|🌙|#)/.test(String(u.question)) ? body : `🗒 ${body}`;
 };
 
+/* ------------------------------------------------------- follow-ups */
+
+/** The choices on a follow-up card, in button order; the number is days from today. */
+export const FOLLOWUP_CHOICES = [
+  { answer: "2 days", label: "In 2 days", days: 2 },
+  { answer: "1 week", label: "In 1 week", days: 7 },
+  { answer: "2 weeks", label: "In 2 weeks", days: 14 },
+  { answer: "no", label: "No need", days: 0 },
+] as const;
+
+/** `f:<id>:<index>` — two rows of two. */
+export function followupButtons(id: string): Button[][] {
+  const b = FOLLOWUP_CHOICES.map((c, i) => ({ text: c.label, callback_data: `f:${id}:${i}` }));
+  return [b.slice(0, 2), b.slice(2)];
+}
+
+/** "Follow up?" — what he sent, who has not answered, and what a tap does. */
+export function followupCard(f: Row, about: string): string {
+  return [
+    `⏳ <b>Follow up?</b> No reply yet from ${chatLabelHtml(about, f.chat_key)}`,
+    f.quote ? `\n<b>You sent</b>\n${quoted(f.quote)}` : null,
+    `\nWaiting for: ${esc(String(f.what))}`,
+    `<i>Pick when, and I'll add “${esc(String(f.title))}” to your To Do for that day and remind you if they still haven't answered.</i>`,
+  ]
+    .filter((l) => l !== null)
+    .join("\n");
+}
+
+/** The card once he has chosen — the buttons go. */
+export function followupOutcome(f: Row, about: string): string {
+  const when = f.due
+    ? new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" }).format(
+        new Date(`${String(f.due)}T00:00:00Z`),
+      )
+    : null;
+  return [
+    `⏳ <b>Follow up</b> · ${chatLabelHtml(about, f.chat_key)}`,
+    `Waiting for: ${esc(String(f.what))}`,
+    "",
+    f.answer === "no"
+      ? "👌 <i>No follow-up.</i>"
+      : `✅ <b>${esc(String(when ?? f.answer))}</b> — “${esc(String(f.title))}” is on your To Do for that day.` +
+        (f.task_url ? "" : " <i>(The To Do task could not be made — the follow-up is kept as a loop.)</i>"),
+  ].join("\n");
+}
+
 /* ------------------------------------------------- lessons, twice a week */
 
 /** Lesson buttons per row: "🗑 1"… fits four across a phone. */

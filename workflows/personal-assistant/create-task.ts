@@ -47,6 +47,11 @@ const input = z.object({
   notes: z.string().trim().max(1800).optional(),
   /** Where it came from, e.g. "WhatsApp — Ali". Written into the page. */
   source: z.string().trim().max(200).optional(),
+  /**
+   * False when the caller tells him itself — a follow-up he chose on its card,
+   * which that card now says. Every other task is announced.
+   */
+  announce: z.boolean().default(true),
 });
 
 type Template = { id: string; name: string; blocks: number };
@@ -163,10 +168,12 @@ export default defineWorkflow({
       );
       // Every task the assistant adds is announced, with a button that opens
       // it in Notion — the quickest way to correct what it guessed.
-      ctx.table("questions").insert(
-        { kind: "update", question: announcement(task, category), link: page.url },
-        { writtenBy: ctx.workflow },
-      );
+      if (task.announce) {
+        ctx.table("questions").insert(
+          { kind: "update", question: announcement(task, category), link: page.url },
+          { writtenBy: ctx.workflow },
+        );
+      }
       return { work: row.id };
     });
     return { url: page.url, created: true, id: page.id };

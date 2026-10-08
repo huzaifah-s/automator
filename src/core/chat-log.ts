@@ -224,6 +224,33 @@ export function chatThread(channel: ChatChannel, chat: string, limit: number): S
   return (threadQuery.all(channel, chat, limit) as Raw[]).map(toStored);
 }
 
+const newestQuery = db.prepare(`
+  WITH newest AS (
+    SELECT channel, chat, MAX(sent_at) AS at
+    FROM chat_messages WHERE sent_at >= ? GROUP BY channel, chat
+  )
+  SELECT m.* FROM newest
+  JOIN chat_messages m ON m.channel = newest.channel AND m.chat = newest.chat AND m.sent_at = newest.at
+`);
+
+/**
+ * Chats active since `since` whose newest message is his — the other side of
+ * `waitingChats`: he wrote last and nobody has answered. Newest first. Two
+ * messages stamped the same second with one of theirs among them count as
+ * answered.
+ */
+export function lastWordMine(since: number): StoredMessage[] {
+  const out = new Map<string, StoredMessage>();
+  const answered = new Set<string>();
+  for (const r of newestQuery.all(since) as Raw[]) {
+    const m = toStored(r);
+    const key = `${m.channel}:${m.chat}`;
+    if (!m.outgoing) answered.add(key);
+    else out.set(key, m);
+  }
+  return [...out.entries()].filter(([k]) => !answered.has(k)).map(([, m]) => m).sort((a, b) => b.sentAt - a.sentAt);
+}
+
 const messageQuery = db.prepare(`SELECT * FROM chat_messages WHERE channel = ? AND chat = ? AND id = ?`);
 
 /** One message by its id — what a reply answers. Null once pruned, or never recorded. */

@@ -25,7 +25,8 @@ import { allTaskLinks, rich, type botApi } from "./_bot.ts";
  * server — /mcp/assistant on 127.0.0.1, with a token this process minted in
  * memory (`liveConnection`). That token is limited to the assistant's tools
  * minus the hourly run's own — `digest`, `log_run`, `outcomes` (learning
- * from drafts is the sweep's), `scorecard` (so is its lesson), `ask` (she
+ * from drafts is the sweep's), `scorecard` (so is its lesson), `awaiting` and
+ * `offer_followup` (offering follow-ups is the sweep's), `ask` (she
  * is talking to you already) and `brief` (her answer *is* the reply) — and the endpoint enforces the limit,
  * not just the CLI. Same functions, same refusals, rows written by
  * "live Maria".
@@ -54,10 +55,14 @@ import { allTaskLinks, rich, type botApi } from "./_bot.ts";
  * caller starts the routine, as before.
  */
 
-const SONNET = "claude-sonnet-5-5";
-const OPUS = "claude-opus-5-5";
+/**
+ * Opus for every answer. Sonnet answered the short ones a few seconds faster,
+ * and on 8 Oct it answered "can you read things there?" without looking at
+ * anything; he would rather wait ~10 seconds for an answer that checked.
+ */
+const MODEL = "claude-opus-5-5";
 const LABEL = "live Maria";
-const EXCLUDE = ["digest", "log_run", "outcomes", "ask", "brief", "scorecard"] as const;
+const EXCLUDE = ["digest", "log_run", "outcomes", "ask", "brief", "scorecard", "awaiting", "offer_followup"] as const;
 const TZ = process.env.ASSISTANT_TZ ?? "Asia/Kuala_Lumpur";
 /** The CLI, installed in the image (Dockerfile). */
 const CLAUDE = process.env.CLAUDE_CODE_BIN ?? "claude";
@@ -67,10 +72,6 @@ const DEADLINE_MS = 75_000;
 /** Telegram's limit is 4096 after the tags `rich` adds. */
 const REPLY_MAX = 3_500;
 const USAGE = "live:usage";
-
-/** Words that ask for writing or planning — those go to Opus; the rest to Sonnet for speed. */
-const WRITES =
-  /\b(draft|write|rewrite|reply|respond|email|plan|proposal|deck|summari[sz]e|outline|text|message|say|tell|ask|send|tulis|balas|karang|jawab|rancang|mesej|hantar|cakap|bagitahu|bagitau|tanya)\b/i;
 
 const SYSTEM = `You are Maria, the user's personal assistant. He has just messaged you in his own Telegram chat with you, and you are answering him live: your final text is sent to him as your reply, within seconds. The hourly run does the sweep — triage, digests, learning from finished drafts — so you answer *him*: what is waiting, drafting a reply he asks for, a task, a reminder, what you know about someone.
 
@@ -165,7 +166,7 @@ export async function answerLive(
   ctx: Ctx,
   api: Bot,
   oauthTokens: readonly string[],
-  arrived: { messageId: number; task: string; note: Row | null; writes?: boolean },
+  arrived: { messageId: number; task: string; note: Row | null },
 ): Promise<LiveResult> {
   // ASSISTANT_LIVE_LOGIN=1 is for a developer's machine: use the CLI's own
   // login instead of a token. Never set it on the server.
@@ -175,7 +176,7 @@ export async function answerLive(
   const { usage, ok } = await budget(ctx);
   if (!ok) return { answered: false, why: "cap" };
 
-  const model = arrived.writes || WRITES.test(arrived.task) ? OPUS : SONNET;
+  const model = MODEL;
   const conn = liveConnection(LABEL, EXCLUDE);
   if (isPractice()) {
     holdBack({
@@ -202,27 +203,13 @@ export async function answerLive(
 
   // Its own empty home: no CLAUDE.md, settings or hooks to pick up, and the
   // MCP config (which holds the in-memory token) readable by this user only.
-  const home = join(tmpdir(), "maria-live");
-  mkdirSync(join(home, ".claude"), { recursive: true, mode: 0o700 });
+  const home = claudeHome("maria-live");
   const mcpConfig = join(home, "mcp.json");
   writeFileSync(
     mcpConfig,
     JSON.stringify({ mcpServers: { assistant: { type: "http", url: conn.url, headers: { Authorization: `Bearer ${conn.token}` } } } }),
     { mode: 0o600 },
   );
-  const envFor = (oauthToken: string): Record<string, string> => ({
-    ...(ownLogin
-      ? // A Mac keeps the login in the keychain, which needs who the user is.
-        Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "TMPDIR"].map((k) => [k, process.env[k] ?? ""]))
-      : {
-          PATH: process.env.PATH ?? "",
-          HOME: home,
-          CLAUDE_CONFIG_DIR: join(home, ".claude"),
-          CLAUDE_CODE_OAUTH_TOKEN: oauthToken,
-        }),
-    DISABLE_AUTOUPDATER: "1",
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-  });
 
   const args = [
     "-p",
@@ -271,65 +258,8 @@ export async function answerLive(
   }
 
   /** One run of the CLI on one account. */
-  async function once(oauthToken: string, deadline: number) {
-    const run = { why: null as typeof why, text: "", turns: 0, tokens: 0, used: [] as string[] };
-    let timedOut = false;
-    try {
-      const proc = Bun.spawn([CLAUDE, ...args], {
-        cwd: home,
-        env: envFor(oauthToken),
-        stdin: new Blob([prompt]),
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      const kill = () => proc.kill();
-      const timer = setTimeout(() => {
-        timedOut = true;
-        kill();
-      }, deadline);
-      ctx.signal.addEventListener("abort", kill, { once: true });
-      const out = await new Response(proc.stdout).text();
-      await proc.exited;
-      clearTimeout(timer);
-      ctx.signal.removeEventListener("abort", kill);
-
-      // One JSON object per line: assistant turns (for the tool names) and,
-      // last, the result.
-      let result: { subtype?: string; is_error?: boolean; result?: string; num_turns?: number; usage?: Record<string, number> } | null = null;
-      for (const raw of out.split("\n")) {
-        if (!raw.startsWith("{")) continue;
-        let msg: any;
-        try {
-          msg = JSON.parse(raw);
-        } catch {
-          continue;
-        }
-        if (msg.type === "assistant") {
-          for (const b of msg.message?.content ?? []) {
-            if (b?.type === "tool_use") run.used.push(String(b.name).replace(/^mcp__assistant__/, ""));
-          }
-        } else if (msg.type === "result") result = msg;
-      }
-      if (result) {
-        const u = result.usage ?? {};
-        run.tokens = (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
-        run.turns = result.num_turns ?? 0;
-      }
-      if (timedOut) run.why = "slow";
-      else if (!result || result.is_error || result.subtype !== "success") {
-        run.why = "failed";
-        // The CLI's own words ("Not logged in", a usage limit), or its exit — never the prompt.
-        const said = result?.is_error ? String(result.result ?? "").slice(0, 120) : `exit ${proc.exitCode}`;
-        ctx.log.warn(`Live Maria could not answer on account ${account + 1}: ${result?.subtype ?? "no result"} — ${said}`);
-      } else {
-        run.text = String(result.result ?? "").trim();
-        if (!run.text) run.why = "empty";
-      }
-    } catch (err) {
-      ctx.log.warn(`Live Maria could not start Claude Code: ${String((err as Error)?.message).slice(0, 160)}`);
-      run.why = "failed";
-    }
-    return run;
+  function once(oauthToken: string, deadline: number) {
+    return runClaude(ctx, { home, args, prompt, oauthToken, ownLogin, deadline, who: `Live Maria (account ${account + 1})` });
   }
 
   // Tool names only: arguments and results are messages.
@@ -359,4 +289,156 @@ export async function answerLive(
     ctx.table("questions").update(String(arrived.note.id), { status: "done" }, { writtenBy: LABEL });
   }
   return { answered: true, model, turns, tools: used.length, tokens, ms: Date.now() - started };
+}
+
+
+/* ------------------------------------------------- Claude Code, shared */
+
+/** What one run of the CLI came back with. Text only on success. */
+interface ClaudeRun {
+  why: "slow" | "failed" | "empty" | null;
+  text: string;
+  turns: number;
+  tokens: number;
+  /** Tool names it called, in order — never their arguments. */
+  used: string[];
+}
+
+/** An empty home for the CLI under the temp dir, readable by this user only. */
+function claudeHome(name: string): string {
+  const home = join(tmpdir(), name);
+  mkdirSync(join(home, ".claude"), { recursive: true, mode: 0o700 });
+  return home;
+}
+
+/**
+ * The CLI's whole environment: a handful of variables, never this
+ * process's own, which holds every secret the server has.
+ */
+function claudeEnv(home: string, oauthToken: string, ownLogin: boolean): Record<string, string> {
+  return {
+    ...(ownLogin
+      ? // A Mac keeps the login in the keychain, which needs who the user is.
+        Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "TMPDIR"].map((k) => [k, process.env[k] ?? ""]))
+      : {
+          PATH: process.env.PATH ?? "",
+          HOME: home,
+          CLAUDE_CONFIG_DIR: join(home, ".claude"),
+          CLAUDE_CODE_OAUTH_TOKEN: oauthToken,
+        }),
+    DISABLE_AUTOUPDATER: "1",
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+  };
+}
+
+/** One run of the CLI on one account: `-p`, the prompt on stdin, stream-json out. */
+async function runClaude(
+  ctx: Pick<Ctx, "log" | "signal">,
+  o: { home: string; args: string[]; prompt: string; oauthToken: string; ownLogin: boolean; deadline: number; who: string },
+): Promise<ClaudeRun> {
+  const run: ClaudeRun = { why: null, text: "", turns: 0, tokens: 0, used: [] };
+  let timedOut = false;
+  try {
+    const proc = Bun.spawn([CLAUDE, ...o.args], {
+      cwd: o.home,
+      env: claudeEnv(o.home, o.oauthToken, o.ownLogin),
+      stdin: new Blob([o.prompt]),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const kill = () => proc.kill();
+    const timer = setTimeout(() => {
+      timedOut = true;
+      kill();
+    }, o.deadline);
+    ctx.signal.addEventListener("abort", kill, { once: true });
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    clearTimeout(timer);
+    ctx.signal.removeEventListener("abort", kill);
+
+    // One JSON object per line: assistant turns (for the tool names) and,
+    // last, the result.
+    let result: { subtype?: string; is_error?: boolean; result?: string; num_turns?: number; usage?: Record<string, number> } | null = null;
+    for (const raw of out.split("\n")) {
+      if (!raw.startsWith("{")) continue;
+      let msg: any;
+      try {
+        msg = JSON.parse(raw);
+      } catch {
+        continue;
+      }
+      if (msg.type === "assistant") {
+        for (const b of msg.message?.content ?? []) {
+          if (b?.type === "tool_use") run.used.push(String(b.name).replace(/^mcp__assistant__/, ""));
+        }
+      } else if (msg.type === "result") result = msg;
+    }
+    if (result) {
+      const u = result.usage ?? {};
+      run.tokens = (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
+      run.turns = result.num_turns ?? 0;
+    }
+    if (timedOut) run.why = "slow";
+    else if (!result || result.is_error || result.subtype !== "success") {
+      run.why = "failed";
+      // The CLI's own words ("Not logged in", a usage limit), or its exit — never the prompt.
+      const said = result?.is_error ? String(result.result ?? "").slice(0, 120) : `exit ${proc.exitCode}`;
+      ctx.log.warn(`${o.who} could not answer: ${result?.subtype ?? "no result"} — ${said}`);
+    } else {
+      run.text = String(result.result ?? "").trim();
+      if (!run.text) run.why = "empty";
+    }
+  } catch (err) {
+    ctx.log.warn(`${o.who} could not start Claude Code: ${String((err as Error)?.message).slice(0, 160)}`);
+    run.why = "failed";
+  }
+  return run;
+}
+
+/**
+ * One question to Claude with no tools at all — no MCP server, no shell —
+ * for a workflow that needs a model to read something and say one thing
+ * back (style.ts). Same account order as live Maria: the next is tried
+ * when one fails, which is always safe here because nothing can have been
+ * done. Null when there is no token, in a practice run, or on failure.
+ */
+export async function askClaude(
+  ctx: Pick<Ctx, "log" | "signal">,
+  oauthTokens: readonly string[],
+  q: { who: string; system: string; prompt: string; model?: string; deadlineMs?: number },
+): Promise<{ text: string; tokens: number } | null> {
+  const ownLogin = process.env.ASSISTANT_LIVE_LOGIN === "1";
+  const accounts = ownLogin ? [""] : oauthTokens.filter(Boolean);
+  if (accounts.length === 0) return null;
+  const model = q.model ?? MODEL;
+  if (isPractice()) {
+    holdBack({ method: "SPAWN", url: `${CLAUDE} -p (${q.who}, ${model})`, body: { tools: 0 }, why: "starts Claude Code" });
+    return null;
+  }
+  const home = claudeHome("maria-ask");
+  const args = [
+    "-p",
+    "--output-format", "stream-json",
+    "--verbose",
+    "--model", model,
+    "--effort", "low",
+    "--system-prompt", q.system,
+    "--tools", "",
+    "--strict-mcp-config",
+    "--setting-sources", "project",
+    "--permission-mode", "dontAsk",
+    "--no-session-persistence",
+  ];
+  const started = Date.now();
+  let tokens = 0;
+  for (let i = 0; i < accounts.length; i++) {
+    const left = (q.deadlineMs ?? 90_000) - (Date.now() - started);
+    if (left < 15_000) break;
+    const run = await runClaude(ctx, { home, args, prompt: q.prompt, oauthToken: accounts[i]!, ownLogin, deadline: left, who: `${q.who} (account ${i + 1})` });
+    tokens += run.tokens;
+    if (!run.why) return { text: run.text, tokens };
+    if (run.why !== "failed") break;
+  }
+  return null;
 }

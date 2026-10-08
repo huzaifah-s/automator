@@ -8,6 +8,30 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-10-08
 
+### Live Maria is always Opus; she learns how he writes; she offers follow-ups
+
+- **Opus for every live answer.** Sonnet took the short ones a few seconds
+  faster, and answered "can you read things there?" without checking
+  anything. He chose the slower, smarter answer (~10–15 s). *Traded:* speed
+  and more of his plan's usage per note.
+- **Style lessons.** `personal-assistant-learn-style` (hourly 09:25–22:25,
+  four chats a run, `always` first) reads his own last messages in a chat
+  from WhatsApp or Telegram — months back, not just the 14-day log — and
+  has Claude Code (no tools, his subscription) write one line on how he
+  writes there, kept as a `style` lesson that `thread` shows above the
+  chat. Relearned after 30 days. For Faiz: casual Malay mixed with
+  English, "salam En. Faiz, apa khabar?", "tq en faiz!", lowercase, no
+  emoji. *Considered:* keeping older messages in the log — refused, the
+  log's promise is that it forgets after 14 days; a derived line is not a
+  message.
+- **Follow-up offers.** `awaiting` lists chats where he wrote last and
+  nobody answered; `offer_followup` puts a card to him (2 days / 1 week /
+  2 weeks / no need). The tap is applied by the bot at once: a loop
+  waiting on them, due that day, and a To Do task for the same day
+  (`create-task` with `announce: false`). He asked to be asked, not to have
+  them made. Once per chat per 14 days, three an hour; "no" and the times
+  he picks go to `outcomes` to learn from.
+
 ### Maria can find a chat she has not seen, and remembers the conversation
 
 His 20 minutes trying to get a draft to Faiz (8 Oct) showed three gaps.

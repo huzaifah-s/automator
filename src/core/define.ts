@@ -291,6 +291,10 @@ export { SCORECARD_CRON, scorecard, scorecardMarks, scorecardPeriod, scorecardSl
 export type { Area, CountLine, Headline, Scorecard, ScorecardSpan, ScorecardWhich } from "./scorecard.ts";
 /** The assistant's MCP tools, called in-process by live Maria. See src/server/mcp-assistant.ts. */
 export { assistantTools, liveConnection } from "../server/mcp-assistant.ts";
+export { CATEGORIES, chatPass, chatPassOn, chatsToPass, CHAT_PASS_WORKFLOW, WRITER_VARIANTS } from "../server/assistant-writer.ts";
+export type { Decision, Pass, PassOptions, PassTarget, WriterVariant } from "../server/assistant-writer.ts";
+export { evalCases, evalVariants, runEval, scoreSystems } from "../server/assistant-eval.ts";
+export type { CaseKind, CaseResult, EvalCase, Grade, SystemScore } from "../server/assistant-eval.ts";
 /** For a workflow that starts something a practice run cannot gate itself, like a child process. */
 export { holdBack, isPractice } from "./practice.ts";
 export { askClaude, CLAUDE_MODEL, claudeHome, claudeOwnLogin, holdClaudeSpawn, runClaude } from "./claude-code.ts";

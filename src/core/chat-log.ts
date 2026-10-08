@@ -223,19 +223,26 @@ export function waitingChats(since: number): WaitingChat[] {
 
 const threadQuery = db.prepare(`
   SELECT * FROM (
-    SELECT * FROM chat_messages WHERE channel = ? AND chat = ?
+    SELECT * FROM chat_messages WHERE channel = ? AND chat = ? AND sent_at < ?
     ORDER BY sent_at DESC LIMIT ?
   ) ORDER BY sent_at ASC
 `);
 
-/** The latest `limit` messages in one chat, oldest first. */
-export function chatThread(channel: ChatChannel, chat: string, limit: number): StoredMessage[] {
-  return (threadQuery.all(channel, chat, limit) as Raw[]).map(toStored);
+/** No upper bound: "as of now, and anything stamped a little ahead of the clock". */
+const NO_BOUND = Number.MAX_SAFE_INTEGER;
+
+/**
+ * The latest `limit` messages in one chat, oldest first. `before` reads the
+ * chat as it stood at a past moment — the replay test
+ * (src/server/assistant-eval.ts) must not see the reply it is grading.
+ */
+export function chatThread(channel: ChatChannel, chat: string, limit: number, before = NO_BOUND): StoredMessage[] {
+  return (threadQuery.all(channel, chat, before, limit) as Raw[]).map(toStored);
 }
 
 const hisQuery = db.prepare(`
   SELECT * FROM chat_messages
-  WHERE channel = ? AND chat = ? AND outgoing = 1 AND trim(text) <> ''
+  WHERE channel = ? AND chat = ? AND outgoing = 1 AND trim(text) <> '' AND sent_at < ?
   ORDER BY sent_at DESC LIMIT ?
 `);
 
@@ -244,8 +251,21 @@ const hisQuery = db.prepare(`
  * it has to sound like. They reach back `CHAT_LOG_OWN_RETENTION_DAYS`, past
  * the window `chatThread` usually shows.
  */
-export function hisMessages(channel: ChatChannel, chat: string, limit: number): StoredMessage[] {
-  return (hisQuery.all(channel, chat, limit) as Raw[]).map(toStored);
+export function hisMessages(channel: ChatChannel, chat: string, limit: number, before = NO_BOUND): StoredMessage[] {
+  return (hisQuery.all(channel, chat, before, limit) as Raw[]).map(toStored);
+}
+
+const sinceQuery = db.prepare(`
+  SELECT * FROM chat_messages WHERE sent_at >= ? ORDER BY channel, chat, sent_at ASC
+`);
+
+/**
+ * Every message since `since`, chat by chat, oldest first — what the replay
+ * test builds its cases from: each time he answered somebody, and each
+ * group message he let pass.
+ */
+export function messagesSince(since: number): StoredMessage[] {
+  return (sinceQuery.all(since) as Raw[]).map(toStored);
 }
 
 const newestQuery = db.prepare(`

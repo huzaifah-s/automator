@@ -29,6 +29,9 @@ import {
   SORTED_MAX,
   sortedCard,
   sortedOnCard,
+  tidiedFrom,
+  tidyCard,
+  tidyIds,
   brainCards,
   BRAIN_TITLE,
   webhookSecret,
@@ -347,6 +350,31 @@ async function onButton(ctx: Ctx, cb: NonNullable<Update["callback_query"]>) {
     }
     await api.answer(cb.id, retired ? "Forgotten — I won't do that any more." : "Restored.");
     return { lesson: id, outcome: retired ? "retired" : "restored" };
+  }
+
+  // A merge from the nightly tidy (personal-assistant-tidy-lessons): undo
+  // puts the lessons it replaced back and retires it; a second tap redoes it.
+  if (kind === "t" && id && action === "t") {
+    const lessons = ctx.table("lessons");
+    const merged = lessons.get(id);
+    const olds = merged ? tidiedFrom(merged).map((o) => lessons.get(o)).filter((r): r is Row => Boolean(r)) : [];
+    if (!merged || olds.length === 0) {
+      await api.answer(cb.id, "That merge no longer exists.");
+      return { tidy: id, outcome: "missing" };
+    }
+    const undo = !merged.retired;
+    lessons.update(id, { retired: undo }, { writtenBy: ctx.workflow });
+    for (const o of olds) lessons.update(String(o.id), { retired: !undo }, { writtenBy: ctx.workflow });
+    const card = cb.message;
+    if (card) {
+      const shown = tidyIds(card.reply_markup)
+        .map((lid) => lessons.get(lid))
+        .filter((r): r is Row => Boolean(r));
+      const { html, buttons } = tidyCard(shown, (key) => chatLabel(key, personFor(ctx, key)));
+      await api.edit(card.message_id, html, buttons);
+    }
+    await api.answer(cb.id, undo ? `Undone — the ${olds.length} lessons are back.` : "Merged again.");
+    return { tidy: id, outcome: undo ? "undone" : "redone" };
   }
 
   await api.answer(cb.id);

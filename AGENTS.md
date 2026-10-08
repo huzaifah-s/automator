@@ -90,6 +90,9 @@ src/server/        app (webhooks + REST + dashboard routes) · views (HTML)
                    mcp-tables (the same, for data tables, on its own tokens)
                    mcp-assistant (the personal assistant: chats, drafts,
                    questions, Notion tasks — on its own tokens again)
+                   assistant-check (the second reader of every draft)
+                   assistant-writer (one chat, one decision — the chat pass)
+                   assistant-eval (the replay test that grades the writer)
                    inspect (what app.ts and mcp.ts must not decide twice)
 tables/            data tables — one file per table, `defineTable()` as the
                    default export, grouped by subdirectory the way workflows
@@ -374,6 +377,45 @@ or a draft followed within `INSTEAD_MS` by a message he wrote himself. All
 read at call time from the chat log and `drafts`; nothing is copied.
 `fitThread` drops the oldest messages to fit `MAX_BYTES`, because a plain
 cut takes the end, which is his words and his comments.
+
+**The chat pass decides one chat per call, and applies it through the
+tools.** `personal-assistant-chat-pass` is the loop in code; the model in
+`src/server/assistant-writer.ts` sees one chat (`passContext`) and answers
+with one JSON decision, and the workflow carries it out with
+`assistantTools` — `update_person`, `draft_reply`, `create_task`,
+`open_loop` — never by writing rows itself, so every refusal, the second
+reader and his-priority-wins hold for it exactly as for the routine. Keep
+it that way: a shortcut that inserts a draft directly skips the check and
+the `people` rule. `chatsToPass` is what keeps it cheap — a chat is read
+again only when a message newer than its last `chat_passes.upto_at`
+arrives, a group message that neither replies to him nor names him
+(`ASSISTANT_HIS_NAMES`) is recorded `skipped` without a model, and a busy
+`always` group is read at most every `GROUP_EVERY_MS`. While it is on
+(`chatPassOn`: loaded, not paused, schedules firing), `waiting` tells the
+routine not to draft or sort from it and `sync-chats` stops firing the
+routine for `always` chats; turning it off hands both back. The playbook
+says the same, so a change to who drafts is a change in both places.
+
+**The writer's context is built as of a moment, and the replay test depends
+on it.** `passContext(key, { asOf })` reads the chat log, his words, the
+corrected drafts, the lessons and the brain as they stood at `asOf`
+(`chatThread`/`hisMessages` take `before`; `voiceOf`, `draftHistory` and
+`lessonsFor` take `asOf`). `personal-assistant-eval` replays past moments
+through it and grades the drafts against what he really sent
+(`src/server/assistant-eval.ts`), so anything new added to the context must
+either honour `asOf` or be left out when it is set — open loops, his tasks
+and people notes on a sorting case already are — or the test shows the
+model the answer and scores it for reading it. Variants are code
+(`WRITER_VARIANTS`); the live pass only ever runs `current`. The eval keeps
+counts (`evals`) and never a draft: what it writes is never saved.
+
+**A tidied lesson can always be undone.** `personal-assistant-tidy-lessons`
+merges lessons only within one scope (a chat, or everyone) and one kind
+(writing, tasks, sorting, follow-ups), never `style` or `scorecard`
+lessons, and only merges the model names whose every id checks out. The
+merged lesson's `evidence` is `Tidied from <ids>` (`TIDY_PREFIX`), which is
+what the bot's ↩ button (`t:<id>:t`) reads to put the old ones back, so do
+not reuse that prefix or retire the old lessons any other way.
 
 **Feedback is never consumed and forgotten.** Drafts carry `learned`; a draft
 that ended stays in `outcomes` until `learn` names it. Anything new that

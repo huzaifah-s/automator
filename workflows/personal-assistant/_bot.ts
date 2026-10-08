@@ -745,6 +745,74 @@ export function lessonIds(markup: unknown): string[] {
     .filter((id): id is string => Boolean(id));
 }
 
+/* ------------------------------------------------- lessons, tidied at night */
+
+/** How a tidied lesson names the ones it replaced, in `evidence` — read back by undo. */
+export const TIDY_PREFIX = "Tidied from ";
+
+/** The lesson ids a tidied lesson replaced. */
+export function tidiedFrom(l: Row): string[] {
+  const e = String(l.evidence ?? "");
+  return e.startsWith(TIDY_PREFIX) ? e.slice(TIDY_PREFIX.length).split(/\s+/).filter(Boolean) : [];
+}
+
+/**
+ * "🧹 Tidied my lessons": each merged lesson, how many it replaced, and a
+ * button that undoes that merge — the old lessons back, the merged one
+ * retired — or, once undone, redoes it. `t:<id>:t` toggles, and the card is
+ * redrawn from its own buttons, like the lessons card.
+ */
+export function tidyCard(merged: Row[], whereOf: (chatKey: string) => string): { html: string; buttons: Button[][] } {
+  const lines = merged.map((l, i) => {
+    const where = l.chat_key ? ` <i>(${esc(whereOf(String(l.chat_key)))})</i>` : "";
+    const text = `${cut(l.lesson, 300)}${where} <i>— was ${tidiedFrom(l).length}</i>`;
+    return `<b>${i + 1}.</b> ${l.retired ? `<s>${text}</s> <i>(undone)</i>` : text}`;
+  });
+  const was = merged.reduce((n, l) => n + tidiedFrom(l).length, 0);
+  const html = [
+    "🧹 <b>Tidied my lessons</b>",
+    merged.length
+      ? `<i>${was} lessons said the same things — now ${merged.length}. Nothing dropped. Tap ↩ to undo one.</i>`
+      : "<i>Nothing to merge tonight.</i>",
+    ...(lines.length ? ["", lines.join("\n\n")] : []),
+  ].join("\n");
+  const buttons: Button[][] = [];
+  merged.forEach((l, i) => {
+    if (i % LESSON_ROW === 0) buttons.push([]);
+    buttons.at(-1)!.push({ text: `${l.retired ? "↪" : "↩"} ${i + 1}`, callback_data: `t:${l.id}:t` });
+  });
+  return { html, buttons };
+}
+
+/**
+ * Lessons that disagree, which only he can settle — its own message, so the
+ * tidy card can be redrawn from its buttons without it. Replying is a note
+ * to her, quoting it; she retires the one he says no longer holds.
+ */
+export function conflictsCard(conflicts: [Row, Row][], whereOf: (chatKey: string) => string): string {
+  const one = (l: Row) => `${cut(l.lesson, 200)}${l.chat_key ? ` <i>(${esc(whereOf(String(l.chat_key)))})</i>` : ""}`;
+  return [
+    "⚠️ <b>Two of my lessons disagree</b>",
+    "<i>Reply to this with the one that holds, and I'll drop the other.</i>",
+    "",
+    conflicts.map(([a, b]) => `- ${one(a)}\n- ${one(b)}`).join("\n\n"),
+  ].join("\n");
+}
+
+const cut = (t: unknown, n: number) => {
+  const s = String(t);
+  return esc(s.length > n ? `${s.slice(0, n)}…` : s);
+};
+
+/** The merged-lesson ids a tidy card carries, in order. */
+export function tidyIds(markup: unknown): string[] {
+  const rows = (markup as { inline_keyboard?: Array<Array<{ callback_data?: string }>> } | undefined)?.inline_keyboard;
+  return (rows ?? [])
+    .flat()
+    .map((b) => b.callback_data?.match(/^t:([^:]+):t$/)?.[1])
+    .filter((id): id is string => Boolean(id));
+}
+
 /* -------------------------------------------------------------------- /now */
 
 const NOW_CAP = 5;

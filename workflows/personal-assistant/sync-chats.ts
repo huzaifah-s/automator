@@ -5,6 +5,7 @@ import {
   defineWorkflow,
   defineSecrets,
   canonicalKey,
+  chatPassOn,
   isLidKey,
   linkChats,
   realName,
@@ -167,7 +168,9 @@ export default defineWorkflow({
 
     // Somebody whose chat is `always` wrote: start the assistant now rather
     // than at the top of the hour. The count, never who — see _routine.ts.
-    const urgent = whatsapp.urgent + telegram.urgent;
+    // While the chat pass is on it reads them within five minutes itself,
+    // and a routine session started for them would find nothing to do.
+    const urgent = chatPassOn() ? 0 : whatsapp.urgent + telegram.urgent;
     const fired = urgent
       ? await fireAssistant(ctx, routine.ASSISTANT_ROUTINE_TOKEN ?? "", `${urgent} new message(s) in chats marked always. Start with \`waiting\`.`)
       : undefined;

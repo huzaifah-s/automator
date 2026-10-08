@@ -508,6 +508,7 @@ logged its end; `personal-assistant-bot` handles what comes back:
 | `/now` (also in the bot's menu) | What needs you right now — drafts waiting, open questions, overdue and due-today tasks, loops you owe that are due — read from the tables on the spot, without waiting for a run |
 | `/brain` (also in the bot's menu) | Everything the assistant believes about you, grouped by topic. Reply to it to correct a fact; the assistant fixes it on its next run |
 | 🗑 / ↩ on the Sunday lessons card | Retires that lesson, or brings it back; replying to the card is a note asking to reword one |
+| ↩ / ↪ on the "🧹 Tidied my lessons" card | Undoes that merge — the lessons it replaced are back, the merged one retired — or redoes it |
 | Any other message | A note the assistant reads on its next run, and answers under your message |
 
 A question unanswered for two days expires: its card says so and loses its
@@ -565,6 +566,41 @@ lessons and your comments (`src/server/assistant-check.ts`), plus a code
 check for a Malay "aku/saya/awak…" you never use with that person. A draft
 it fails goes back to be rewritten before you see it; the rewrite is checked
 once more and saved either way. Every verdict is a row in `draft_checks`.
+
+**Chats are read one at a time, by the server.** `personal-assistant-chat-pass`
+runs every five minutes from 08:00 to 23:55 and gives each chat where somebody
+wrote last a Claude call of its own (`src/server/assistant-writer.ts`): that
+chat, its lessons, the brain, your own words to them and your comments on
+earlier drafts — nothing else. It answers with one decision — draft or leave
+it, and the priority, task, loop or note the chat makes plain — and the
+workflow applies it through the same tools the routine uses, second reader
+included. A comment on a draft that live Maria did not revise within three
+minutes is revised the same way. Group messages that neither reply to you nor
+name you are not read by a model at all (an `always` group is looked at every
+half hour in case something was asked of everyone). Each chat it reads is a
+`chat_passes` row with its one-line reason, so "why didn't she draft to X?"
+has an answer. While it is on, `waiting` tells the routine to leave drafting,
+sorting and chat tasks to it; pause it and the routine does them as before.
+Calls are Claude Code on your subscription (`CLAUDE_CODE_OAUTH_TOKEN`),
+capped at `ASSISTANT_PASS_MAX_PER_DAY` (200). `ASSISTANT_HIS_NAMES`
+(default `huzaifah`) is how a group message to you is spotted.
+
+**"Smarter" is a number.** `personal-assistant-eval` replays moments that
+already happened — a draft you corrected or took, a message you answered
+yourself, a group message you let pass, a chat you re-sorted — through that
+writer, with everything as it stood at the time, and a fresh Claude grades
+each new draft against what you really sent: send as written, edit, or wrong
+(`src/server/assistant-eval.ts`). `baseline` is what she actually did then.
+It runs Wednesday and Sunday at 19:00 and writes counts to `evals`. To try a
+change to how she writes, add it to `WRITER_VARIANTS`, deploy, run the eval
+with `{"variants": ["current", "<name>"]}`, and promote it only if it scores
+higher.
+
+**Lessons are tidied every night.** At 23:45 `personal-assistant-tidy-lessons`
+merges lessons that say the same thing — only within one chat or everyone,
+and one kind (writing, tasks, sorting, follow-ups); never style or scorecard
+lessons — and sends a card with an ↩ per merge. Lessons it finds
+contradicting each other come as a second card for you to settle by replying.
 
 **It remembers.** Three kinds of memory, kept apart and read at the start of
 every run: `lessons` (how to act), `brain` (what is true about you and your

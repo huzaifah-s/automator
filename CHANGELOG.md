@@ -8,6 +8,41 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-10-08
 
+### The server reads his chats one at a time; "smarter" is a number; lessons are tidied nightly
+
+The review of how Maria is built found the hourly routine doing eight jobs
+in one long session — a 640-line playbook, 36 tools, every lesson, then
+dozens of tool results — so a draft got a sliver of its attention; that
+nothing could say whether a change made her better before it shipped; and
+that lessons only piled up (three said "no kau/aku with work contacts").
+
+- **The chat pass.** `personal-assistant-chat-pass`, every five minutes,
+  gives each chat where somebody wrote last one Claude call with only that
+  chat in front of it (`src/server/assistant-writer.ts`) and applies the
+  JSON decision through the assistant's own tools, second reader included.
+  It also revises drafts live Maria did not get to. Group messages that
+  neither reply to him nor name him are skipped by code. While it is on,
+  `waiting` tells the routine to leave drafting and sorting alone, and the
+  playbook skips steps 4–5. *Considered:* moving the whole routine into
+  automator — not yet; learning, notes, To Do work and digests stay with
+  the routine until the replay test can grade them too. *Traded:* more
+  Claude calls on his plan (capped at 200 a day) for drafts that arrive
+  within minutes instead of at the top of the hour.
+- **The replay test.** `personal-assistant-eval` replays past moments —
+  drafts he corrected or took, messages he answered himself, group
+  messages he let pass, chats he re-sorted — through the writer as things
+  stood then, and a fresh Claude grades each draft against what he really
+  sent. `baseline` is what she actually did, so a change is held against
+  the system that produced the corrections. On made-up chats: baseline
+  20%, the new writer 50%. A courtesy reply of his ("ok thanks") left
+  undrafted is not a miss. Variants are code; nothing written is kept.
+- **The nightly tidy.** `personal-assistant-tidy-lessons` merges lessons
+  that say the same thing (within one chat or everyone, one kind; never
+  style or scorecard), retires the old ones and sends a card with ↩ per
+  merge. Contradictions come as a card for him to settle. *Considered:*
+  gating each tidy on the replay test — refused for now as ~60 calls a
+  night; the undo button is the safety net.
+
 ### Maria keeps every correction on a draft, and his own messages for 90 days
 
 He had to say the same thing three times in ten minutes (Haziq, Telegram;

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Ctx, Row } from "../../src/core/define.ts";
+import { pageUrl } from "./_notion.ts";
 
 /**
  * The assistant's Telegram bot, as the two workflows that use it see it:
@@ -273,6 +274,21 @@ export type TaskLinks = Map<string, string>;
 
 export function taskLinks(tasks: Row[]): TaskLinks {
   return new Map(tasks.map((t) => [String(t.title).trim().toLowerCase(), String(t.url)]));
+}
+
+/**
+ * Links for every open task, and for the ones the assistant moved this week —
+ * a task it marked Done has left the `tasks` mirror, and the digest that says
+ * so should still open it, so he can undo it.
+ */
+export function allTaskLinks(ctx: Ctx, tasks: Row[] = ctx.table("tasks").query({ limit: 1000 })): TaskLinks {
+  const links = taskLinks(tasks);
+  const since = Date.now() - 7 * 86_400_000;
+  for (const w of ctx.table("task_work").query({ where: [{ column: "kind", op: "=", value: "status" }], limit: 200 })) {
+    const title = String(w.task_title).trim().toLowerCase();
+    if (Number(w.created_at) > since && !links.has(title)) links.set(title, pageUrl(String(w.page_id)));
+  }
+  return links;
 }
 
 /**

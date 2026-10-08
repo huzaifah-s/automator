@@ -22,6 +22,9 @@ export const STATUS = "Status";
 export const DUE = "Due Date";
 export const CATEGORY = "Category";
 
+/** A task's page, from its id — for a task that has left the `tasks` mirror. */
+export const pageUrl = (pageId: string) => `https://www.notion.so/${pageId.replace(/-/g, "")}`;
+
 /**
  * The first words of every callout Maria writes. `todo-repeat` leaves callouts
  * that start with this out of a repeating task's next copy, so last month's
@@ -105,6 +108,25 @@ export function matchCategory(db: Database, given: string): { name: string } | {
   const match = options.find((o) => o.toLowerCase() === given.trim().toLowerCase());
   return match ? { name: match } : { refused: `"${given}" is not a ${CATEGORY} — it is one of ${options.join(", ")}` };
 }
+
+/** A status as the database spells it, or why not — the same rule as a category. */
+export function matchStatus(db: Database, given: string): { name: string } | { refused: string } {
+  const prop = db.properties[STATUS];
+  const options =
+    prop?.type === "status" || prop?.type === "select"
+      ? (((prop[prop.type] as { options?: Array<{ name: string }> }).options ?? []).map((o) => o.name))
+      : [];
+  const match = options.find((o) => o.toLowerCase() === given.trim().toLowerCase());
+  return match ? { name: match } : { refused: `"${given}" is not a ${STATUS} — it is one of ${options.join(", ")}` };
+}
+
+/**
+ * What a `status` row in `task_work` says: the status the assistant set, then
+ * the one it replaced and his words. `statusSet` reads the first back.
+ */
+export const statusText = (to: string, from: string | null, said: string) =>
+  `Status: ${to} (was ${from ?? "-"}). He said: ${said}`;
+export const statusSet = (text: string): string | null => text.match(/^Status: (.*?) \(was /)?.[1] ?? null;
 
 /**
  * The two properties the assistant sets on a task it creates, as one line.

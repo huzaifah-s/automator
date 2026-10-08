@@ -6,7 +6,8 @@ import { bool, datetime, defineTable, enumOf, text } from "../../src/core/define
  *
  * A note is a callout appended to the task's page — a draft, a plan, its
  * questions, or your answer written down. A task it created gets a row too,
- * kind `created`, whose text is the category and due date it chose. `text` is what it wrote; the sync
+ * kind `created`, whose text is the category and due date it chose, and a status it set
+ * on your word gets one too, kind `status`. `text` is what it wrote; the sync
  * keeps reading the callout, and when it no longer says that, `outcome` is
  * set and `learned` cleared:
  *
@@ -16,7 +17,8 @@ import { bool, datetime, defineTable, enumOf, text } from "../../src/core/define
  *   page_edited  you changed something else on the page
  *   deleted      the task itself was deleted
  *   changed      on a task it created: you changed the category or due date
- *                it set — `detail` is what they are now
+ *                it set — `detail` is what they are now. On a `status` row:
+ *                you moved the task to another status after it set one
  *
  * Like a draft's ending, an outcome stays on the assistant's `outcomes` list
  * until it has drawn a lesson from it with `learn`. A second edit after that
@@ -31,12 +33,13 @@ export default defineTable({
   columns: {
     page_id: text({ label: "Page", help: "The task's Notion page id." }),
     task_title: text({ label: "Task" }),
-    kind: enumOf(["draft", "plan", "questions", "update", "answer", "created"], {
+    kind: enumOf(["draft", "plan", "questions", "update", "answer", "created", "status"], {
       label: "Kind",
       help:
         "draft: the work itself, ready to use. plan: steps or a checklist. questions: what it " +
         "needs from you. update: progress. answer: your answer to its question, written down. " +
-        "created: it added the task — Note is the category and due date it set.",
+        "created: it added the task — Note is the category and due date it set. status: it set " +
+        "the task's status because you said so — Note is the status and your words.",
     }),
     text: text({ label: "Note", help: "What the assistant wrote, as it reads it back." }),
     block_id: text({ nullable: true, label: "Block", help: "The callout's Notion block id." }),

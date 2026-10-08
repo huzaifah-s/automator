@@ -24,7 +24,7 @@ import {
   sortedCard,
   sortedOnCard,
   taskLabel,
-  taskLinks,
+  allTaskLinks,
   updateCard,
 } from "./_bot.ts";
 import { firePending } from "./_routine.ts";
@@ -80,7 +80,7 @@ export default defineWorkflow({
     const taskRows = ctx.table("tasks").query({ limit: 1000 });
     const tasks = new Map(taskRows.map((t) => [String(t.page_id), t.title]));
     /** `[[Task title]]` in anything the assistant wrote opens that task in Notion. */
-    const links = taskLinks(taskRows);
+    const links = allTaskLinks(ctx, taskRows);
     /** Which chat — and in which app — or which To Do task a question is about. */
     const aboutOf = (q: Row): string | null =>
       q.chat_key

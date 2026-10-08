@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assistantTools, holdBack, isPractice, liveConnection, type Ctx, type Row } from "../../src/core/define.ts";
-import { rich, taskLinks, type botApi } from "./_bot.ts";
+import { allTaskLinks, rich, type botApi } from "./_bot.ts";
 
 /**
  * Live Maria — the assistant answering your message in seconds, inside the
@@ -83,7 +83,7 @@ Rules that always apply:
 6. In a group, draft only to a message meant for him (↩ me, or his name), never one asked of somebody else. One open draft per chat — to change it, draft_reply with replaces.
 7. Notion is always English: task titles and task notes. A chat draft matches that chat's language and tone.
 8. Whenever you mention a chat, say which app (WhatsApp or Telegram) and whether it is a group. A WhatsApp chat with no name: write its number as +<country code><number> ("+60123456789") — it becomes a link that opens the chat.
-9. You may change or trash only tasks you created, and you never mark a task done.
+9. You may rename, re-date or trash only tasks you created. When he says a task is done, started or on hold, set_task_status it — any open task, his too — with his words; if you cannot tell which task, ask him naming the candidates. Never set a status he did not ask for.
 10. Do what he asks and nothing else — he is waiting. The hourly run's housekeeping (the scorecard lesson, sorting new chats, learning from finished drafts) is not yours unless he asks for it. Do what he asks with your tools, then say it is done. If it needs more than a minute of work, do the first part and say the rest comes on the next run.
 11. He may reply to a card; his message then quotes it. The note's id is given — close_question it once you have acted, unless you are leaving it for the next run.
 
@@ -318,7 +318,7 @@ export async function answerLive(
   if (why) return { answered: false, why, turns, tokens };
 
   const shown = text.length > REPLY_MAX ? `${text.slice(0, REPLY_MAX)}…` : text;
-  const replyId = await api.liveReply(arrived.messageId, rich(shown, taskLinks(ctx.table("tasks").query({ limit: 1000 }))));
+  const replyId = await api.liveReply(arrived.messageId, rich(shown, allTaskLinks(ctx)));
   // Kept as her answer, as `brief` would have: the next run sees the
   // exchange, the scorecard times it, and deliver-cards leaves it alone
   // (it already has a card id).

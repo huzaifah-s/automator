@@ -423,6 +423,7 @@ access — and refuses the operations and data-table ones, as they refuse it.
 | `create_task` | A task in the Notion To Do database, through the `personal-assistant-create-task` workflow |
 | `update_task` | The title, category or due date of a task the assistant created itself, once you have said — never your own tasks |
 | `trash_task` | Moves a task the assistant created to Notion's trash when you ask (restorable for 30 days), with your reason, which it then learns from — never your own tasks |
+| `set_task_status` | Moves any open task — yours too — to Done, In progress, To Do or KIV, only when you tell it to, with your words. Each one is listed in the next digest under Handled, linked, and moving the task back afterwards is a correction it learns from |
 | `todo` / `task` | Your open To Do tasks, most urgent first; one task with its page text, the assistant's notes on it and its questions about it |
 | `task_note` | Writes the assistant's work on a task's page — a draft, a plan, its questions, your answer — through `personal-assistant-task-note` |
 | `lessons` / `outcomes` / `learn` | What you have taught it; drafts that ended, task notes you reacted to and chats she sorted that you moved, not learned from yet; recording a lesson |
@@ -468,8 +469,9 @@ The assistant works on up to three tasks a run: it writes the email, outline
 or plan a task needs, asks you (a Telegram card that names the task) what only
 you know, drafts the WhatsApp or Telegram message a task is about, and writes
 your answers down on the page. Each note is a grey **🤖 Maria · 7 Oct 14:05 ·
-Draft** callout added at the end of the page. It never changes a task's
-status, due date or anything already on the page — finishing a task is yours.
+Draft** callout added at the end of the page. It never changes a task's due
+date or anything already on the page, and changes its status only when you
+tell it to ("that's done") — deciding a task is finished is yours.
 
 **Correct it in Notion.** Edit its note, delete it, or write on the page, and
 the next sync records what you did (`task_work`); the assistant turns it into

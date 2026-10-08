@@ -14,6 +14,7 @@ import {
   headers,
   readBlocks,
   sameText,
+  statusSet,
   taskFields,
   taskProps,
   type Block,
@@ -31,7 +32,8 @@ import {
  * **What you did is worked out here, not by the model.** For each of Maria's
  * notes on a page that changed (`task_work`), the callout is read back and
  * compared with what she wrote: edited, removed, or the task marked Done or
- * KIV after it. That sets the row's `outcome` and clears `learned`, which puts
+ * KIV after it — or, for a status the assistant set on your word, you moving the
+ * task on to another. That sets the row's `outcome` and clears `learned`, which puts
  * it on the assistant's `outcomes` list until it draws a lesson — the same
  * path a skipped or commented draft takes. A feedback signal that only lived
  * in a page the model might not reopen would be read once and forgotten.
@@ -202,13 +204,13 @@ async function pageOrNull(ctx: Ctx, token: string, id: string): Promise<Page | n
   }
 }
 
-/** Maria's recent notes on a page, and its record of creating it, newest first. */
+/** Maria's recent notes on a page, and her records of creating it or setting its status, newest first. */
 function watched(ctx: Ctx, pageId: string): Row[] {
   const since = Date.now() - WATCH_DAYS * 86_400_000;
   return ctx
     .table("task_work")
     .query({ where: [{ column: "page_id", op: "=", value: pageId }], limit: 100 })
-    .filter((w) => (w.block_id || w.kind === "created") && Number(w.created_at) > since);
+    .filter((w) => (w.block_id || w.kind === "created" || w.kind === "status") && Number(w.created_at) > since);
 }
 
 /** Block id → the label the assistant sees on its own note in the page text. */
@@ -241,17 +243,32 @@ type Seen =
  * elsewhere on the page — which goes on the newest note only, since that is
  * the one you were most likely answering. The last two never replace an
  * outcome still waiting to be learned from.
+ *
+ * A status the assistant set has one outcome only: `changed`, when you moved
+ * the task to another status after it — on the newest such row alone, since
+ * an older one was replaced by the assistant itself, not by you.
  */
 function judge(ctx: Ctx, work: Row[], seen: Seen): number {
   const table = ctx.table("task_work");
+  const newestNote = work.find((w) => w.block_id);
+  const newestStatus = work.find((w) => w.kind === "status");
   let set = 0;
-  work.forEach((w, i) => {
+  work.forEach((w) => {
     let outcome: string | null = null;
     let detail: string | null = null;
     const patch: Record<string, unknown> = {};
 
     if (seen.deleted) {
       if (w.outcome !== "deleted") outcome = "deleted";
+    } else if (w.kind === "status") {
+      if (seen.status !== (w.seen_status ?? null)) {
+        patch.seen_status = seen.status;
+        const pending = Boolean(w.outcome) && !w.learned;
+        if (w === newestStatus && seen.byYou && !pending && seen.status !== statusSet(String(w.text))) {
+          outcome = "changed";
+          detail = `He moved it to ${seen.status ?? "no status"}`;
+        }
+      }
     } else {
       if (w.kind === "created") {
         // A task it created: the category and due date it chose, against
@@ -289,7 +306,7 @@ function judge(ctx: Ctx, work: Row[], seen: Seen): number {
         if (!outcome && !pending && seen.status === "KIV") outcome = "kiv";
       }
       // Your writing on the page answers a note, not the task's creation.
-      if (!outcome && i === 0 && w.kind !== "created" && seen.youEditedPage && !pending) outcome = "page_edited";
+      if (!outcome && w === newestNote && seen.youEditedPage && !pending) outcome = "page_edited";
     }
 
     if (outcome) {

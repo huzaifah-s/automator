@@ -3,9 +3,12 @@ import { defineCredential, defineWorkflow, manual } from "../../src/core/define.
 import {
   CATEGORY,
   DUE,
+  STATUS,
   headers,
   matchCategory,
+  matchStatus,
   readDataSource,
+  statusText,
   taskFields,
   taskProps,
   type Page,
@@ -13,13 +16,25 @@ import {
 
 /**
  * Personal assistant — changes a task it created: its title, category or due
- * date, or moves it to Notion's trash.
+ * date, or moves it to Notion's trash. And sets the status of any open task,
+ * yours included, when you tell it to.
  *
  * Started by the assistant's `update_task` and `trash_task` tools, which only
  * accept a task with a `created` row in `task_work`: this is how a category
  * it was unsure of gets filled in once you answer, and how a task it should
  * not have made goes away when you say so — never a way to change your own
- * tasks. No status, nothing on the page.
+ * tasks. Nothing on the page.
+ *
+ * **Status** comes from `set_task_status`, on your word only — the tool takes
+ * what you said and refuses without it. It is the one change allowed on your
+ * own tasks: "that's done" should not need you to open Notion. Each change
+ * leaves a `status` row in `task_work` holding the status set and your words,
+ * and the sync watches it like a note: if you move the task somewhere else
+ * afterwards — untick a Done — that row gets the outcome `changed`, and the
+ * assistant learns from it. The other rows for the page take the new status
+ * as already seen, so a Done set by the assistant is not read as you
+ * finishing the task after its note. A task set Done leaves the `tasks`
+ * mirror at once, as the sync would drop it.
  *
  * The `created` row's `seen_text` moves with a category or due change, in the
  * same step, so the sync does not read the assistant's own update as yours.
@@ -37,6 +52,11 @@ const notion = defineCredential("notion", "huzaifah-notion");
 const input = z.union([
   z.object({
     page_id: z.string().trim().min(32),
+    status: z.string().trim().min(1),
+    said: z.string().trim().min(2).max(500),
+  }),
+  z.object({
+    page_id: z.string().trim().min(32),
     trash: z.literal(true),
     reason: z.string().trim().min(3).max(500),
   }),
@@ -52,7 +72,7 @@ const input = z.union([
 
 export default defineWorkflow({
   name: "personal-assistant-update-task",
-  description: "Renames, re-dates, files or trashes a task the assistant created",
+  description: "Renames, re-dates, files or trashes a task the assistant created, or sets a task's status",
   trigger: manual(),
   retries: 0,
   timeoutMs: 60_000,
@@ -61,6 +81,50 @@ export default defineWorkflow({
     const parsed = input.safeParse(ctx.input);
     if (!parsed.success) {
       return { refused: parsed.error.issues.map((i) => `${i.path.join(".") || "input"}: ${i.message}`).join("; ") };
+    }
+    if ("status" in parsed.data) {
+      const { page_id, status, said } = parsed.data;
+      const db = await ctx.step("read database", () => readDataSource(ctx, notion.token));
+      const match = matchStatus(db, status);
+      if ("refused" in match) return match;
+      const kind = db.properties[STATUS]!.type;
+      // From Notion, not the mirror: a task made minutes ago, or one already
+      // set Done, is not in it.
+      const before = await ctx.step("read task", () =>
+        ctx.http.get<Page>(`https://api.notion.com/v1/pages/${page_id}`, { headers: headers(notion.token), private: true }),
+      );
+      const from = taskFields(before).status;
+      if (from === match.name) return { updated: false, unchanged: true, title: taskFields(before).title, status: from };
+      return ctx.step("set status", async () => {
+        const mirror = ctx.table("tasks").query({ where: [{ column: "page_id", op: "=", value: page_id }], limit: 1 })[0];
+        const page = await ctx.http.patch<Page | undefined>(
+          `https://api.notion.com/v1/pages/${page_id}`,
+          { properties: { [STATUS]: { [kind]: { name: match.name } } } },
+          { headers: headers(notion.token), retries: 0 },
+        );
+        // A practice run's held PATCH returns no page: nothing changed.
+        if (typeof page?.id !== "string" || !page.properties) return { updated: false };
+        const now = taskFields(page);
+        if (mirror) {
+          if (now.status === "Done") ctx.table("tasks").remove(String(mirror.id));
+          else ctx.table("tasks").update(String(mirror.id), { status: now.status }, { writtenBy: ctx.workflow });
+        }
+        const work = ctx.table("task_work").query({ where: [{ column: "page_id", op: "=", value: page_id }], limit: 100 });
+        for (const w of work) {
+          ctx.table("task_work").update(String(w.id), { seen_status: now.status }, { writtenBy: ctx.workflow });
+        }
+        ctx.table("task_work").insert(
+          {
+            page_id,
+            task_title: now.title,
+            kind: "status",
+            text: statusText(now.status ?? match.name, from, said),
+            seen_status: now.status,
+          },
+          { writtenBy: ctx.workflow },
+        );
+        return { updated: true, title: now.title, status: now.status, was: from, url: page.url };
+      });
     }
     if ("trash" in parsed.data) {
       const { page_id, reason } = parsed.data;

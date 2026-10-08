@@ -224,7 +224,7 @@ const DIGEST_SECTIONS = [
   { key: "today", title: "📅 Due today", help: "Morning: tasks due today, as [[Task title]], most important first." },
   { key: "tomorrow", title: "📅 Tomorrow", help: "Night: tomorrow's tasks and commitments, most important first." },
   { key: "loops", title: "🔄 Open loops", help: "From `loops`: what waits on him and is due or overdue, and what has waited on them over 2 days (say when you drafted a nudge). One line each, most overdue first; not what is already in needs_you." },
-  { key: "handled", title: "✅ Handled today", help: "Night: what got done today — drafts he sent, tasks finished, things you did." },
+  { key: "handled", title: "✅ Handled today", help: "Night: what got done today — drafts he sent, tasks finished, things you did. Statuses you set with set_task_status are added for you." },
   { key: "fyi", title: "👀 Good to know", help: "Things that matter but need nothing from him. Rarely needed." },
 ] as const;
 const DIGEST_CAP = 5;
@@ -458,6 +458,24 @@ function myTaskArg(given: string | undefined): { page_id: string; title: string 
   const mirror = table("tasks").query({ where: [{ column: "page_id", op: "=", value: w.page_id }], limit: 1 })[0];
   if (!mirror && w.outcome === "deleted") throw new Error(`“${w.task_title}” is already deleted`);
   return { page_id: String(w.page_id), title: String(mirror?.title ?? w.task_title) };
+}
+
+/**
+ * An open task by the id `todo` or `create_task` printed — from the mirror,
+ * or, for one the assistant made in the last ten minutes, from its `created`
+ * row.
+ */
+function openTaskArg(given: string | undefined): { page_id: string; title: string; status: string | null } {
+  try {
+    const t = taskArg(given);
+    return { page_id: String(t.page_id), title: String(t.title), status: (t.status as string | null) ?? null };
+  } catch (err) {
+    try {
+      return { ...myTaskArg(given), status: null };
+    } catch {
+      throw err;
+    }
+  }
 }
 
 /** A note the user reacted to and that has not been learned from yet. */
@@ -1267,7 +1285,7 @@ function tools(registry: Registry): Tool[] {
       scope: "read",
       description:
         "Drafts that ended — sent as written, skipped, replaced or withdrawn after a comment — notes on " +
-        "To Do tasks the user reacted to (edited, deleted, finished the task), and chats you sorted " +
+        "To Do tasks the user reacted to (edited, deleted, finished the task, undid a status you set), and chats you sorted " +
         "that he moved to another priority, that you have not learned from yet. Work through every " +
         "one with learn (from_drafts / from_tasks / from_sorting).",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
@@ -1306,7 +1324,9 @@ function tools(registry: Registry): Tool[] {
                 String(w.id),
                 line(String(w.task_title), 40),
                 String(w.kind),
-                OUTCOME_WORDS[String(w.outcome)] ?? String(w.outcome),
+                w.kind === "status" && w.outcome === "changed"
+                  ? "moved the task to another status after you set it"
+                  : (OUTCOME_WORDS[String(w.outcome)] ?? String(w.outcome)),
                 w.outcome === "edited" || w.outcome === "changed" || w.outcome === "deleted"
                   ? line(w.detail as string | null, 300)
                   : "-",
@@ -1318,7 +1338,9 @@ function tools(registry: Registry): Tool[] {
             "it probably helped. page changed: read the task with `task` — he may have answered you there. " +
             "created + changed: he corrected the category or due date you chose — learn how he files and dates tasks. " +
             "created + deleted the task: a task you made was wrong — the why column says what he said, " +
-            "when you trashed it for him; learn what not to make tasks from."
+            "when you trashed it for him; learn what not to make tasks from. status + moved: you set a " +
+            "status on his word and he undid it — you picked the wrong task, or read \"done\" into words " +
+            "that did not mean it; learn which."
           : "";
         return clip(
           "Drafts:\n" +
@@ -1881,9 +1903,34 @@ function tools(registry: Registry): Tool[] {
         const blocks: string[] = [`${DIGEST_TITLE[kind]} · ${day}`];
         const note = str(args, "note");
         if (note) blocks.push(`_${line(note, 200)}_`);
+        // Since the previous digest, morning or night — or the last day, for the first.
+        const last = table("questions")
+          .query({ limit: 300 })
+          .filter((r) => kindOf(r) === "update" && /^(🌅|🌙) \*|^\[(morning|night) digest\]/.test(String(r.question)))
+          .reduce((max, r) => Math.max(max, Number(r.created_at)), now - 24 * 3_600_000);
+        // Every status she set on his word is in `handled`, whether or not she
+        // listed it: he must be able to see, and undo, each one. The latest
+        // per task (rows come newest first), and not one he already undid.
+        const latest = new Map<string, Row>();
+        for (const w of table("task_work").query({ where: [{ column: "kind", op: "=", value: "status" }], limit: 300 })) {
+          if (Number(w.created_at) > last && !latest.has(String(w.page_id))) latest.set(String(w.page_id), w);
+        }
+        const statusSet = [...latest.values()]
+          .filter((w) => w.outcome !== "changed")
+          .map((w) => {
+            const to = /^Status: (.*?) \(was /.exec(String(w.text))?.[1] ?? "?";
+            return { title: String(w.task_title), line: `[[${w.task_title}]]: ${to === "Done" ? "marked Done" : `moved to ${to}`}` };
+          });
         let items = 0;
         for (const sec of DIGEST_SECTIONS) {
-          const raw = args[sec.key];
+          let raw = args[sec.key];
+          if (sec.key === "handled" && statusSet.length) {
+            const given = Array.isArray(raw) ? raw.map(String) : [];
+            const missing = statusSet
+              .filter((st) => !given.some((g) => g.toLowerCase().includes(st.title.toLowerCase())))
+              .map((st) => st.line);
+            raw = [...missing, ...given];
+          }
           if (raw === undefined) continue;
           if (!Array.isArray(raw) || raw.some((i) => typeof i !== "string")) {
             throw new Error(`${sec.key} is a list of short lines`);
@@ -1901,10 +1948,6 @@ function tools(registry: Registry): Tool[] {
         }
         // Questions that expired unanswered since the last digest, said once:
         // the card already says so, but a card from two days ago is not read.
-        const last = table("questions")
-          .query({ limit: 300 })
-          .filter((r) => kindOf(r) === "update" && /^(🌅|🌙) \*|^\[(morning|night) digest\]/.test(String(r.question)))
-          .reduce((max, r) => Math.max(max, Number(r.created_at)), now - 24 * 3_600_000);
         const people = peopleByKey();
         const tasks = new Map(table("tasks").query({ limit: 1000 }).map((t) => [String(t.page_id), String(t.title)]));
         const expired = table("questions")
@@ -2138,6 +2181,56 @@ function tools(registry: Registry): Tool[] {
         return (
           `“${t.title}” is in Notion's trash (restorable for 30 days). It is in \`outcomes\` now — ` +
           "learn from why it was wrong, and tell him it is gone."
+        );
+      },
+    },
+
+    {
+      name: "set_task_status",
+      scope: "write",
+      description:
+        "Sets the status of an open To Do task — his or yours — when HE tells you to: \"that's done\", " +
+        "\"put X on KIV\", \"I've started on Y\". Only on his word in a note to you, never because a chat " +
+        "or the page looks finished: then ask, or say so in the digest. Not sure which task he means? " +
+        "Ask him, naming the candidates — do not guess. Pass his words; if he later moves the task " +
+        "back, that lands in `outcomes`. Close any loop it settles, and tell him.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          task: { type: "string", description: "The task's id, as `todo` or `create_task` printed it." },
+          status: { type: "string", description: "One of the database's statuses, e.g. Done, In progress, To Do, KIV." },
+          said: { type: "string", description: "What he said, in his words or close to them." },
+        },
+        required: ["task", "status", "said"],
+        additionalProperties: false,
+      },
+      async run(args) {
+        const wf = registry.get(TASK_UPDATE_WORKFLOW);
+        if (!wf) throw new Error(`${TASK_UPDATE_WORKFLOW} is not loaded on this server`);
+        const status = str(args, "status");
+        const said = str(args, "said");
+        if (!status) throw new Error("Which status?");
+        if (!said) throw new Error("Pass what he said — a status changes only on his word");
+        const t = openTaskArg(str(args, "task"));
+        if (String(t.status ?? "").toLowerCase() === status.toLowerCase()) {
+          return `“${t.title}” is already ${t.status}. Nothing changed.`;
+        }
+        const outcome = await runWorkflow(wf, {
+          trigger: "manual",
+          input: { page_id: t.page_id, status, said },
+        });
+        if (outcome.status !== "success") {
+          throw new Error(`Status not set (${outcome.status}): ${outcome.error?.message ?? "unknown error"}`);
+        }
+        const result = outcome.result as
+          | { updated?: boolean; unchanged?: boolean; title?: string; status?: string | null; was?: string | null; refused?: string }
+          | undefined;
+        if (result?.refused) throw new Error(`Status not set: ${result.refused}`);
+        if (result?.unchanged) return `“${result.title ?? t.title}” is already ${result.status}. Nothing changed.`;
+        if (!result?.updated) throw new Error("Status not set: Notion returned no page");
+        return (
+          `[[${result.title ?? t.title}]] is now ${result.status} (was ${result.was ?? t.status ?? "-"}). ` +
+          "It goes into the next digest under handled by itself. Tell him, and close any loop it settles."
         );
       },
     },
@@ -2425,7 +2518,8 @@ const INSTRUCTIONS =
   "with `brief` reply_to, written for a phone (see brief); the morning and night digests go out " +
   "with `digest`. A draft that should not exist is taken back with `withdraw_draft`. " +
   "`todo` and `task` read their Notion To Do list; `task_note` writes your " +
-  "work onto a task's page, and never marks anything done. End every run with `log_run`.";
+  "work onto a task's page; `set_task_status` marks a task Done (or another status) only when " +
+  "they say so. End every run with `log_run`.";
 
 /** Mounted at /mcp/assistant, with its own bearer check like its siblings. */
 export function createAssistantMcpRouter(registry: Registry): Hono<{ Variables: { mcp: McpIdentity } }> {

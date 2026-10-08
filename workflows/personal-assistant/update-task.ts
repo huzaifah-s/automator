@@ -3,7 +3,10 @@ import { defineCredential, defineWorkflow, manual } from "../../src/core/define.
 import {
   CATEGORY,
   DUE,
+  DUE_FORMAT,
+  DUE_HINT,
   STATUS,
+  dueDate,
   headers,
   matchCategory,
   matchStatus,
@@ -65,7 +68,7 @@ const input = z.union([
       page_id: z.string().trim().min(32),
       title: z.string().trim().min(1).max(200).optional(),
       category: z.string().trim().min(1).optional(),
-      due: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "due is YYYY-MM-DD").optional(),
+      due: z.string().regex(DUE_FORMAT, DUE_HINT).optional(),
     })
     .refine((v) => v.title || v.category || v.due, "pass title, category, due, or trash"),
 ]);
@@ -165,7 +168,7 @@ export default defineWorkflow({
       if ("refused" in match) return match;
       properties[CATEGORY] = { select: { name: match.name } };
     }
-    if (change.due) properties[DUE] = { date: { start: change.due } };
+    if (change.due) properties[DUE] = { date: dueDate(change.due) };
     if (db && change.title) {
       const titleProp = Object.entries(db.properties).find(([, p]) => p.type === "title")?.[0];
       if (!titleProp) throw new Error("The To Do database has no title column");

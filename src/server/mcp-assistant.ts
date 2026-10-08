@@ -2766,14 +2766,21 @@ function tools(registry: Registry): Tool[] {
       description:
         "Adds a task to the user's Notion To Do list. For real follow-ups only — something they " +
         "promised or must do. Always give a due date: the one that was said, or your best guess " +
-        "(due_is_guess). Give the category when you are confident; when unsure leave it out and " +
-        "`ask` about the returned task id. He is sent a card with the task and a link to it. The " +
-        "same title within a week returns the existing task.",
+        "(due_is_guess). Add the time to it when one was said (a call at 3pm, a 10am meeting) — " +
+        "Notion holds a time, so never put it in the title instead. Give the category when you " +
+        "are confident; when unsure leave it out and `ask` about the returned task id. He is sent " +
+        "a card with the task and a link to it. The same title within a week returns the existing " +
+        "task.",
       inputSchema: {
         type: "object",
         properties: {
           title: { type: "string", description: "Short, in English, starts with a verb — even when the chat is in Malay." },
-          due: { type: "string", description: "YYYY-MM-DD — the date that was said, or your best guess." },
+          due: {
+            type: "string",
+            description:
+              "YYYY-MM-DD — the date that was said, or your best guess. YYYY-MM-DDTHH:MM (24-hour, his local " +
+              "time) only when a time was said.",
+          },
           due_is_guess: { type: "boolean", description: "True when nobody said this date. Shown on his card." },
           category: {
             type: "string",
@@ -2826,15 +2833,15 @@ function tools(registry: Registry): Tool[] {
       scope: "write",
       description:
         "Changes the title, category and/or due date of a task YOU created — once he has told you " +
-        "which category, given a date, or said the title is wrong. Works on a task made minutes " +
-        "ago too. Refused for any other task: his own tasks are his.",
+        "which category, given a date or a time, or said the title is wrong. Works on a task made " +
+        "minutes ago too. Refused for any other task: his own tasks are his.",
       inputSchema: {
         type: "object",
         properties: {
           task: { type: "string", description: "The task's id, as `todo` or `create_task` printed it." },
           title: { type: "string", description: "New title: short, English, starts with a verb." },
           category: { type: "string", description: "One of the database's categories." },
-          due: { type: "string", description: "YYYY-MM-DD." },
+          due: { type: "string", description: "YYYY-MM-DD, or YYYY-MM-DDTHH:MM (24-hour, his local time) with a time." },
         },
         required: ["task"],
         additionalProperties: false,
@@ -2990,7 +2997,8 @@ function tools(registry: Registry): Tool[] {
         const dueText = (due: unknown) => {
           if (!due) return "-";
           const day = String(due).slice(0, 10);
-          return day < today ? `${day} overdue` : day === today ? `${day} today` : day;
+          const at = String(due).length > 10 ? ` ${String(due).slice(11, 16)}` : "";
+          return day < today ? `${day}${at} overdue` : day === today ? `${day}${at} today` : `${day}${at}`;
         };
         return clip(
           `${rows.length} open task(s). Today is ${today}.\n\n` +

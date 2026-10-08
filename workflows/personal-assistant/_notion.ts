@@ -22,6 +22,21 @@ export const STATUS = "Status";
 export const DUE = "Due Date";
 export const CATEGORY = "Category";
 
+/**
+ * A due date as the assistant writes one: a day, or a day and a time when a
+ * time was said ("call at 3pm"). The time is his local time, written with
+ * `time_zone`: Notion shows 3pm and gives `start` back in that zone
+ * ("2026-10-09T15:00:00.000+08:00"), so its first ten characters are still
+ * the day — what `taskProps`, the overdue checks and `todo` read.
+ */
+export const DUE_FORMAT = /^\d{4}-\d{2}-\d{2}(T([01]\d|2[0-3]):[0-5]\d)?$/;
+export const DUE_HINT = "due is YYYY-MM-DD, or YYYY-MM-DDTHH:MM with a time";
+export const DUE_TIMEZONE = "Asia/Kuala_Lumpur";
+
+/** The Due Date property's `date` for a `DUE_FORMAT` value. */
+export const dueDate = (due: string) =>
+  due.includes("T") ? { start: `${due}:00`, time_zone: DUE_TIMEZONE } : { start: due };
+
 /** A task's page, from its id — for a task that has left the `tasks` mirror. */
 export const pageUrl = (pageId: string) => `https://www.notion.so/${pageId.replace(/-/g, "")}`;
 

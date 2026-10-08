@@ -4,7 +4,11 @@ import {
   CATEGORY,
   DATABASE_TITLE,
   DUE,
+  DUE_FORMAT,
+  DUE_HINT,
+  DUE_TIMEZONE,
   STATUS,
+  dueDate,
   headers as notionHeaders,
   matchCategory,
   readDataSource,
@@ -35,12 +39,11 @@ import {
  */
 
 const notion = defineCredential("notion", "huzaifah-notion");
-const TIMEZONE = "Asia/Kuala_Lumpur";
 const SAME_TASK_SECONDS = 7 * 86_400;
 
 const input = z.object({
   title: z.string().trim().min(1).max(200),
-  due: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "due is YYYY-MM-DD").optional(),
+  due: z.string().regex(DUE_FORMAT, DUE_HINT).optional(),
   /** The due date is the assistant's guess, not a date anybody said. Shown on the card. */
   due_guess: z.boolean().optional(),
   category: z.string().trim().min(1).optional(),
@@ -93,7 +96,7 @@ export default defineWorkflow({
     const status = startingStatus(db);
     if (status) properties[STATUS] = { [db.properties[STATUS]!.type]: { name: status } };
     if (task.due && db.properties[DUE]?.type === "date") {
-      properties[DUE] = { date: { start: task.due } };
+      properties[DUE] = { date: dueDate(task.due) };
     }
     let category: string | null = null;
     if (task.category) {
@@ -118,7 +121,7 @@ export default defineWorkflow({
           ? {
               parent: { data_source_id: db.id },
               properties,
-              template: { type: "template_id", template_id: template.id, timezone: TIMEZONE },
+              template: { type: "template_id", template_id: template.id, timezone: DUE_TIMEZONE },
             }
           : { parent: { data_source_id: db.id }, properties, children },
         { headers: headers(), retries: 0 },
@@ -235,10 +238,17 @@ function startingStatus(db: Database): string | null {
 
 const dayFmt = new Intl.DateTimeFormat("en-GB", { timeZone: "UTC", weekday: "short", day: "numeric", month: "short" });
 
+/** " 3pm" or " 3:30pm" for a due date with a time, else nothing. */
+function timeText(due: string): string {
+  if (!due.includes("T")) return "";
+  const [h, m] = due.slice(11, 16).split(":").map(Number) as [number, number];
+  return ` ${h % 12 || 12}${m ? `:${String(m).padStart(2, "0")}` : ""}${h < 12 ? "am" : "pm"}`;
+}
+
 /** The card text: what was added, with which due date and category, and from where. */
 function announcement(task: z.infer<typeof input>, category: string | null): string {
   const due = task.due
-    ? `${dayFmt.format(new Date(`${task.due}T00:00:00Z`)).replace(",", "")}${task.due_guess ? " (my guess)" : ""}`
+    ? `${dayFmt.format(new Date(`${task.due.slice(0, 10)}T00:00:00Z`)).replace(",", "")}${timeText(task.due)}${task.due_guess ? " (my guess)" : ""}`
     : "none";
   // Written in the assistant's marks (see `rich` in _bot.ts): the card shows
   // a heading, the task, then one fact per line.

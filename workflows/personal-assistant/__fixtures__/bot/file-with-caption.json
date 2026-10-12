@@ -1,0 +1,22 @@
+{
+  "expect": "run",
+  "note": "A file sent with a caption: the caption is the note, and the assistant is told a file came with it.",
+  "body": {
+    "update_id": 100000110,
+    "message": {
+      "message_id": 50,
+      "from": { "id": 100000001, "is_bot": false, "first_name": "Test" },
+      "chat": { "id": 100000001, "first_name": "Test", "type": "private" },
+      "date": 1767225900,
+      "reply_to_message": { "message_id": 49, "text": "I've written the email on the task page." },
+      "document": {
+        "file_name": "sample-contract.pdf",
+        "mime_type": "application/pdf",
+        "file_id": "BQACAgEAAxkBAAIBDGsample",
+        "file_unique_id": "AgADsample",
+        "file_size": 718265
+      },
+      "caption": "Is this the right role? This is my contract"
+    }
+  }
+}

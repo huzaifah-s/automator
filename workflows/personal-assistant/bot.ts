@@ -127,6 +127,14 @@ const update = z.looseObject({
     .looseObject({
       message_id: z.number(),
       text: z.string().optional(),
+      // A photo or file carries its words here instead of in `text`.
+      caption: z.string().optional(),
+      document: z.looseObject({ file_name: z.string().optional(), mime_type: z.string().optional(), file_size: z.number().optional() }).optional(),
+      photo: z.array(z.unknown()).optional(),
+      video: z.unknown().optional(),
+      voice: z.unknown().optional(),
+      audio: z.unknown().optional(),
+      sticker: z.unknown().optional(),
       from: z.looseObject({ id: z.number() }).optional(),
       chat: z.looseObject({ id: z.number() }),
       reply_to_message: z.looseObject({ message_id: z.number(), text: z.string().optional() }).optional(),
@@ -405,7 +413,11 @@ async function sendDraft(ctx: Ctx, d: Row) {
 
 async function onMessage(ctx: Ctx, m: NonNullable<Update["message"]>) {
   const api = botApi(ctx, bot);
-  const text = (m.text ?? "").trim();
+  const words = (m.text ?? m.caption ?? "").trim();
+  const sent = attachment(m);
+  // She cannot open what he sends yet, so she is told it came — the note
+  // still gets an answer instead of vanishing because it had no `text`.
+  const text = sent ? `${words}${words ? "\n" : ""}[${sent} — you cannot open it; say so if his words need it]` : words;
   if (!text) return { ignored: "no text" };
 
   if (text === "/start" || text === "/help") {
@@ -475,6 +487,21 @@ async function onMessage(ctx: Ctx, m: NonNullable<Update["message"]>) {
   }
 
   return note(ctx, text, m.message_id, null);
+}
+
+/** What came with a message besides words, for the assistant to be told of. */
+function attachment(m: NonNullable<Update["message"]>): string | null {
+  if (m.document) {
+    const d = m.document;
+    const size = d.file_size ? `, ${Math.max(1, Math.round(d.file_size / 1024))} KB` : "";
+    return `he attached a file: ${d.file_name ?? "unnamed"} (${d.mime_type ?? "unknown type"}${size})`;
+  }
+  if (m.photo) return "he attached a photo";
+  if (m.video) return "he attached a video";
+  if (m.voice) return "he sent a voice note";
+  if (m.audio) return "he attached an audio file";
+  if (m.sticker) return "he sent a sticker";
+  return null;
 }
 
 /**

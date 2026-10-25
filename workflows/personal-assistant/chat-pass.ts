@@ -76,6 +76,8 @@ export default defineWorkflow({
   name: "personal-assistant-chat-pass",
   description: "Every 5 minutes: reads each chat where somebody wrote last, one Claude call per chat — drafts, sorts, files tasks",
   trigger: cron("*/5 8-23 * * *", { tz: TZ }),
+  // Off since 2026-10-25: he asked Maria to stop working his chats on her own.
+  enabled: false,
   retries: 0,
   timeoutMs: 9 * 60_000,
   onOverlap: "skip",

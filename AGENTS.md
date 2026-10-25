@@ -249,13 +249,10 @@ on a path that does not go through that endpoint. Do not add a "send" or
 "approve" tool there, however convenient it would be for testing; a prompt
 asking the model to wait for approval is not the same thing as it being unable
 not to. A draft is only accepted for a chat already in `people`, so a number
-handed to the model inside a message cannot become a recipient. `find_chat`
-(`personal-assistant-find-chat`) is the one other way into `people`, and it
-keeps that: it adds a chat Evolution already has — a conversation he has had,
-which the sync would add on its next message anyway — or a number with no
-chat only when the endpoint has found that number in one of *his* notes
-(`phonesIn`). Do not loosen it to "any number the model passes". Like the
-sync, it records only what is inside the chat log's window
+handed to the model inside a message cannot become a recipient. (`find_chat`
+was the one other way into `people`; it went with WhatsApp on 2026-10-25 —
+Evolution was shut down, and `draft_reply` refuses a WhatsApp chat.) The
+sync records only what is inside the chat log's window
 (`chatLogKeepsFrom`) and returns counts, never message text. The endpoint's log lines
 carry the tool name and the refusal, never the arguments, which are messages.
 An `assistant` token is refused by `/mcp` and `/mcp/tables`, and theirs by it.
@@ -433,7 +430,7 @@ at the next hourly run. Every answer, "no" included, stays in `outcomes`
 until `learn from_followups`.
 
 **Style lessons are derived, never quoted.** `personal-assistant-learn-style`
-reads his own last messages in a chat straight from Evolution or Telegram
+(removed with WhatsApp on 2026-10-25; its `style` lessons stay) read his own last messages in a chat straight from Evolution or Telegram
 (private reads, not a step — a step's result is stored), asks Claude Code
 with no tools (`askClaude`, `src/core/claude-code.ts`) for one line on how he writes
 there, and keeps only that line as a `style` lesson for the chat. Its

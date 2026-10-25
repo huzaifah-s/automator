@@ -31,6 +31,8 @@ export default defineWorkflow({
   name: "personal-assistant-lessons-review",
   description: "Wednesdays and Sundays at 8pm: Maria's scorecard, and her lessons since the last card, each a tap to forget",
   trigger: cron(SCORECARD_CRON, { tz: "Asia/Kuala_Lumpur" }),
+  // Off since 2026-10-25: he asked for no more scheduled cards from Maria.
+  enabled: false,
   retries: 0,
   timeoutMs: 30_000,
 

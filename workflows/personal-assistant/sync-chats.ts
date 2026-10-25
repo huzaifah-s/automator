@@ -4,38 +4,33 @@ import {
   defineCredential,
   defineWorkflow,
   defineSecrets,
-  canonicalKey,
   chatPassOn,
-  isLidKey,
-  linkChats,
-  realName,
   type ChatLogEntry,
   type Ctx,
-  type LinkResult,
   type Row,
   type TelegramUserMessage,
 } from "../../src/core/define.ts";
 import { fireAssistant } from "./_routine.ts";
-import { NOISE, fromWhatsApp, isPlaceholder, placeholder } from "./_whatsapp.ts";
 
 /**
- * Personal assistant — copies new WhatsApp and Telegram messages into the
- * chat log, where the assistant reads them (src/core/chat-log.ts), and adds
- * every chat it has not seen before to the `people` table with no priority,
- * so the assistant knows to ask about it.
+ * Personal assistant — copies new Telegram messages into the chat log, where
+ * the assistant reads them (src/core/chat-log.ts), and adds every chat it has
+ * not seen before to the `people` table with no priority, so the assistant
+ * knows to ask about it.
  *
- * **Polling, not Evolution's webhook — for privacy, not latency.** A webhook
- * delivery is stored as the run's input and in the inbox, so every message
- * would land on the run page as well as in the chat log. Here the reads are
- * `private` (the run page lists the calls, not what came back) and each step
- * returns counts, so the chat log holds the only copy and forgets it on
- * schedule. Evolution already stores every message itself, and a poll also
- * catches up after a deploy, which a webhook does not.
+ * **Telegram only, since 2026-10-25.** WhatsApp came through Evolution API,
+ * which he shut down to use his own tool, Close, for WhatsApp instead. The
+ * WhatsApp rows in `people` and the chat log stay as they were; the log
+ * forgets their messages on its usual schedule.
+ *
+ * **Polling, not a webhook — for privacy, not latency.** A webhook delivery
+ * is stored as the run's input and in the inbox, so every message would land
+ * on the run page as well as in the chat log. Here the reads are `private`
+ * (the run page lists the calls, not what came back) and each step returns
+ * counts, so the chat log holds the only copy and forgets it on schedule.
  *
  * What is read, before the `people` table says otherwise:
  *
- *   - Every WhatsApp chat — people and groups — except broadcast lists and
- *     channels (`@newsletter`).
  *   - Telegram people and groups, but not channels, bots, muted chats,
  *     archived chats or your own Saved Messages.
  *   - Never Telegram's service account (777000). It is where login codes
@@ -44,20 +39,12 @@ import { NOISE, fromWhatsApp, isPlaceholder, placeholder } from "./_whatsapp.ts"
  *
  * A row's `ignore` skips a chat everywhere; `always` reads one the defaults
  * would have skipped — a muted group that still matters.
- *
- * **One person, one chat.** A WhatsApp person can arrive under a hidden
- * privacy id (`@lid`) as well as their number. When Evolution says which
- * number a `@lid` is — `chatAlt` on a message filed under it — the two are
- * linked (src/core/chat-link.ts) and the messages are recorded under the
- * number. `@lid` rows not linked yet are looked up a few per run, which is
- * also what links the pairs that were already in `people` before this.
  */
 
 const TZ = "Asia/Kuala_Lumpur";
 
-// Named rather than primary: until both exist on a server, the workflow is
+// Named rather than primary: until it exists on a server, the workflow is
 // shown as blocked there instead of failing every two minutes.
-const whatsappAccount = defineCredential("evolution", "huzaifah-evolution-api");
 const telegramAccount = defineCredential("telegram_user", "huzaifah-telegram-user-account");
 /** Optional: without it, an `always` chat waits for the hourly run like any other. */
 /** Read on every run, so setting it on the Secrets tab works without a restart. */
@@ -72,17 +59,7 @@ const FIRST_SYNC_DAYS = 3;
 const OVERLAP_MS = 10 * 60_000;
 /** Messages taken from a Telegram chat seen for the first time. */
 const FIRST_SIGHT = 20;
-/**
- * People rows still named by a phone number that get a contact lookup per
- * run, and how long before the same one is tried again.
- */
-const NAME_REPAIRS = 10;
-
-const NAME_RETRY_SECONDS = 86_400;
-/** Unlinked `@lid` people rows looked up per run for their number. */
-const PAIR_REPAIRS = 10;
-
-/** Chats looked at per platform per run, newest first. */
+/** Chats looked at per run, newest first. */
 const CHATS = 100;
 /**
  * Telegram chats whose history is read in one run. Telegram answers a burst
@@ -96,91 +73,46 @@ type Priority = "always" | "normal" | "ignore" | null;
 
 export default defineWorkflow({
   name: "personal-assistant-sync-chats",
-  description: "Copies new WhatsApp and Telegram messages into the assistant's chat log",
+  description: "Copies new Telegram messages into the assistant's chat log",
   trigger: cron("*/2 * * * *", { tz: TZ }),
   retries: 1,
   timeoutMs: 110_000,
 
   async run(ctx) {
-    const load = () =>
-      new Map<string, Row>(ctx.table("people").query({ limit: 1000 }).map((r) => [String(r.chat_key), r]));
-    let people = load();
-    const links = () =>
-      new Map([...people.values()].filter((r) => r.same_as).map((r) => [String(r.chat_key), String(r.same_as)]));
+    const people = new Map<string, Row>(
+      ctx.table("people").query({ limit: 1000 }).map((r) => [String(r.chat_key), r]),
+    );
     const book: People = {
-      known: (key) => people.has(key),
-      canonical: (key) => canonicalKey(key, links()),
-      priority: (key) => (people.get(canonicalKey(key, links()))?.priority as Priority) ?? null,
-      link(lid, phone) {
-        let result: LinkResult;
-        try {
-          result = linkChats(lid, phone, ctx.workflow);
-        } catch (err) {
-          // A pair that cannot be linked (a row edited into a group by hand)
-          // must not stop every sync. No keys in the line — they are numbers.
-          ctx.log.warn(`A hidden WhatsApp id was not linked to its number: ${(err as Error).message.replace(/\d{6,}/g, "…")}`);
-          return { canonical: lid, linked: false, messages: 0, lessons: 0, questions: 0, drafts: 0, withdrawn: 0 };
-        }
-        // linkChats wrote rows this map has not seen.
-        if (result.linked) people = load();
-        return result;
-      },
-      unlinked: () =>
-        [...people.values()].filter(
-          (p) => p.kind === "person" && !p.same_as && isLidKey(String(p.chat_key)),
-        ),
+      priority: (key) => (people.get(key)?.priority as Priority) ?? null,
       // Added the moment a chat passes the filters, inside the step that read
       // it. A later step would be lost to a run that failed in between —
       // after the cursors had moved, so the chat would not come round again
       // until it next had something new.
       remember(chat) {
-        const known = people.get(chat.chat_key);
-        if (known) {
-          // A row first added under a phone number takes the real name once
-          // one turns up. A name somebody typed in is never overwritten —
-          // only one that is still a number.
-          if (isPlaceholder(known.name) && realName(chat.name)) {
-            people.set(
-              chat.chat_key,
-              ctx.table("people").update(String(known.id), { name: chat.name }, { writtenBy: ctx.workflow }),
-            );
-          }
-          return false;
-        }
+        if (people.has(chat.chat_key)) return false;
         const { row, created } = ctx.table("people").insert(chat, { writtenBy: ctx.workflow });
         people.set(chat.chat_key, row);
         return created;
       },
-      unnamed: () =>
-        [...people.values()].filter(
-          (p) => p.channel === "whatsapp" && p.kind === "person" && !p.same_as && isPlaceholder(p.name),
-        ),
-      relabel(row, name) {
-        people.set(
-          String(row.chat_key),
-          ctx.table("people").update(String(row.id), { name }, { writtenBy: ctx.workflow }),
-        );
-      },
     };
 
-    const whatsapp = await ctx.step("whatsapp", () => syncWhatsApp(ctx, book));
     const telegram = await ctx.step("telegram", () => syncTelegram(ctx, book));
 
     // Somebody whose chat is `always` wrote: start the assistant now rather
     // than at the top of the hour. The count, never who — see _routine.ts.
     // While the chat pass is on it reads them within five minutes itself,
     // and a routine session started for them would find nothing to do.
-    const urgent = chatPassOn() ? 0 : whatsapp.urgent + telegram.urgent;
+    const urgent = chatPassOn() ? 0 : telegram.urgent;
     const fired = urgent
       ? await fireAssistant(ctx, routine.ASSISTANT_ROUTINE_TOKEN ?? "", `${urgent} new message(s) in chats marked always. Start with \`waiting\`.`)
       : undefined;
-    return { whatsapp, telegram, ...(fired ? { fired } : {}) };
+    return { telegram, ...(fired ? { fired } : {}) };
   },
 });
 
 type NewChat = {
   name: string;
-  channel: "whatsapp" | "telegram";
+  channel: "telegram";
   kind: "person" | "group" | "channel" | "bot";
   priority: null;
   chat_key: string;
@@ -188,25 +120,12 @@ type NewChat = {
 
 /** What a sync step reads and writes of the `people` table. */
 interface People {
-  /** Whether a chat has a row, its own or as a linked alias. */
-  known(key: string): boolean;
-  /** The key a chat's messages and row live under — a linked `@lid`'s number. */
-  canonical(key: string): string;
-  /** The priority of the person, through a link. */
+  /** The priority of the chat's row. */
   priority(key: string): Priority;
-  /** Makes a `@lid` and a number one person (src/core/chat-link.ts). */
-  link(lid: string, phone: string): LinkResult;
-  /** WhatsApp `@lid` people rows not linked to a number yet. */
-  unlinked(): Row[];
   /**
-   * Adds a chat not in the table yet — true when it was new — or gives a row
-   * still named by its number the real name.
+   * Adds a chat not in the table yet — true when it was new.
    */
   remember(chat: NewChat): boolean;
-  /** WhatsApp people rows whose name is still a stand-in. */
-  unnamed(): Row[];
-  /** Replaces one stand-in name with another, e.g. raw digits with +digits. */
-  relabel(row: Row, name: string): void;
 }
 
 /** What a sync step returns — counts only, because it is the run page's copy. */
@@ -218,156 +137,9 @@ interface Synced {
   newChats: number;
   /** Chats marked `always` with a new message from somebody else. */
   urgent: number;
-  /** People rows that had a phone number for a name and now have a name. */
-  renamed?: number;
-  /** Hidden `@lid` chats linked to their number this run. */
-  linked?: number;
-  /** Messages moved from a `@lid` to its number by those links. */
-  moved?: number;
   /** Chats with something new that were left for the next run. */
   deferred?: number;
 }
-
-/* ---------------------------------------------------------------- whatsapp */
-
-async function syncWhatsApp(ctx: Ctx, people: People): Promise<Synced> {
-  const startedAt = Date.now();
-  const last = await ctx.state.get<number>("wa:since");
-  const since = new Date(
-    last !== undefined ? last - OVERLAP_MS : startedAt - FIRST_SYNC_DAYS * 86_400_000,
-  );
-
-  const chats = await ctx.evolution.chats({
-    since,
-    limit: CHATS,
-    private: true,
-    credential: whatsappAccount,
-  });
-  let messages = 0;
-  let read = 0;
-  let newChats = 0;
-  let urgent = 0;
-  let linked = 0;
-  let moved = 0;
-
-  for (const chat of chats) {
-    const key = `whatsapp:${chat.chat}`;
-    let p = people.priority(key);
-    const broadcast = chat.chat.endsWith("@newsletter") || chat.chat.endsWith("@broadcast");
-    if (p === "ignore" || (broadcast && p !== "always")) continue;
-
-    const list = (
-      await ctx.evolution.messages(chat.chat, {
-        since,
-        limit: 100,
-        private: true,
-        credential: whatsappAccount,
-      })
-    ).filter((m) => !NOISE.has(m.type));
-    if (list.length === 0) continue;
-    // A hidden id whose number came with the messages: one person from here
-    // on, recorded under the number. Its priority may be the number's.
-    const alt = list.find((m) => m.chatAlt)?.chatAlt;
-    if (alt && people.canonical(key) === key) {
-      const phone = `whatsapp:${alt}`;
-      if (!people.known(key)) {
-        // First sight of the hidden id: the number is the row, and the link
-        // adds the `@lid` as its alias.
-        if (people.remember({ name: placeholder(alt), channel: "whatsapp", kind: "person", priority: null, chat_key: phone }))
-          newChats++;
-      }
-      const done = people.link(key, phone);
-      if (done.linked) {
-        linked++;
-        moved += done.messages;
-      }
-      p = people.priority(key);
-      if (p === "ignore") continue;
-    }
-    const target = people.canonical(key);
-    // The chat's own name; else the name on any message of theirs, not just
-    // the newest — the newest is often yours; else their contact entry,
-    // which is the only source when they have not written in the window.
-    const name =
-      realName(chat.name) ??
-      (chat.isGroup ? undefined : realName([...list].reverse().find((m) => !m.outgoing)?.name)) ??
-      (chat.isGroup || broadcast
-        ? undefined
-        : await ctx.evolution.contactName(chat.chat, { private: true, credential: whatsappAccount }));
-    // Before the cursor moves — see syncTelegram.
-    if (
-      people.remember({
-        name: name ?? placeholder(target.slice("whatsapp:".length)),
-        channel: "whatsapp",
-        kind: broadcast ? "channel" : chat.isGroup ? "group" : "person",
-        priority: null,
-        chat_key: target,
-      })
-    ) newChats++;
-    read++;
-    const added = ctx.chatLog.record(
-      list.map((m) => ({ ...fromWhatsApp(m, chat.name), chat: target.slice("whatsapp:".length) })),
-    );
-    messages += added;
-    if (added > 0 && p === "always" && list.some((m) => !m.outgoing)) urgent++;
-  }
-
-  // Rows added under a phone number, a few per run, each tried at most daily:
-  // the name may only have reached Evolution's contacts since.
-  const unnamedBefore = people.unnamed().length;
-  for (const row of people.unnamed().slice(0, NAME_REPAIRS)) {
-    const jid = String(row.chat_key).slice("whatsapp:".length);
-    const tried = `wa:name-tried:${jid}`;
-    if (await ctx.state.get(tried)) continue;
-    await ctx.state.set(tried, true, { ttlSeconds: NAME_RETRY_SECONDS });
-    // Their contact entry first; then their own messages, which carry the
-    // name they write under even when the contact list holds a number. Some
-    // have none anywhere — no profile name, or a hidden-number @lid — and
-    // keep the stand-in until somebody names them in `people`.
-    const found =
-      (await ctx.evolution.contactName(jid, { private: true, credential: whatsappAccount })) ??
-      realName(
-        // 100, not 20: yours share the page — Evolution ignores a
-        // `fromMe: false` filter — so twenty can be all yours.
-        (await ctx.evolution.messages(jid, { limit: 100, private: true, credential: whatsappAccount }))
-          .reverse()
-          .find((m) => !m.outgoing && realName(m.name))?.name,
-      );
-    if (found) {
-      people.remember({ name: found, channel: "whatsapp", kind: "person", priority: null, chat_key: String(row.chat_key) });
-    } else if (row.name !== placeholder(jid)) {
-      // No name anywhere: at least show the stand-in readably — rows from
-      // before this had bare digits, and a @lid's digits are not a number.
-      people.relabel(row, placeholder(jid));
-    }
-  }
-  const renamed = unnamedBefore - people.unnamed().length;
-
-  // Hidden ids already in `people` with no number yet, a few per run, each
-  // tried at most daily: their own messages may carry it (`chatAlt`). This
-  // is also what linked the pairs that were in `people` before links were.
-  for (const row of people.unlinked().slice(0, PAIR_REPAIRS)) {
-    const key = String(row.chat_key);
-    const jid = key.slice("whatsapp:".length);
-    const tried = `wa:pair-tried:${jid}`;
-    if (await ctx.state.get(tried)) continue;
-    await ctx.state.set(tried, true, { ttlSeconds: NAME_RETRY_SECONDS });
-    const alt = (await ctx.evolution.messages(jid, { limit: 20, private: true, credential: whatsappAccount }))
-      .find((m) => m.chatAlt)?.chatAlt;
-    if (!alt) continue;
-    const done = people.link(key, `whatsapp:${alt}`);
-    if (done.linked) {
-      linked++;
-      moved += done.messages;
-    }
-  }
-
-  // Only once everything is recorded: a failure above leaves the cursor
-  // where it was, and the next run reads the same window again.
-  await ctx.state.set("wa:since", startedAt);
-  return { chats: read, messages, newChats, urgent, renamed, linked, moved };
-}
-
 
 /* ---------------------------------------------------------------- telegram */
 

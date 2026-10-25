@@ -94,14 +94,13 @@ import { fireAssistant } from "./_routine.ts";
  * nothing. Skipped instead of queued, a tap could be lost; run in parallel, it
  * could send twice.
  *
- * Not retried: a send that failed after reaching WhatsApp would arrive twice.
+ * Not retried: a send that failed after reaching the chat would arrive twice.
  * A failure is written on the card with the Send button still there.
  */
 
 const bot = defineCredential("telegram", "maria");
 /** His day, for the date a follow-up falls on. */
 const TZ = process.env.ASSISTANT_TZ ?? "Asia/Kuala_Lumpur";
-const whatsappAccount = defineCredential("evolution", "huzaifah-evolution-api");
 const telegramAccount = defineCredential("telegram_user", "huzaifah-telegram-user-account");
 /**
  * Optional: without it, comments wait for the hourly run. See _routine.ts.
@@ -394,10 +393,8 @@ async function sendDraft(ctx: Ctx, d: Row) {
   const [channel, ...rest] = String(d.chat_key).split(":");
   const chat = rest.join(":");
   const text = String(d.text);
-  if (channel === "whatsapp") {
-    const sent = await ctx.evolution.text(chat, text, { credential: whatsappAccount });
-    return { channel, id: sent.id };
-  }
+  // Evolution was shut down on 2026-10-25; WhatsApp is his own tool's now.
+  if (channel === "whatsapp") throw new Error("WhatsApp is no longer connected to Maria — send this one yourself");
   if (channel === "telegram") {
     const replyTo = d.reply_to ? Number(d.reply_to) : undefined;
     const sent = await ctx.telegramUser.send(Number(chat), text, {
@@ -569,7 +566,9 @@ function heardBase(fired: Awaited<ReturnType<typeof fireAssistant>>): string {
   if (fired === "fired") return "Got it — on it now.";
   // Owed, not dropped: deliver-cards fires it once the cooldown is over.
   if (fired === "cooling down") return "Got it — I'll start on it within a couple of minutes.";
-  return "Got it — I'll pick this up on my next run (hourly, 08:00–23:00).";
+  if (fired === "failed") return "Got it — I'll pick this up on my next run (hourly, 08:00–23:00).";
+  // No routine to start: the hourly run is off, so there is no run to promise.
+  return "Got it.";
 }
 
 /** Your reply to a draft card: what to change. */

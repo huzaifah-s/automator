@@ -79,6 +79,8 @@ export default defineWorkflow({
   name: "personal-assistant-tidy-lessons",
   description: "Every night: merges Maria's lessons that say the same thing, with a card to undo each merge",
   trigger: cron("45 23 * * *", { tz: TZ }),
+  // Off since 2026-10-25: he asked for no more scheduled cards from Maria.
+  enabled: false,
   retries: 0,
   timeoutMs: 5 * 60_000,
 

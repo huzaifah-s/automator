@@ -50,6 +50,8 @@ export default defineWorkflow({
   name: "personal-assistant-eval",
   description: "Replays past moments through Maria's writer and grades the drafts against what he really sent",
   trigger: cron("0 19 * * 0,3", { tz: "Asia/Kuala_Lumpur" }),
+  // Off since 2026-10-25: it grades the chat pass's writer, and the chat pass is off.
+  enabled: false,
   retries: 0,
   timeoutMs: 40 * 60_000,
 

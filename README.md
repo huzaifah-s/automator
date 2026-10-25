@@ -409,6 +409,17 @@ WhatsApp broadcast lists and channels, and always Telegram's service account
 
 ### The assistant's endpoint
 
+**What is still on (since 2026-10-25).** Nothing about the assistant runs on
+a schedule any more except the copying: Telegram chats into the chat log
+(`personal-assistant-sync-chats`) and the To Do list into `tasks`. No hourly
+routine, no digests, no follow-up or scorecard cards, no chat pass. Maria
+answers only when you message the bot, and the cards she makes then still
+arrive. WhatsApp is gone from the assistant: Evolution API was shut down, as
+WhatsApp moves to Close. The WhatsApp chats and messages already here can be
+read, but nothing new comes in and a draft to WhatsApp is refused. The
+switched-off workflows say `enabled: false` and why; turning one back on is
+removing that line.
+
 `/mcp/assistant` is what a scheduled Claude connects to: the chat log, the
 `tables/personal-assistant/` tables, and the Notion To Do list. It needs
 its own token — on the MCP tab, **Create token → Personal assistant**, full
@@ -419,7 +430,7 @@ access — and refuses the operations and data-table ones, as they refuse it.
 | `waiting` | Chats where they spoke last, priority first, then longest wait — and whose message the newest one replies to |
 | `thread` | One chat's messages, with what `people` knows about it; a reply says who it answers (`↩ me`, `↩ Amin`) |
 | `people` / `update_person` | Priorities and notes. A priority is the assistant's own call (with a one-line `reason`, shown on the "I sorted these" card and recorded in `sorting`) or yours (citing the question or note you said it in). Hers is refused on a chat you set |
-| `find_chat` | Brings in a WhatsApp chat the sync has not seen — somebody you have not written to lately — by name (as they set it on WhatsApp) or number, through `personal-assistant-find-chat`: added to `people`, with its messages from the last 14 days and yours from the last 90. A number you have never chatted with only when it is in your own note. `older: true` reads a 1:1 chat already in `people` again, for older messages the sync never saw — `thread` suggests it when it holds fewer than three of yours. A `people` search that finds nobody lists the chats nobody has named yet |
+| ~~`find_chat`~~ | Removed with WhatsApp (2026-10-25). Brought in a WhatsApp chat the sync had not seen — somebody you have not written to lately — by name (as they set it on WhatsApp) or number, through `personal-assistant-find-chat`: added to `people`, with its messages from the last 14 days and yours from the last 90. A number you have never chatted with only when it is in your own note. `older: true` reads a 1:1 chat already in `people` again, for older messages the sync never saw — `thread` suggests it when it holds fewer than three of yours. A `people` search that finds nobody lists the chats nobody has named yet |
 | `awaiting` / `offer_followup` | Chats where you wrote last and nobody has answered; a card offering to follow up — in 2 days, a week, two weeks, or no need. A tap opens a loop and adds the follow-up to your To Do for that day, at once, and what you chose is a correction it learns from |
 | `drafts` / `draft_reply` | Replies waiting for approval; a new one, or a revision. The card quotes what it answers |
 | `withdraw_draft` | Takes back a draft that should not be sent at all ("that was for Amin"), with a reason shown on its card |
@@ -513,7 +524,7 @@ logged its end; `personal-assistant-bot` handles what comes back:
 
 A question unanswered for two days expires: its card says so and loses its
 buttons, and the next digest lists it once under "Expired, no answer".
-`personal-assistant-lessons-review` posts the week's new lessons every Sunday
+`personal-assistant-lessons-review` (off since 2026-10-25) posts the week's new lessons every Sunday
 at 20:00, one 🗑 button each — the assistant follows every lesson it writes,
 so one drawn the wrong way is worth seeing.
 
@@ -536,6 +547,10 @@ only thing to set up: add it, set the chat id, press **Start** in the bot,
 and restart the server — webhooks register at boot.
 
 ### The scheduled assistant
+
+**Off since 2026-10-25** — the routine was switched off at claude.ai, and
+the workflows below that only served it say `enabled: false`. What follows is
+how it worked.
 
 A Claude Code routine runs the assistant — Maria — every hour from 08:00 to
 23:00 Malaysia time. It does not clone this repository: its playbook and MCP
@@ -568,7 +583,7 @@ it fails goes back to be rewritten before you see it; the rewrite is checked
 once more and saved either way. Every verdict is a row in `draft_checks`.
 
 **Chats are read one at a time, by the server.** `personal-assistant-chat-pass`
-runs every five minutes from 08:00 to 23:55 and gives each chat where somebody
+(off since 2026-10-25) runs every five minutes from 08:00 to 23:55 and gives each chat where somebody
 wrote last a Claude call of its own (`src/server/assistant-writer.ts`): that
 chat, its lessons, the brain, your own words to them and your comments on
 earlier drafts — nothing else. It answers with one decision — draft or leave
@@ -585,7 +600,7 @@ Calls are Claude Code on your subscription (`CLAUDE_CODE_OAUTH_TOKEN`),
 capped at `ASSISTANT_PASS_MAX_PER_DAY` (200). `ASSISTANT_HIS_NAMES`
 (default `huzaifah`) is how a group message to you is spotted.
 
-**"Smarter" is a number.** `personal-assistant-eval` replays moments that
+**"Smarter" is a number.** `personal-assistant-eval` (off since 2026-10-25) replays moments that
 already happened — a draft you corrected or took, a message you answered
 yourself, a group message you let pass, a chat you re-sorted — through that
 writer, with everything as it stood at the time, and a fresh Claude grades
@@ -597,7 +612,7 @@ with `{"variants": ["current", "<name>"]}`, and promote it only if it scores
 higher.
 
 **Lessons are tidied every night.** At 23:45 `personal-assistant-tidy-lessons`
-merges lessons that say the same thing — only within one chat or everyone,
+(off since 2026-10-25) merges lessons that say the same thing — only within one chat or everyone,
 and one kind (writing, tasks, sorting, follow-ups); never style or scorecard
 lessons — and sends a card with an ↩ per merge. Lessons it finds
 contradicting each other come as a second card for you to settle by replying.

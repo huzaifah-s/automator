@@ -6,6 +6,29 @@ Entries record the *reasoning*, not just the diff — `git log` already has the
 diff. If a change settled a question, say what was settled and what the losing
 option was, so nobody relitigates it from scratch.
 
+## 2026-10-25
+
+### Maria stops nagging, and WhatsApp leaves her
+
+He wanted the reminders, digests and scheduled cards gone, and WhatsApp off
+Evolution API: he is building Close, his own tool for WhatsApp, and will use
+that instead.
+
+- **Nothing on a schedule but the copying.** `personal-assistant-chat-pass`,
+  `-lessons-review`, `-tidy-lessons` and `-eval` say `enabled: false`; the
+  hourly routine (digests, questions, follow-up offers) is switched off at
+  claude.ai, since it runs on his other account. Live Maria still answers
+  when he messages the bot, and her drafts and tasks still come as cards.
+  *Considered:* retiring Maria whole — he chose to keep her on Telegram and
+  Notion. *Traded:* nobody watches his chats for him any more.
+- **No WhatsApp.** `sync-chats` reads Telegram only; `find-chat`,
+  `learn-style` and `_whatsapp.ts` are deleted (they only read Evolution);
+  the `find_chat` tool is gone; `draft_reply` refuses a WhatsApp chat and a
+  Send on an old WhatsApp card fails with a reason instead of trying. The
+  WhatsApp rows in `people` and the messages in the chat log stay until the
+  log's own retention drops them. `ctx.evolution` itself stays in
+  `src/integrations/` — it is a general integration, not Maria's.
+
 ## 2026-10-08
 
 ### The server reads his chats one at a time; "smarter" is a number; lessons are tidied nightly

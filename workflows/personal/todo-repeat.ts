@@ -269,15 +269,28 @@ function copyProperties(page: Page): Record<string, unknown> {
 
 /** Rich text the create endpoint accepts. Mentions and equations become their text. */
 function cleanText(list: RichText[]): unknown[] {
-  return list.map((t) =>
-    t.type === "text" && t.text
-      ? { type: "text", text: t.text, annotations: t.annotations }
-      : {
-          type: "text",
-          text: { content: t.plain_text ?? "", link: t.href ? { url: t.href } : null },
-          annotations: t.annotations,
-        },
-  );
+  return list.map((t) => {
+    const own = t.type === "text" && t.text ? t.text : null;
+    const url = linkable(own ? own.link?.url : t.href);
+    return {
+      type: "text",
+      text: { content: own ? own.content : (t.plain_text ?? ""), link: url ? { url } : null },
+      annotations: t.annotations,
+    };
+  });
+}
+
+/**
+ * A link the create endpoint will take, or null. Notion stores whatever the
+ * editor was given — a `file:///Volumes/…` path pasted into a task body, a
+ * relative `/<page id>` from linking another page — but creating a page with
+ * one fails the whole page ("Invalid URL for link"), so every five minutes,
+ * for as long as the task is Done. The text stays; only the link goes.
+ */
+function linkable(url: string | null | undefined): string | null {
+  if (!url) return null;
+  if (url.startsWith("/")) return `https://www.notion.so${url}`;
+  return /^https?:\/\//i.test(url) ? url : null;
 }
 
 /** Block types copied into the new page. Anything else is left behind and counted. */

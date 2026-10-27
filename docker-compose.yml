@@ -10,6 +10,12 @@ services:
     # documented 20s meant nothing. Raise both together or neither.
     stop_grace_period: 30s
 
+    # A ceiling, not a reservation: it shares a 6 GB server with Close, and a
+    # leak here should restart this container, not make the kernel pick
+    # something of Close's to kill. Its highest in seven days of Sentinel
+    # history was 474 MiB, against about 110 MiB at rest.
+    mem_limit: 768m
+
     # Reachable on the compose network, not published on the host. Coolify's
     # proxy terminates TLS and routes to it; publishing 3000 as well would make
     # the dashboard answerable over plain HTTP around that proxy, on basic auth

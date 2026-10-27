@@ -47,19 +47,22 @@ services:
 
     # A reverse proxy does not route to a container until this passes, so these
     # numbers are the length of the deploy's unreachable window, not a
-    # monitoring preference. At the 30s interval Docker defaults to, the app was
-    # answering about a second after boot and the proxy went on returning 503
-    # for half a minute after that.
+    # monitoring preference. At a plain 30s interval the app was answering about
+    # a second after boot and the proxy went on returning 503 for half a minute
+    # after that. start_interval is what closes that window: Docker checks every
+    # 2s until the first pass, then drops to 30s. A flat 5s interval did the
+    # same job at the cost of a process spawn in the container every 5s,
+    # forever — which, across every container on the box, was most of its load.
     #
-    # retries is up rather than down: 5 × 5s is 25s of *consecutive* failure
-    # before unhealthy, and the runner is one process — a heavy synchronous
-    # moment should not be able to flap it.
+    # 3 × 30s is 90s of *consecutive* failure before unhealthy, and the runner
+    # is one process — a heavy synchronous moment should not be able to flap it.
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/healthz"]
-      interval: 5s
+      interval: 30s
       timeout: 3s
-      retries: 5
-      start_period: 3s
+      retries: 3
+      start_period: 30s
+      start_interval: 2s
 
     logging:
       driver: json-file

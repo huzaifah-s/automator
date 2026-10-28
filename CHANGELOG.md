@@ -6,6 +6,32 @@ Entries record the *reasoning*, not just the diff — `git log` already has the
 diff. If a change settled a question, say what was settled and what the losing
 option was, so nobody relitigates it from scratch.
 
+## 2026-10-28
+
+### A compose-only commit stops asking for a deploy that already happened
+
+81876f5 and 539370b changed `docker-compose.yml` and nothing else, and both
+were deployed — yet "A deploy is waiting — 539370b" kept arriving every half
+hour. `pull-workflows.sh` proves a deploy by hashing the changed files against
+the deployed directory, and Coolify rewrites `docker-compose.yml` there, so a
+commit with no other file left it nothing to check. "Cannot tell" alerts by
+design, and nothing ever moved the clean clone past the commit, so it said
+the same thing forever.
+
+- **Coolify's own record answers it.** A Compose deploy tags the image it
+  builds `<uuid>_<service>:<commit>` in the compose file it writes, and puts
+  `SOURCE_COMMIT` in the `.env` beside it. When the diff has no file to hash,
+  the script reads that commit, and the deploy counts as done if the waiting
+  commit is that one or an ancestor of it. Neither record there still means
+  "cannot tell" and an alert. *Considered:* comparing the container's creation
+  time with when this clone fetched the commit — it needs no Coolify detail,
+  but a deploy that was already building when the push landed would count as
+  having carried it. *Traded:* it relies on a Coolify detail that an upgrade
+  could change, and if that happens it falls back to the old alert, not to a
+  silent pass.
+- Only as a last resort: the file hashing that already worked stays first, so
+  every commit it could answer before is answered the same way.
+
 ## 2026-10-25
 
 ### Maria stops nagging, and WhatsApp leaves her

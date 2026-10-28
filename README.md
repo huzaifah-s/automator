@@ -2812,7 +2812,11 @@ ones, so a commit that changes nothing but the `Dockerfile` is still answerable
 as long as it carries anything else. `workflows/` is not evidence (this script
 writes it), and neither are the three files Coolify rewrites in place: the
 `Dockerfile`, `docker-compose.yml`, and `README.md`. When the diff holds
-nothing but those, the answer is "cannot tell" and it alerts — a deploy wrongly
+nothing but those — a change to `docker-compose.yml` alone — it reads the
+commit Coolify wrote into the deployed directory instead: the
+`<uuid>_<service>:<commit>` tag on the image in the compose file it rewrites,
+or `SOURCE_COMMIT` in the `.env` beside it (one line, never printed). If
+neither is there, the answer is "cannot tell" and it alerts — a deploy wrongly
 asked for costs a message, one wrongly assumed done costs the deploy.
 
 It sends that through the container (`docker exec … --alert`) rather

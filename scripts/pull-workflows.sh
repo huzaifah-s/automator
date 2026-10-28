@@ -149,9 +149,10 @@ UNSPOKEN_FOR='^(workflows/|views/|Dockerfile$|docker-compose\.yml$|README\.md$)'
 # It judges by every changed file it can trust rather than by the blocking ones
 # alone, so a commit that changes only a file Coolify rewrites is still
 # answerable as long as it carries anything else (a CHANGELOG entry, usually).
-# With nothing trustworthy in the diff the honest answer is "cannot tell", and
-# that alerts — a deploy wrongly asked for costs a message, one wrongly assumed
-# done costs the deploy.
+# With nothing trustworthy in the diff it asks Coolify's own record of the
+# commit (deployed_commit below), and only when that is missing too is the
+# answer "cannot tell", which alerts — a deploy wrongly asked for costs a
+# message, one wrongly assumed done costs the deploy.
 already_deployed() {
   [ -n "$LIVE_DIR" ] || return 1
   # The question is whether the files that *block* are live, not whether every
@@ -166,7 +167,17 @@ already_deployed() {
   if [ -z "$witnesses" ]; then
     witnesses=$(printf '%s\n' "$changed" | grep -Ev "$UNSPOKEN_FOR" || true)
   fi
-  [ -n "$witnesses" ] || return 1
+  # Nothing in the diff can answer — a commit that changes docker-compose.yml
+  # and nothing else. Before this, that alerted every half hour for good after
+  # its deploy, because nothing would ever move this checkout past it
+  # (2026-10-28, 81876f5 and 539370b). An unknown sha fails the ancestry
+  # check, so a commit this clone has not fetched still alerts.
+  if [ -z "$witnesses" ]; then
+    deployed=$(deployed_commit)
+    [ -n "$deployed" ] || return 1
+    git merge-base --is-ancestor "$target" "$deployed" 2>/dev/null
+    return
+  fi
   printf '%s\n' "$witnesses" | while IFS= read -r path; do
     want=$(git rev-parse --quiet --verify "$target:$path" 2>/dev/null || true)
     if [ -z "$want" ]; then
@@ -178,6 +189,26 @@ already_deployed() {
     got=$(git hash-object --no-filters -- "$LIVE_DIR/$path" 2>/dev/null || true)
     [ "$got" = "$want" ] || exit 1
   done
+}
+
+# The commit Coolify says it deployed, or nothing.
+#
+# A Compose deploy writes it into the deployed directory twice: the image it
+# builds is tagged <uuid>_<service>:<commit> in the docker-compose.yml it
+# rewrites, and SOURCE_COMMIT=<commit> goes in the .env beside it. Neither is a
+# file from the repo, so neither can be something this clone put there. Only a
+# full sha counts — a preview deploy tags pr-<n> — and an older Coolify may
+# write neither, which leaves the caller with "cannot tell".
+#
+# .env holds every secret the app has. One line is read out of it, it has to
+# be a sha to come back, and none of it is printed.
+deployed_commit() {
+  [ -n "$LIVE_DIR" ] || return 0
+  {
+    grep -E '^[[:space:]]*image:' "$LIVE_DIR/docker-compose.yml" 2>/dev/null |
+      grep -Eo ':[0-9a-f]{40}' | tr -d ':'
+    sed -n "s/^SOURCE_COMMIT=[\"']\{0,1\}\([0-9a-f]\{40\}\)[\"']\{0,1\}\$/\1/p" "$LIVE_DIR/.env" 2>/dev/null
+  } | head -n 1
 }
 
 branch=$(git rev-parse --abbrev-ref HEAD)

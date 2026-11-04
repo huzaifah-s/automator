@@ -101,9 +101,27 @@ export function wrongEndpoint(identity: McpIdentity, here: string): string {
   const its = identity.audiences[0] ?? "ops";
   return (
     `"${identity.label}" is ${AUDIENCE_NAME[its]}. This endpoint is ${here} — ` +
-    `connect this token to ${AUDIENCE_PATH[its]} instead, or create one for this endpoint ` +
-    "on the dashboard's MCP tab."
+    `connect this token to ${identity.id ? tokenPath(identity.id) : AUDIENCE_PATH[its]} instead, ` +
+    "or create one for this endpoint on the dashboard's MCP tab."
   );
+}
+
+/**
+ * A stored token's own URL path: `/mcp/<id>`, whatever the token is for.
+ *
+ * This is the address to give a client. Every token gets a URL of its own,
+ * which is what lets claude.ai hold one connector per token (it refuses two
+ * connectors with the same URL), and the server serves at it whatever the
+ * token is for. The shared paths — /mcp, /mcp/tables, /mcp/assistant — keep
+ * working for existing clients.
+ *
+ * The id is not a secret. It is the same id as the dashboard's
+ * /mcp-tokens/<id>, so the URL can sit in a log line, a screenshot or an
+ * organisation's connector list. The token itself still travels only in the
+ * Authorization header, and must be the token the path names.
+ */
+export function tokenPath(id: string): string {
+  return `/mcp/${id}`;
 }
 
 /** Recognisable in a log line or a config file as this and nothing else. */

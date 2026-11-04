@@ -3596,6 +3596,15 @@ export interface ConnectionChoice {
   tools: string[];
 }
 
+/**
+ * The name a client gives this token's server — `automator-magnicas` — so
+ * two tokens added to one client do not collide on "automator".
+ */
+function clientName(tokenName: string): string {
+  const slug = tokenName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return slug ? `automator-${slug}` : "automator";
+}
+
 /** How each audience reads on the MCP tab: its tag, its endpoint, a client name. */
 const AUDIENCE_UI: Record<McpAudience, { tag: string; path: string; client: string }> = {
   ops: { tag: "ops", path: "/mcp", client: "automator" },
@@ -3710,7 +3719,7 @@ export function mcpTokensPage(args: {
   tokens: McpTokenView[];
   writable: boolean;
   /** Set only on the response that just minted one. Shown once, then gone. */
-  created?: { name: string; token: string; audience: McpAudience } | null;
+  created?: { name: string; token: string; audience: McpAudience; id: string } | null;
   /** True when DASHBOARD_USER/PASS are set — minting is refused without them. */
   authenticated: boolean;
   /** Loaded data tables, offered as the optional scope on a new token. */
@@ -3762,12 +3771,18 @@ export function mcpTokensPage(args: {
             <div class="mono" style="margin:9px 0;word-break:break-all;font-size:13px">
               ${created.token}
             </div>
-            Connect a client with:
+            Its URL is <code class="mono">${base}/mcp/${created.id}</code> — its own, so it
+            never clashes with another token's connector. Connect Claude Code with:
             <div class="mono" style="margin-top:7px;word-break:break-all;font-size:11.5px">
               claude mcp add --transport http
-              ${AUDIENCE_UI[created.audience].client}
-              ${base}${AUDIENCE_UI[created.audience].path} --header
+              ${clientName(created.name)}
+              ${base}/mcp/${created.id} --header
               "Authorization: Bearer ${created.token}"
+            </div>
+            <div style="margin-top:7px">
+              Or in claude.ai, <b>Add custom connector</b> with that URL and a request header
+              <code class="mono">Authorization</code> set to <code class="mono">Bearer</code>, a
+              space, and the token.
             </div>
           </div>`
         : ""}
@@ -4114,7 +4129,10 @@ export function mcpTokenPage(args: {
   const ui = AUDIENCE_UI[t.audience];
   const about = AUDIENCE_ABOUT[t.audience];
   const base = args.publicUrl ?? "https://your-runner";
-  const endpoint = `${base}${ui.path}`;
+  // The token's own URL. The shared path still works, but this one is what a
+  // client should be given: unique per token, so claude.ai can hold one
+  // connector per token.
+  const endpoint = `${base}/mcp/${t.id}`;
   const canEdit = args.writable && args.authenticated;
 
   const loaded = new Map(args.dataTables.map((d) => [d.name, d]));
@@ -4147,7 +4165,7 @@ export function mcpTokenPage(args: {
         : ""}
 
       <div class="stats">
-        <div class="stat"><b>${about.title}</b><span>endpoint ${ui.path}</span></div>
+        <div class="stat"><b>${about.title}</b><span>at /mcp/${t.id}</span></div>
         <div class="stat">
           <b class="${t.scope === "full" ? "skipped" : ""}">${t.scope === "full" ? "Full" : "Read only"}</b>
           <span>${t.scope === "full" ? "can change things" : "changes nothing"}</span>
@@ -4167,8 +4185,8 @@ export function mcpTokenPage(args: {
       ${t.lastUsedAt === null
         ? html`<div class="note">
             <b>Never used.</b> Nothing has called the endpoint with this token yet. If a client
-            is set up with it, check it points at <code class="mono">${ui.path}</code> — a token
-            sent to another endpoint is refused there — and that it sends the
+            is set up with it, check it points at <code class="mono">/mcp/${t.id}</code> — a token
+            sent to another token's URL is refused there — and that it sends the
             <code class="mono">Authorization: Bearer</code> header.
           </div>`
         : ""}
@@ -4176,7 +4194,9 @@ export function mcpTokenPage(args: {
       <h2>Token</h2>
       <div class="card"><table class="kv"><tbody>
         <tr><td>For</td><td><b>${about.title}</b> <span class="muted">— ${about.about}</span></td></tr>
-        <tr><td>Endpoint</td><td class="mono" style="word-break:break-all">${endpoint}</td></tr>
+        <tr><td>URL</td><td class="mono" style="word-break:break-all">${endpoint}
+          <div class="muted" style="font-family:var(--sans);font-size:12px">This token's own address. The shared
+            <span class="mono">${ui.path}</span> still works for clients set up before it.</div></td></tr>
         <tr><td>Access</td><td>${t.scope === "full"
           ? html`<span class="pill skipped">full</span>
               <span class="muted">every tool, including the ones that change things</span>`
@@ -4254,8 +4274,13 @@ export function mcpTokenPage(args: {
       <h2>Connect a client</h2>
       <div class="card" style="padding:12px 14px">
         <div class="mono" style="word-break:break-all;font-size:12px">
-          claude mcp add --transport http ${ui.client} ${endpoint} --header
+          claude mcp add --transport http ${clientName(t.name)} ${endpoint} --header
           "Authorization: Bearer &lt;your token&gt;"
+        </div>
+        <div class="muted" style="font-size:12px;margin-top:8px">
+          In claude.ai: <b>Add custom connector</b>, this URL, and a request header
+          <span class="mono">Authorization</span> = <span class="mono">Bearer &lt;your token&gt;</span>.
+          Each token has its own URL, so each can be its own connector.
         </div>
         <div class="muted" style="font-size:12px;margin-top:8px">
           Put the token in place of <span class="mono">&lt;your token&gt;</span>. It was shown once,

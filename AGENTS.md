@@ -1337,10 +1337,20 @@ Credentials tab takes effect without a restart. A grant whose limits no longer
 parse after a deploy brings no tools and logs a warning; it is never read
 loosely.
 
-**Planned:** `/mcp/tables` and `/mcp/assistant` (and the operations tools
-themselves) are meant to become built-in connectors on `/mcp`, keeping their
-old paths as aliases so existing `.mcp.json` files keep working. Until that
-happens, connections are the only thing that arrives through grants.
+**Every stored token has its own URL, `/mcp/<id>`** (`tokenPath()`). The
+route in `app.ts` checks that the header is the token the path names, then
+hands the request unchanged to the endpoint the token is for. That endpoint
+checks the token again as usual. The id is not secret. The token never goes
+in a URL: URLs end up in proxy logs, the debug request log and claude.ai's
+organization connector list. The shared paths stay for existing clients and
+for `MCP_TOKEN`, which has no id.
+
+**Planned:** the data-table and assistant tools (and the operations tools
+themselves) are meant to become built-in connectors chosen by grants. The
+per-token URL already makes the path irrelevant to the client; what is left
+is the token deciding the *tool list* through grants instead of through its
+audience. Until then, connections are the only thing that arrives through
+grants.
 
 ## Adding a platform to the Credentials tab
 

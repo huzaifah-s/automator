@@ -67,6 +67,8 @@ import { createTableMcpRouter, tableToolList } from "./mcp-tables.ts";
 import { assistantToolList, createAssistantMcpRouter } from "./mcp-assistant.ts";
 import {
   createMcpToken,
+  identify,
+  tokenPath,
   deleteMcpToken,
   isAudience,
   isScope,
@@ -472,9 +474,66 @@ export function createApp(registry: Registry): Hono {
   // Before "/mcp", so the more specific path wins: Hono matches in
   // registration order and "/mcp" would otherwise swallow "/mcp/tables" and
   // "/mcp/assistant".
-  app.route("/mcp/tables", createTableMcpRouter());
-  app.route("/mcp/assistant", createAssistantMcpRouter(registry));
-  app.route("/mcp", createMcpRouter(registry));
+  const tablesMcp = createTableMcpRouter();
+  const assistantMcp = createAssistantMcpRouter(registry);
+  const opsMcp = createMcpRouter(registry);
+  app.route("/mcp/tables", tablesMcp);
+  app.route("/mcp/assistant", assistantMcp);
+
+  /**
+   * A token's own URL, /mcp/<id> — the one to give a client.
+   *
+   * Nothing is served here that the shared paths do not serve: the request
+   * goes to whichever endpoint the token is for, unchanged, and that endpoint
+   * checks the token again as it always does. What this route adds is that
+   * the header must be the token the URL names. A token pasted under another
+   * token's URL is refused rather than served, because a config whose URL says
+   * one token and whose header carries another is a mix-up, and finding out
+   * from the wrong tool list is the worst way to find out.
+   *
+   * A request with no valid token learns nothing about which ids exist: it
+   * gets the same 401 as anywhere else. MCP_TOKEN has no id and no URL of
+   * its own — it is the way back in and uses the shared paths.
+   */
+  app.all("/mcp/:id", async (c) => {
+    const presented =
+      c.req.header("authorization")?.replace(/^Bearer\s+/i, "") ?? c.req.header("x-mcp-token") ?? "";
+    const identity = identify(presented);
+    if (!identity) {
+      return c.json({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "Unauthorized" } }, 401, {
+        "WWW-Authenticate": "Bearer",
+      });
+    }
+    const id = c.req.param("id");
+    if (identity.id !== id) {
+      return c.json(
+        {
+          jsonrpc: "2.0",
+          id: null,
+          error: {
+            code: -32001,
+            message: identity.id
+              ? `This URL is for another token. "${identity.label}" has its own: ${tokenPath(identity.id)}`
+              : `"${identity.label}" has no URL of its own — connect it to /mcp, /mcp/tables or /mcp/assistant.`,
+          },
+        },
+        403,
+      );
+    }
+    const router =
+      identity.audiences[0] === "tables"
+        ? tablesMcp
+        : identity.audiences[0] === "assistant"
+          ? assistantMcp
+          : opsMcp; // operations and connections are both served by /mcp
+    // The sub-routers serve "/", so the request is handed over at that path
+    // with its method, headers and body as they arrived.
+    const url = new URL(c.req.url);
+    url.pathname = "/";
+    return router.fetch(new Request(url, c.req.raw));
+  });
+
+  app.route("/mcp", opsMcp);
 
   /**
    * Running a view and rendering it.
@@ -1105,7 +1164,7 @@ export function createApp(registry: Registry): Hono {
   const renderMcp = (
     c: any,
     opts: {
-      created?: { name: string; token: string; audience: McpAudience } | null;
+      created?: { name: string; token: string; audience: McpAudience; id: string } | null;
       error?: string;
       status?: 200 | 400;
       draft?: McpTokenDraft;
@@ -1255,12 +1314,12 @@ export function createApp(registry: Registry): Hono {
       return refuse(err instanceof Error ? err.message : String(err));
     }
 
-    const { token } = createMcpToken(name, scope, { audience, tables, grants });
+    const { token, id } = createMcpToken(name, scope, { audience, tables, grants });
     // Answered with the page rather than a redirect, which every other form
     // here does. The plaintext exists for exactly this response — it is not in
     // the database and cannot go in a query string — so a redirect would throw
     // away the only copy.
-    return renderMcp(c, { created: { name, token, audience } });
+    return renderMcp(c, { created: { name, token, audience, id } });
   });
 
   /**
@@ -2373,6 +2432,7 @@ export function createApp(registry: Registry): Hono {
         lastUsedAt: t.last_used_at === null ? null : new Date(t.last_used_at).toISOString(),
         lastClient: t.last_client,
         calls: t.calls,
+        url: `${publicUrl ?? ""}${tokenPath(t.id)}`,
         audience: isAudience(t.audience) ? t.audience : "ops",
         // Which connections and limits, never anything a grant could reach.
         grants: t.audience === "connections" ? storedGrants(t.grants) : null,
@@ -2414,7 +2474,20 @@ export function createApp(registry: Registry): Hono {
     // tab's "read only" pill never claims less than the token can do.
     const tokenScope = grants ? (grants.some((g) => g.access === "full") ? "full" : "read") : scope;
     const { token, id } = createMcpToken(name, tokenScope, { audience, tables, grants });
-    return c.json({ id, name, scope: tokenScope, audience, tables: tables ?? null, grants: grants ?? null, token }, 201);
+    return c.json(
+      {
+        id,
+        name,
+        scope: tokenScope,
+        audience,
+        tables: tables ?? null,
+        grants: grants ?? null,
+        // The token's own address, relative unless PUBLIC_URL says where this runs.
+        url: `${publicUrl ?? ""}${tokenPath(id)}`,
+        token,
+      },
+      201,
+    );
   });
 
   app.delete("/api/mcp-tokens/:id", (c) =>

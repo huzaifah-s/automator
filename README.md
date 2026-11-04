@@ -2846,8 +2846,23 @@ its client sees, when it was last used and by what — and a form that changes
 its access or its tables in place, without a new token to paste:
 
 ```bash
-claude mcp add --transport http automator https://<PUBLIC_URL>/mcp --header "Authorization: Bearer <token>"
+claude mcp add --transport http automator-laptop https://<PUBLIC_URL>/mcp/<token id> --header "Authorization: Bearer <token>"
 ```
+
+**Every token has its own URL, `/mcp/<token id>`**, and that's the one to give
+a client. The server serves whatever the token is for there: operations, data
+tables, the assistant or connections. Because each token's URL is different,
+claude.ai can hold a separate connector for each one; it refuses two
+connectors with the same URL. To add one in claude.ai, choose **Add custom
+connector**, enter that URL, and add a request header `Authorization` with the
+value `Bearer <token>`.
+
+The id isn't a secret. It's the same id as the token's page on the dashboard,
+so the URL is safe in a log or a screenshot. The token itself travels only in
+the header, and it must be the token the URL names: a token sent to another
+token's URL is refused. The shared paths `/mcp`, `/mcp/tables` and
+`/mcp/assistant` keep working for clients set up before per-token URLs
+existed, and `MCP_TOKEN`, which has no id, uses them.
 
 Only the digest is stored, so a copy of the database is not a set of working
 keys and a lost token is replaced rather than recovered. Minting one needs

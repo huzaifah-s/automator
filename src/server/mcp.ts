@@ -60,7 +60,6 @@ import { quietRoutes } from "../core/quiet.ts";
 import { nextRunFor, scheduleWorkflow, unscheduleWorkflow } from "../core/scheduler.ts";
 import {
   identify,
-  mayUseEndpoint,
   mcpEnabled,
   noteUse,
   wrongEndpoint,
@@ -70,7 +69,9 @@ import { listCredentials, testCredential, credentialRef } from "../core/credenti
 import { secretStoreReady, storedSecretKeys } from "../core/secret-store.ts";
 import { listVariables, setVariable } from "../core/variables.ts";
 import { planReplay, workflowsBlockedBy } from "./inspect.ts";
-import { grantInstructions, grantTools } from "../connectors/index.ts";
+import { grantInstructions, grantPrompts, grantTools } from "../connectors/index.ts";
+import type { Connector } from "../connectors/types.ts";
+import { z } from "zod";
 import type { Registry } from "../core/loader.ts";
 import type { RunRecord } from "../core/types.ts";
 
@@ -1341,31 +1342,67 @@ export interface ToolSummary {
 }
 
 /**
- * The operations tools, for the dashboard's token page. Built from the same
- * list the endpoint serves, so the page cannot claim a tool the endpoint
- * does not have.
+ * The operations tools as a connector — what an `ops` grant brings. Built
+ * from the same list the endpoint has always served, with the same bare
+ * names, so every existing client, prompt and cached tool list still works.
+ * Registered at boot (app.ts), because the tools read the loaded workflows.
  */
-export function opsToolList(registry: Registry): ToolSummary[] {
-  return buildTools(registry).map((t) => ({
-    name: t.name,
-    description: t.description,
-    write: t.scope === "write",
-  }));
+export function opsConnector(registry: Registry): Connector<Record<string, never>> {
+  return {
+    id: "ops",
+    label: "Operations",
+    blurb: "Workflows, runs, failures and triggers — the runner itself.",
+    prefix: "",
+    logErrors: true,
+    instructions:
+      "Operational data for a code-first automation runner. Call `overview` first - it " +
+      "answers 'what is wrong' in one result. Prefer `failures` over listing runs; " +
+      "`run` is the only expensive call. Workflow source is not served here: the " +
+      "workflows are TypeScript files in the repository. Tools marked SIDE EFFECTS run " +
+      "production workflows for real - confirm with the user before calling one.",
+    limits: {
+      schema: z.object({}).strict() as unknown as z.ZodType<Record<string, never>>,
+      fields: [],
+      describe: () => "",
+    },
+    prompts: PROMPTS,
+    tools: buildTools(registry).map((t) => ({
+      name: t.name,
+      description: t.description,
+      access: t.scope,
+      inputSchema: t.inputSchema,
+      run: (args) => t.run(args),
+    })),
+  };
 }
 
+/** How long one tool call may take before the client is answered. */
+const CALL_TIMEOUT_MS = 60_000;
+
 /**
- * The MCP router, mounted at /mcp. Registered before the dashboard's basic
- * auth and carrying its own bearer check, the same way /hooks does — an agent
- * authenticates as itself, not as whoever has the dashboard password.
+ * The MCP router: serves a token whatever its grants bring (src/connectors/).
+ *
+ * Mounted at /mcp, at every token's own /mcp/<id>, and — narrowed with
+ * `only` — at the old /mcp/tables, which serves just the data-table grant.
+ * There is one router because there is one rule: the token decides the
+ * tools. Registered before the dashboard's basic auth with its own bearer
+ * check, the same way /hooks is — an agent authenticates as itself.
  */
-export function createMcpRouter(registry: Registry): Hono<{ Variables: { mcp: McpIdentity } }> {
+export function createMcpRouter(
+  opts: {
+    /** Serve only this connector's grant — the old single-purpose paths. */
+    only?: string;
+    /** What this path is, for the refusal a token without that grant gets. */
+    here?: string;
+    serverName?: string;
+  } = {},
+): Hono<{ Variables: { mcp: McpIdentity } }> {
   // The identity rides on the context rather than being resolved twice, so the
   // Hono instance is typed with it.
   const app = new Hono<{ Variables: { mcp: McpIdentity } }>();
-  const tools = buildTools(registry);
-  const byName = new Map(tools.map((t) => [t.name, t]));
+  const { only, here = "the runner's MCP", serverName = "automator" } = opts;
 
-  if (!mcpEnabled()) {
+  if (!only && !mcpEnabled()) {
     log.warn(
       "No MCP token exists — /mcp is closed. Create one on the dashboard (MCP tab), " +
         "or set MCP_TOKEN.",
@@ -1396,18 +1433,13 @@ export function createMcpRouter(registry: Registry): Hono<{ Variables: { mcp: Mc
         "WWW-Authenticate": "Bearer",
       });
     }
-    // A token minted for the data tables is refused here outright, rather than
-    // being let in with a narrowed tool list. This endpoint can trigger and
-    // replay production workflows; a credential created to write expense rows
-    // has no business reaching it, and until the two audiences existed it
-    // silently could.
-    // A connections token is let in too — /mcp is where connections are
-    // served — but only ever sees its own connections' tools, never these.
-    if (!mayUseEndpoint(identity, "ops") && !mayUseEndpoint(identity, "connections")) {
-      return c.json(
-        rpcError(null, -32001, wrongEndpoint(identity, "the runner's operations MCP")),
-        403,
-      );
+    // Refused outright rather than let in with an empty tool list: a token
+    // with nothing to do here was pointed at the wrong place, and an empty
+    // list reads as a broken server. An assistant token has no grants — its
+    // tools are /mcp/assistant's, which says so.
+    const reaches = only ? identity.grants.some((g) => g.connector === only) : identity.grants.length > 0;
+    if (!reaches) {
+      return c.json(rpcError(null, -32001, wrongEndpoint(identity, here)), 403);
     }
     c.set("mcp", identity);
     // Every authenticated request, not just the handshake: "last used" is the
@@ -1416,41 +1448,6 @@ export function createMcpRouter(registry: Registry): Hono<{ Variables: { mcp: Mc
     noteUse(identity, null);
     return next();
   });
-
-  /**
-   * The tools this caller is served, each able to run: the operations tools
-   * for an operations token, its connections' tools for a connections token
-   * (src/connectors/). A read token is not shown the write operations tools;
-   * a connection's write tools come only with a `full` grant, which
-   * grantTools() has already decided.
-   */
-  interface Served {
-    name: string;
-    description: string;
-    inputSchema: Tool["inputSchema"];
-    /** Set on an operations write tool this token may not call. */
-    readOnlyToken?: boolean;
-    run(args: Record<string, unknown>, signal: AbortSignal): Promise<string> | string;
-  }
-  const servedTo = (identity: McpIdentity): Served[] => {
-    const served: Served[] = [];
-    if (mayUseEndpoint(identity, "ops")) {
-      for (const t of tools) {
-        served.push({
-          name: t.name,
-          description: t.description,
-          inputSchema: t.inputSchema,
-          readOnlyToken: t.scope === "write" && identity.scope !== "full",
-          run: (args) => t.run(args),
-        });
-      }
-    }
-    if (mayUseEndpoint(identity, "connections")) served.push(...grantTools(identity));
-    return served;
-  };
-
-  /** How long one connection tool call may take before the client is answered. */
-  const CONNECTION_TIMEOUT_MS = 60_000;
 
   async function dispatch(msg: Rpc, identity: McpIdentity): Promise<object | null> {
     const { id, method, params } = msg;
@@ -1475,19 +1472,8 @@ export function createMcpRouter(registry: Registry): Hono<{ Variables: { mcp: Mc
           result: {
             protocolVersion: PROTOCOL_VERSIONS.includes(asked) ? asked : PROTOCOL_VERSIONS[0],
             capabilities: { tools: { listChanged: false }, prompts: { listChanged: false } },
-            serverInfo: { name: "automator", version: "0.1.0" },
-            instructions: [
-              mayUseEndpoint(identity, "ops")
-                ? "Operational data for a code-first automation runner. Call `overview` first - it " +
-                  "answers 'what is wrong' in one result. Prefer `failures` over listing runs; " +
-                  "`run` is the only expensive call. Workflow source is not served here: the " +
-                  "workflows are TypeScript files in the repository. Tools marked SIDE EFFECTS run " +
-                  "production workflows for real - confirm with the user before calling one."
-                : "",
-              mayUseEndpoint(identity, "connections") ? grantInstructions(identity) : "",
-            ]
-              .filter(Boolean)
-              .join(" "),
+            serverInfo: { name: serverName, version: "0.1.0" },
+            instructions: grantInstructions(identity, only),
           },
         };
       }
@@ -1498,20 +1484,20 @@ export function createMcpRouter(registry: Registry): Hono<{ Variables: { mcp: Mc
           jsonrpc: "2.0",
           id: id ?? null,
           result: {
-            tools: servedTo(identity).filter((t) => !t.readOnlyToken).map((t) => ({
-              name: t.name,
-              description: t.description,
-              inputSchema: t.inputSchema,
-            })),
+            // A tool this token may not call is not listed at all: a
+            // description it cannot use is still paid for on every turn.
+            tools: grantTools(identity, only)
+              .filter((t) => t.allowed)
+              .map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
           },
         };
       case "tools/call": {
         const name = String(params?.["name"] ?? "");
-        const tool = servedTo(identity).find((t) => t.name === name);
+        const tool = grantTools(identity, only).find((t) => t.name === name);
         if (!tool) return rpcError(id, -32602, `Unknown tool "${name}"`);
         // Hidden from the list is not the same as refused, and both are needed:
         // a client could have cached the list from a full-scope token.
-        if (tool.readOnlyToken) {
+        if (!tool.allowed) {
           return {
             jsonrpc: "2.0",
             id: id ?? null,
@@ -1520,8 +1506,8 @@ export function createMcpRouter(registry: Registry): Hono<{ Variables: { mcp: Mc
                 {
                   type: "text",
                   text:
-                    `"${name}" needs a full-scope token. This one ("${identity.label}") is ` +
-                    `read-only — it can look at everything and change nothing.`,
+                    `"${name}" needs full access. This token ("${identity.label}") is ` +
+                    `read-only there — it can look and change nothing.`,
                 },
               ],
               isError: true,
@@ -1530,7 +1516,7 @@ export function createMcpRouter(registry: Registry): Hono<{ Variables: { mcp: Mc
         }
         const args = (params?.["arguments"] as Record<string, unknown> | undefined) ?? {};
         try {
-          const text = await tool.run(args, AbortSignal.timeout(CONNECTION_TIMEOUT_MS));
+          const text = await tool.run(args, AbortSignal.timeout(CALL_TIMEOUT_MS));
           return {
             jsonrpc: "2.0",
             id: id ?? null,
@@ -1540,11 +1526,11 @@ export function createMcpRouter(registry: Registry): Hono<{ Variables: { mcp: Mc
           };
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          // The tool name only for a connection: its arguments and errors can
-          // carry a chat name or a search phrase, and a log line is not the
-          // place for either.
+          // The message only for the runner's own tools: a connection's
+          // arguments and errors can carry a chat name or a search phrase,
+          // and a log line is not the place for either.
           log.warn(
-            mayUseEndpoint(identity, "ops") && byName.has(name)
+            tool.logErrors
               ? `MCP tool ${name} failed: ${message}`
               : `MCP tool ${name} failed (token "${identity.label}")`,
           );
@@ -1562,9 +1548,7 @@ export function createMcpRouter(registry: Registry): Hono<{ Variables: { mcp: Mc
           jsonrpc: "2.0",
           id: id ?? null,
           result: {
-            // The prompts are operations routines; a connections token has
-            // no tool they would call.
-            prompts: (mayUseEndpoint(identity, "ops") ? PROMPTS : []).map((p) => ({
+            prompts: grantPrompts(identity, only).map((p) => ({
               name: p.name,
               description: p.description,
               arguments: p.arguments,
@@ -1573,7 +1557,7 @@ export function createMcpRouter(registry: Registry): Hono<{ Variables: { mcp: Mc
         };
       case "prompts/get": {
         const name = String(params?.["name"] ?? "");
-        const prompt = mayUseEndpoint(identity, "ops") ? PROMPTS.find((p) => p.name === name) : undefined;
+        const prompt = grantPrompts(identity, only).find((p) => p.name === name);
         if (!prompt) return rpcError(id, -32602, `Unknown prompt "${name}"`);
         const given = (params?.["arguments"] as Record<string, string> | undefined) ?? {};
         return {

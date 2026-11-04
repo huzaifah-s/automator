@@ -2,20 +2,17 @@
  * The data-table MCP endpoint — what an agent sees of the rows this runner
  * keeps, as opposed to `mcp.ts`, which is what it sees of the runner itself.
  *
- * Mounted at POST /mcp/tables, same transport as its sibling: JSON-RPC in a
- * POST body, no SDK, no session.
+ * The tools are served by the shared router in `mcp.ts`.
  *
- * ## Why this is a second endpoint and not six more tools on the first one
+ * ## Served as a grant
  *
- * `mcp.ts` answers about runs, and the rule above it is that adding a tool
- * there means adding to a cost paid on every turn of every conversation,
- * whether or not it is called. A personal ledger and a production incident are
- * not the same conversation and almost never the same person's afternoon, so
- * making every "what is failing" chat carry six ledger tools — and every
- * ledger chat carry ten operational ones — is a bill nobody gets value from.
- *
- * Two endpoints, two tokens, two tool lists. A client connects to the one it
- * needs.
+ * These tools used to be a second endpoint, so that a "what is failing" chat
+ * did not carry ledger tools and a ledger chat did not carry operational
+ * ones. That reason still holds; what changed is where it is decided. They
+ * are now the `tables` connector, and a token carries them only if it has a
+ * `tables` grant — so the tool list is still exactly what the token needs,
+ * at /mcp/<id>. /mcp/tables keeps working for existing clients, narrowed to
+ * this one connector.
  *
  * ## Scope
  *
@@ -40,9 +37,8 @@
  *      "which of these did the agent write" is a column and not a guess.
  */
 
-import { Hono } from "hono";
-import type { ToolSummary } from "./mcp.ts";
-import { log } from "../core/logger.ts";
+import { z } from "zod";
+import type { Connector } from "../connectors/types.ts";
 import {
   allTables,
   getTable,
@@ -53,12 +49,7 @@ import {
   type WhereClause,
 } from "../core/tables.ts";
 import {
-  identify,
-  mayUseEndpoint,
   mayUseTable,
-  mcpEnabled,
-  noteUse,
-  wrongEndpoint,
   type McpIdentity,
 } from "../core/mcp-tokens.ts";
 
@@ -500,171 +491,86 @@ function resolveId(def: LoadedTable, given: string): string {
 
 /* ------------------------------------------------------------- transport */
 
-interface Rpc {
-  jsonrpc?: "2.0";
-  id?: string | number | null;
-  method?: string;
-  params?: Record<string, unknown>;
-}
-
-const rpcError = (id: Rpc["id"], code: number, message: string) => ({
-  jsonrpc: "2.0" as const,
-  id: id ?? null,
-  error: { code, message },
-});
-
-/** The data-table tools, for the dashboard's token page — the endpoint's own list. */
-export function tableToolList(): ToolSummary[] {
-  return TOOLS.map((t) => ({ name: t.name, description: t.description, write: t.scope === "write" }));
-}
-
-/** Mounted at /mcp/tables, with its own bearer check like its sibling. */
-export function createTableMcpRouter(): Hono<{ Variables: { mcp: McpIdentity } }> {
-  const app = new Hono<{ Variables: { mcp: McpIdentity } }>();
-  const byName = new Map(TOOLS.map((t) => [t.name, t]));
-
-  app.use("*", async (c, next) => {
-    if (!mcpEnabled()) {
-      return c.json(
-        rpcError(null, -32001, "MCP is disabled on this server: no token exists."),
-        503,
-      );
-    }
-    const presented =
-      c.req.header("authorization")?.replace(/^Bearer\s+/i, "") ??
-      c.req.header("x-mcp-token") ??
-      "";
-    const identity = identify(presented);
-    if (!identity) {
-      return c.json(rpcError(null, -32001, "Unauthorized"), 401, { "WWW-Authenticate": "Bearer" });
-    }
-    // The mirror of the check on /mcp. An operations token reaches runs and
-    // workflows and stops there; the ledger is not an extra thing it gets.
-    if (!mayUseEndpoint(identity, "tables")) {
-      return c.json(
-        rpcError(null, -32001, wrongEndpoint(identity, "the data-table MCP")),
-        403,
-      );
-    }
-    c.set("mcp", identity);
-    noteUse(identity, null);
-    return next();
-  });
-
-  const visibleTo = (identity: McpIdentity) =>
-    identity.scope === "full" ? TOOLS : TOOLS.filter((t) => t.scope === "read");
-
-  function dispatch(msg: Rpc, identity: McpIdentity): object | null {
-    const { id, method, params } = msg;
-    const isNotification = id === undefined || id === null;
-
-    switch (method) {
-      case "initialize": {
-        const asked = String(params?.["protocolVersion"] ?? "");
-        const info = params?.["clientInfo"] as { name?: string; version?: string } | undefined;
-        noteUse(
-          identity,
-          info?.name ? `${info.name}${info.version ? ` ${info.version}` : ""}`.slice(0, 80) : null,
+/**
+ * The data-table tools as a connector — what a `tables` grant brings, with
+ * the same bare names they always had. The grant's `tables` is the list a
+ * token may reach, or null for all of them, including tables added later.
+ * A list is a closed set: a table added later does not appear to a token
+ * that named its tables, which is the right direction for a permission to
+ * drift in.
+ *
+ * The tools still take an identity, because that is what they were written
+ * against: this builds one from the grant — its access, its tables, and the
+ * token's label, which every write records as its author.
+ */
+export const tablesConnector: Connector<TableLimits> = {
+  id: "tables",
+  label: "Data tables",
+  blurb: "Reading and writing rows in the runner's data tables.",
+  prefix: "",
+  logErrors: true,
+  instructions: (limits) => {
+    const reach = allTables()
+      .filter((t) => limits.tables === null || limits.tables.includes(t.name))
+      .map((t) => t.name);
+    return (
+      `Data tables kept by an automation runner: ${reach.join(", ") || "none on this token"}. ` +
+      "Call `tables` first for the columns. Use `totals` for anything you would " +
+      "otherwise add up yourself — it groups in SQL and returns a few lines, where " +
+      "`rows` returns rows. Money columns are stored as whole cents and displayed as " +
+      "decimals; write them back as cents (42.50 is 4250) or the write is refused. " +
+      "Tools marked SIDE EFFECTS change stored data — confirm with the user first."
+    );
+  },
+  limits: {
+    schema: z
+      .object({ tables: z.array(z.string().min(1)).nullable().default(null) })
+      .strict()
+      .refine((l) => l.tables === null || l.tables.length > 0, {
+        message: "Tick at least one table, or choose all of them — a token for no tables reaches nothing",
+      }) as unknown as z.ZodType<TableLimits>,
+    // An unknown name is refused rather than ignored: a token silently scoped
+    // to a table that does not exist reaches nothing, and the first symptom
+    // is an agent reporting that the ledger is empty.
+    check(limits) {
+      if (limits.tables === null) return;
+      const known = new Set(allTables().map((t) => t.name));
+      const unknown = limits.tables.filter((n) => !known.has(n));
+      if (unknown.length) {
+        throw new Error(
+          `No such table: ${unknown.join(", ")}. Loaded tables are ${[...known].join(", ") || "(none)"}.`,
         );
-        const reach = visibleTables(identity).map((t) => t.name);
-        return {
-          jsonrpc: "2.0",
-          id: id ?? null,
-          result: {
-            protocolVersion: PROTOCOL_VERSIONS.includes(asked) ? asked : PROTOCOL_VERSIONS[0],
-            capabilities: { tools: { listChanged: false } },
-            serverInfo: { name: "automator-tables", version: "0.1.0" },
-            instructions:
-              `Data tables kept by an automation runner: ${reach.join(", ") || "none on this token"}. ` +
-              "Call `tables` first for the columns. Use `totals` for anything you would " +
-              "otherwise add up yourself — it groups in SQL and returns a few lines, where " +
-              "`rows` returns rows. Money columns are stored as whole cents and displayed as " +
-              "decimals; write them back as cents (42.50 is 4250) or the write is refused. " +
-              "Tools marked SIDE EFFECTS change stored data — confirm with the user first.",
-          },
-        };
       }
-      case "ping":
-        return isNotification ? null : { jsonrpc: "2.0", id, result: {} };
-      case "tools/list":
-        return {
-          jsonrpc: "2.0",
-          id: id ?? null,
-          result: {
-            tools: visibleTo(identity).map((t) => ({
-              name: t.name,
-              description: t.description,
-              inputSchema: t.inputSchema,
-            })),
-          },
-        };
-      case "tools/call": {
-        const name = String(params?.["name"] ?? "");
-        const tool = byName.get(name);
-        if (!tool) return rpcError(id, -32602, `Unknown tool "${name}"`);
+    },
+    fields: [
+      {
+        name: "tables",
+        label: "Which data tables",
+        kind: "tables",
+        help: "A token that names its tables never sees the others, and does not pick up tables added later.",
+      },
+    ],
+    describe: (l) =>
+      l.tables === null ? "all tables" : l.tables.length <= 3 ? l.tables.join(", ") : `${l.tables.length} tables`,
+  },
+  tools: TOOLS.map((t) => ({
+    name: t.name,
+    description: t.description,
+    access: t.scope,
+    inputSchema: t.inputSchema as Connector<TableLimits>["tools"][number]["inputSchema"],
+    run: (args, call) =>
+      t.run(args, {
+        scope: call.grant.access,
+        label: call.token.label,
+        id: call.token.id,
+        tables: call.limits.tables,
+        audiences: ["tables"],
+        grants: [],
+      }),
+  })),
+};
 
-        // Hidden from the list is not the same as refused: a client may have
-        // cached a list taken with a different token.
-        if (tool.scope === "write" && identity.scope !== "full") {
-          return {
-            jsonrpc: "2.0",
-            id: id ?? null,
-            result: {
-              content: [
-                {
-                  type: "text",
-                  text: `"${name}" needs a full-scope token. This one ("${identity.label}") is read-only.`,
-                },
-              ],
-              isError: true,
-            },
-          };
-        }
-
-        const args = (params?.["arguments"] as Record<string, unknown> | undefined) ?? {};
-        try {
-          return {
-            jsonrpc: "2.0",
-            id: id ?? null,
-            result: { content: [{ type: "text", text: clip(tool.run(args, identity), HARD_MAX_BYTES) }] },
-          };
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          log.warn(`MCP table tool ${name} failed: ${message}`);
-          // A refused write is a result the model has to be able to read and
-          // correct from — "amount is in cents" is the whole point of it.
-          return {
-            jsonrpc: "2.0",
-            id: id ?? null,
-            result: { content: [{ type: "text", text: message }], isError: true },
-          };
-        }
-      }
-      default:
-        return isNotification ? null : rpcError(id, -32601, `Unknown method "${method}"`);
-    }
-  }
-
-  app.post("/", async (c) => {
-    let body: unknown;
-    try {
-      body = await c.req.json();
-    } catch {
-      return c.json(rpcError(null, -32700, "Parse error"), 400);
-    }
-    const identity = c.get("mcp");
-    if (Array.isArray(body)) {
-      const replies = body
-        .map((m) => dispatch(m as Rpc, identity))
-        .filter((r): r is object => r !== null);
-      return replies.length === 0 ? c.body(null, 202) : c.json(replies);
-    }
-    const reply = dispatch(body as Rpc, identity);
-    return reply === null ? c.body(null, 202) : c.json(reply);
-  });
-
-  app.get("/", (c) => c.json(rpcError(null, -32000, "This endpoint is POST-only"), 405));
-  app.delete("/", (c) => c.json(rpcError(null, -32000, "Stateless: no session to end"), 405));
-
-  return app;
+interface TableLimits {
+  /** The tables a token may reach, or null for every one of them. */
+  tables: string[] | null;
 }

@@ -532,7 +532,7 @@ border:1px solid var(--border);background:var(--sunk);cursor:pointer}
    Written with :has() inside :not() so a browser without :has() drops the
    whole rule and shows it — the same behaviour this form had before the pick
    existed. */
-.form:not(:has(#aud-tables:checked)) .tablescope{display:none}
+
 
 /* ---- table picks ---- */
 /* Which tables a token reaches, as boxes to tick rather than names to type:
@@ -574,12 +574,10 @@ font-size:11.5px;color:var(--muted);margin-top:2px;line-height:1.4}
 .tablelinks .gone{border-style:dashed;color:var(--muted);padding:9px 11px;border-radius:8px;border:1px dashed var(--border)}
 .mr .name a{color:inherit;min-width:0}
 .mr .name a:hover b{color:var(--accent)}
-/* The connections a token can be given — shown only for a connections token.
-   Unlike the table list, this one is hidden by default: without :has() it is
-   simply absent, and a server that cannot show the pick refuses the token
-   with a sentence saying which box to tick. */
-.connscope{display:none}
-.form:has(#aud-connections:checked) .connscope{display:grid}
+/* What a token can use — hidden when the token is the assistant's, whose
+   tools are not a pick. Without :has() it is always shown, and the server
+   ignores it for an assistant token. */
+.form:has(#aud-assistant:checked) .connscope{display:none}
 .conn{display:grid;gap:8px;padding:10px 12px;border-radius:9px;border:1px solid var(--border);background:var(--sunk)}
 .conn .limits{display:none;gap:8px}
 .conn:has(.pick:checked) .limits{display:grid}
@@ -3575,23 +3573,34 @@ export interface McpTokenView {
   tables: string[] | null;
   /** Which endpoint it is for: "ops" (/mcp), "tables" (/mcp/tables) or "assistant" (/mcp/assistant). */
   audience: McpAudience;
-  /** A connections token's grants, one described line each. */
+  /** What it can use, one described line per grant. */
   grants: string[];
+  /** Whether a grant brings the data tables — `tables` is then that grant's list. */
+  hasTables: boolean;
   /** The same grants as the form holds them, to fill in the edit form. */
-  grantValues: { ref: string; limits: Record<string, string[]> }[];
+  grantValues: GrantValue[];
 }
 
-/** A credential a connections token can be given, as the form offers it. */
-export interface ConnectionChoice {
-  /** `provider:id`. */
+/** One grant as a form holds it: the box's value and the connector's limits. */
+export interface GrantValue {
   ref: string;
-  /** The platform's name. */
+  /** A list field's names, or — for the tables field — the tables, null for all. */
+  limits: Record<string, unknown>;
+}
+
+/** Something a token can be given, as the form offers it. */
+export interface ConnectionChoice {
+  /** `ops`, or `telegram_user:me` for a platform's credential — the box's value. */
+  ref: string;
+  /** The connector's name. */
   label: string;
-  /** The credential's name. */
-  id: string;
-  /** Connected — every required field set. */
+  /** One line under it. */
+  blurb: string;
+  /** The credential's name, for a platform's; null for the runner's own. */
+  id: string | null;
+  /** Connected — every required field set. Always true for the runner's own. */
   ready: boolean;
-  fields: { name: string; label: string; placeholder?: string; help: string }[];
+  fields: { name: string; label: string; kind?: "list" | "tables"; placeholder?: string; help: string }[];
   /** The tools a grant on it brings, for the form's help line. */
   tools: string[];
 }
@@ -3627,8 +3636,8 @@ export interface McpTokenDraft {
   scope: "read" | "full";
   /** Null for "all tables". */
   tables: string[] | null;
-  /** The connection boxes as they were, for a connections token. */
-  grants?: { ref: string; limits: Record<string, string[]> }[];
+  /** The boxes as they were ticked, with their limits. */
+  grants?: GrantValue[];
 }
 
 /** The first sentence of a description, for a card with two lines of room. */
@@ -3738,7 +3747,7 @@ export function mcpTokensPage(args: {
   const { tokens, writable, created, authenticated, envToken } = args;
   const draft = args.draft ?? null;
   const audienceChecked = (a: McpAudience) =>
-    (draft?.audience ?? "ops") === a ? raw("checked") : "";
+    (draft?.audience === "assistant" ? "assistant" : "connections") === a ? raw("checked") : "";
   const base = args.publicUrl ?? "https://your-runner";
   const canMint = writable && authenticated;
 
@@ -3857,36 +3866,19 @@ export function mcpTokensPage(args: {
                     <label>What is this token for?</label>
                     <div class="opts">
                       <label class="opt">
-                        <input type="radio" id="aud-ops" name="audience" value="ops" ${audienceChecked("ops")}>
-                        <span><b>Operations</b>
-                          Workflows, runs, failures, triggers — <code class="mono">/mcp</code>.
-                        </span>
-                      </label>
-                      <label class="opt">
-                        <input type="radio" id="aud-tables" name="audience" value="tables" ${audienceChecked("tables")}>
-                        <span><b>Data tables</b>
-                          Reading and writing rows — <code class="mono">/mcp/tables</code>.
+                        <input type="radio" id="aud-connections" name="audience" value="connections" ${audienceChecked("connections")}>
+                        <span><b>The runner and your accounts</b>
+                          Whichever of the ones below you tick — operations, data tables, a
+                          Telegram account. It gets only their tools.
                         </span>
                       </label>
                       <label class="opt">
                         <input type="radio" id="aud-assistant" name="audience" value="assistant" ${audienceChecked("assistant")}>
                         <span><b>Personal assistant</b>
-                          Your chats, drafts and Notion tasks — <code class="mono">/mcp/assistant</code>.
-                          Reads private messages; give it only to the assistant.
+                          Maria's chats, drafts and Notion tasks — its own tool set, not one of
+                          the boxes below. Reads private messages; give it only to the assistant.
                         </span>
                       </label>
-                      <label class="opt">
-                        <input type="radio" id="aud-connections" name="audience" value="connections" ${audienceChecked("connections")}>
-                        <span><b>Connections</b>
-                          Tools for accounts on the Credentials tab, limited to what you pick —
-                          <code class="mono">/mcp</code>, without the operations tools.
-                        </span>
-                      </label>
-                    </div>
-                    <div class="help">
-                      A token reaches one of them, never another. One minted for the tables is
-                      refused by the operations endpoint outright, so a credential that logs
-                      expenses cannot also trigger a workflow.
                     </div>
                   </div>
 
@@ -3897,22 +3889,14 @@ export function mcpTokensPage(args: {
                       <option value="full" ${draft?.scope === "full" ? raw("selected") : ""}>Full — can also change things</option>
                     </select>
                     <div class="help">
-                      Full is what lets a data-table token <b>add and edit rows</b>, and what lets
-                      an operations token trigger and replay. A read token is not even shown the
-                      write tools. Full scope on operations can replay a
-                      run, which re-sends whatever that run sent.
-                    </div>
-                  </div>
-                  <div class="field tablescope">
-                    <label>Which data tables</label>
-                    ${tablePicker(args.dataTables, draft?.tables ?? null, "new")}
-                    <div class="help">
-                      You can change this later from the token's own page, without a new token.
+                      For every box you tick. Full is what lets a token <b>add and edit rows</b>,
+                      and trigger and replay workflows — replaying a run re-sends whatever it
+                      sent. A read token is not even shown the tools that change things.
                     </div>
                   </div>
                   <div class="field connscope">
-                    <label>Which connections</label>
-                    ${connectionPicker(args.connections, args.draft?.grants ?? [])}
+                    <label>What it can use</label>
+                    ${connectionPicker(args.connections, draft?.grants ?? [], args.dataTables, "new")}
                   </div>
                   <div class="bar">
                     <button class="btn primary" type="submit">Create</button>
@@ -3971,13 +3955,6 @@ export function mcpTokensPage(args: {
                       <span class="pill ${t.scope === "full" ? "skipped" : "muted"}">
                         ${t.scope === "full" ? "full" : "read only"}
                       </span>
-                      ${t.audience !== "tables"
-                        ? ""
-                        : t.tables
-                          ? html`<div class="detail mono" title="${t.tables.join(", ")}">${
-                              t.tables.join(", ").length <= 24 ? t.tables.join(", ") : `${t.tables.length} tables`
-                            }</div>`
-                          : html`<div class="detail" title="Every data table, including ones added later">all tables</div>`}
                       ${t.grants.map(
                         (g) => html`<div class="detail mono trunc" title="${g}">${g}</div>`,
                       )}
@@ -4021,15 +3998,12 @@ export function mcpTokensPage(args: {
  */
 function connectionPicker(
   choices: ConnectionChoice[],
-  current: { ref: string; limits: Record<string, string[]> }[],
+  current: GrantValue[],
+  tables: TablePickView[],
+  idPrefix: string,
 ) {
-  if (choices.length === 0) {
-    return html`<div class="help">
-      No credential on the Credentials tab has MCP tools yet. Connect one
-      (Telegram user account, for now) and it shows up here.
-    </div>`;
-  }
   const held = new Map(current.map((g) => [g.ref, g.limits]));
+  const listValue = (v: unknown) => (Array.isArray(v) ? v.map(String).join(", ") : "");
   return html`
     ${choices.map((k) => {
       const limits = held.get(k.ref);
@@ -4038,34 +4012,47 @@ function connectionPicker(
           <label class="opt" style="border:0;padding:0;background:none">
             <input class="pick" type="checkbox" name="grant" value="${k.ref}"
                    ${limits ? raw("checked") : ""} ${k.ready || limits ? "" : raw("disabled")}>
-            <span><b>${k.label} · ${k.id}</b>
+            <span><b>${k.id ? `${k.label} · ${k.id}` : k.label}</b>
               ${k.ready
-                ? html`Brings <code class="mono">${k.tools.join(" ")}</code>.`
+                ? html`${k.blurb} <code class="mono">${k.tools.length > 6
+                    ? `${k.tools.slice(0, 5).join(" ")} +${k.tools.length - 5} more`
+                    : k.tools.join(" ")}</code>`
                 : html`Not connected — finish it on the Credentials tab first.`}
             </span>
           </label>
-          <div class="limits">
-            ${k.fields.map(
-              (f) => html`
-                <div class="field">
-                  <label for="lim-${k.ref}-${f.name}">${f.label}</label>
-                  <input type="text" id="lim-${k.ref}-${f.name}"
-                         name="limit:${k.ref}:${f.name}"
-                         value="${(limits?.[f.name] ?? []).join(", ")}"
-                         placeholder="${f.placeholder ?? ""}"
-                         autocomplete="off" spellcheck="false">
-                  <div class="help">${f.help}</div>
-                </div>
-              `,
-            )}
-          </div>
+          ${k.fields.length
+            ? html`<div class="limits">
+                ${k.fields.map((f) =>
+                  f.kind === "tables"
+                    ? html`<div class="field">
+                        <label>${f.label}</label>
+                        ${tablePicker(
+                          tables,
+                          Array.isArray(limits?.[f.name]) ? (limits![f.name] as unknown[]).map(String) : null,
+                          `${idPrefix}-tables`,
+                        )}
+                        <div class="help">${f.help}</div>
+                      </div>`
+                    : html`<div class="field">
+                        <label for="lim-${k.ref}-${f.name}">${f.label}</label>
+                        <input type="text" id="lim-${k.ref}-${f.name}"
+                               name="limit:${k.ref}:${f.name}"
+                               value="${listValue(limits?.[f.name])}"
+                               placeholder="${f.placeholder ?? ""}"
+                               autocomplete="off" spellcheck="false">
+                        <div class="help">${f.help}</div>
+                      </div>`,
+                )}
+              </div>`
+            : ""}
         </div>
       `;
     })}
     <div class="help">
-      Access applies to each connection: read gets the read tools only. The limits
-      are checked by the server on every call — the client never sees a chat outside
-      them, whatever it asks for.
+      Tick as many as this token needs — each brings its tools, and every tool is a cost on
+      every turn of a chat, so a token for one job should tick one box. Limits are checked by
+      the server on every call. A platform shows up here once its credential is on the
+      Credentials tab.
     </div>
   `;
 }
@@ -4091,10 +4078,10 @@ const AUDIENCE_ABOUT: Record<McpAudience, { title: string; about: string }> = {
       "messages — give it only to the assistant.",
   },
   connections: {
-    title: "Connections",
+    title: "The runner and your accounts",
     about:
-      "Tools for the accounts below, limited to what each grant names. It gets none of the " +
-      "operations tools, and the data-table and assistant endpoints refuse it.",
+      "The tools of whatever it was given below — operations, data tables, a platform " +
+      "account — limited to what each one names, and nothing else.",
   },
 };
 
@@ -4170,7 +4157,7 @@ export function mcpTokenPage(args: {
           <b class="${t.scope === "full" ? "skipped" : ""}">${t.scope === "full" ? "Full" : "Read only"}</b>
           <span>${t.scope === "full" ? "can change things" : "changes nothing"}</span>
         </div>
-        ${t.audience === "tables"
+        ${t.hasTables
           ? html`<div class="stat">
               <b>${t.tables === null ? "All" : reach.length}</b>
               <span>${t.tables === null ? `tables (${args.dataTables.length} now)` : reach.length === 1 ? "table" : "tables"}</span>
@@ -4202,14 +4189,14 @@ export function mcpTokenPage(args: {
               <span class="muted">every tool, including the ones that change things</span>`
           : html`<span class="pill muted">read only</span>
               <span class="muted">the tools that change things are not even listed to it</span>`}</td></tr>
-        ${t.audience === "tables"
+        ${t.hasTables
           ? html`<tr><td>Tables</td><td>${t.tables === null
               ? html`<b>All of them</b> <span class="muted">— including any added later</span>`
               : html`<span class="mono">${t.tables.join(", ")}</span>
                   <span class="muted">— only these; others stay hidden</span>`}</td></tr>`
           : ""}
-        ${t.audience === "connections"
-          ? html`<tr><td>Connections</td><td>${t.grants.length
+        ${t.audience !== "assistant"
+          ? html`<tr><td>Uses</td><td>${t.grants.length
               ? t.grants.map((g) => html`<div class="mono">${g}</div>`)
               : html`<span class="muted">none readable — this token reaches nothing</span>`}</td></tr>`
           : ""}
@@ -4223,7 +4210,7 @@ export function mcpTokenPage(args: {
         <tr><td>Id</td><td class="mono muted">${t.id}</td></tr>
       </tbody></table></div>
 
-      ${t.audience === "tables"
+      ${t.hasTables
         ? html`
             <h2>Tables it can reach</h2>
             ${missing.length
@@ -4301,16 +4288,10 @@ export function mcpTokenPage(args: {
                     <option value="full" ${t.scope === "full" ? raw("selected") : ""}>Full — can also change things</option>
                   </select>
                 </div>
-                ${t.audience === "tables"
+                ${t.audience !== "assistant"
                   ? html`<div class="field">
-                      <label>Which data tables</label>
-                      ${tablePicker(args.dataTables, t.tables === null ? null : t.tables.filter((n) => loaded.has(n)), "edit")}
-                    </div>`
-                  : ""}
-                ${t.audience === "connections"
-                  ? html`<div class="field">
-                      <label>Which connections</label>
-                      ${connectionPicker(args.connections, t.grantValues)}
+                      <label>What it can use</label>
+                      ${connectionPicker(args.connections, t.grantValues, args.dataTables, "edit")}
                     </div>`
                   : ""}
                 <div class="field">

@@ -679,7 +679,12 @@ const stmts = {
   mcpTokenByHash: db.prepare(`SELECT * FROM mcp_tokens WHERE hash = ?`),
   mcpTokenById: db.prepare(`SELECT * FROM mcp_tokens WHERE id = ?`),
   updateMcpTokenAccess: db.prepare(`UPDATE mcp_tokens SET scope = ?, tables = ? WHERE id = ?`),
-  updateMcpTokenGrants: db.prepare(`UPDATE mcp_tokens SET grants = ? WHERE id = ?`),
+  // Grants and the scope that is their widest, together; an operations or
+  // data-table token whose connections are edited becomes a connections token
+  // — its tools are its grants from then on, whatever it was minted as.
+  updateMcpTokenGrants: db.prepare(
+    `UPDATE mcp_tokens SET grants = ?, scope = ?, audience = 'connections' WHERE id = ?`,
+  ),
   insertMcpToken: db.prepare(
     `INSERT INTO mcp_tokens (id, name, scope, hash, prefix, created_at, tables, audience, grants)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1229,8 +1234,8 @@ export const store = {
       .changes > 0,
 
   /** Replaces a connections token's grants, already validated by the caller. */
-  updateMcpTokenGrants: (id: string, grants: unknown[]): boolean =>
-    stmts.updateMcpTokenGrants.run(JSON.stringify(grants), id).changes > 0,
+  updateMcpTokenGrants: (id: string, grants: unknown[], scope: string): boolean =>
+    stmts.updateMcpTokenGrants.run(JSON.stringify(grants), scope, id).changes > 0,
 
   /**
    * Records that a token was just used. The client name is only known on the

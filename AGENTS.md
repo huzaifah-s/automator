@@ -258,7 +258,8 @@ Evolution was shut down, and `draft_reply` refuses a WhatsApp chat.) The
 sync records only what is inside the chat log's window
 (`chatLogKeepsFrom`) and returns counts, never message text. The endpoint's log lines
 carry the tool name and the refusal, never the arguments, which are messages.
-An `assistant` token is refused by `/mcp` and `/mcp/tables`, and theirs by it.
+An `assistant` token is refused by `/mcp` and `/mcp/tables` (it has no grants), and a
+grants token by `/mcp/assistant`.
 
 **One WhatsApp person is one chat key, and links never come from names.**
 A person can arrive as a phone number and as a hidden privacy id (`@lid`).
@@ -873,12 +874,15 @@ earlier version printed eight characters in MCP results and produced colliding
 ids within one listing. If you shorten it again, shorten the id, not the
 display.
 
-**`/mcp/tables` is a second endpoint, not six more tools on `/mcp`.** The bar
-above `mcp.ts` — a tool costs tokens on every turn of every conversation
-whether or not it is called — is the reason: a "what is failing" chat should
-not carry ledger tools, and a ledger chat should not carry ten operational
-ones. Its route is registered *before* `/mcp` in `app.ts`, because Hono matches
-in registration order and `/mcp` would otherwise swallow it.
+**The data-table tools are the `tables` grant, not six more tools on every
+token.** A tool costs tokens on every turn of every conversation whether or
+not it is called, so a "what is failing" chat should not carry ledger tools,
+and a ledger chat should not carry ten operational ones. That used to be
+enforced with a second endpoint. Now each token's grants decide it: a token
+with only `tables` sees only these. `/mcp/tables` still exists for old
+clients. It is the same router as `/mcp`, narrowed with `only: "tables"`, and
+registered *before* `/mcp` in `app.ts`, because Hono matches in registration
+order and `/mcp` would otherwise swallow it.
 
 **An MCP token's table list is a closed set, and unreadable means all.** A
 token that names its tables does not pick up a table added to `tables/` later,
@@ -1306,15 +1310,27 @@ WebCrypto rather than pulling in `googleapis`.
 
 ## Adding a connector
 
-A connector is the MCP side of a platform. The Credentials tab entry says how
-to log in; the connector says which tools a client gets with that login, and
-how a grant can limit them. A **connections** token is served at `/mcp` and
-carries **grants**: credential + `read`/`full` + the connector's limits
-(`McpGrant` in `src/core/mcp-tokens.ts`). The form, validation and tool list
-are all derived from the connector.
+A connector is one set of MCP tools a token can be granted. The runner's
+own are built in: `ops` (`opsConnector` in `server/mcp.ts`) and `tables`
+(`tablesConnector` in `server/mcp-tables.ts`). They need no credential, keep
+their bare tool names, and are registered at boot in `app.ts`. A platform's
+connector is the MCP side of a Credentials-tab entry. The entry says how to
+log in; the connector says which tools a client gets with that login, and
+how a grant can limit them.
+
+A token carries **grants**: connector + credential (for a platform's) +
+`read`/`full` + the connector's limits (`McpGrant` in
+`src/core/mcp-tokens.ts`). It gets exactly the tools its grants bring, at
+`/mcp/<id>`. A token minted before grants existed is read as the grant its
+kind implied (`tokenGrants()`): an operations token as `ops`, a data-table
+token as `tables` with its table list. So it keeps working unchanged, and
+editing it on its page turns it into a grants token. Stored grants from before
+the built-ins existed say `provider` instead of `connector`, and are read the
+same way. The form, validation and tool list are all derived from the
+connectors.
 
 1. Write `src/connectors/<platform>.ts`, exporting a `Connector`
-   (`src/connectors/types.ts`), and add it to `CONNECTORS` in `index.ts`. The
+   (`src/connectors/types.ts`), and register it in `index.ts`. Its
    `provider` must be a key of `PROVIDERS`.
 2. Write `limits.schema` as a strict zod object of lists. It must refuse an
    empty grant, unless "everything" is really what a grant on that platform
@@ -1345,12 +1361,15 @@ in a URL: URLs end up in proxy logs, the debug request log and claude.ai's
 organization connector list. The shared paths stay for existing clients and
 for `MCP_TOKEN`, which has no id.
 
-**Planned:** the data-table and assistant tools (and the operations tools
-themselves) are meant to become built-in connectors chosen by grants. The
-per-token URL already makes the path irrelevant to the client; what is left
-is the token deciding the *tool list* through grants instead of through its
-audience. Until then, connections are the only thing that arrives through
-grants.
+**Planned: the personal assistant.** `/mcp/assistant` is the one thing left
+outside grants, and it is in the wrong place. About 3,000 lines of tools
+specific to one person's assistant live in `src/server/mcp-assistant.ts`,
+in the core. They belong beside their workflows and tables in
+`workflows/personal-assistant/`, declared there as a project's own toolset
+through a public helper re-exported from `define.ts`, and served as one more
+grant. Keep `/mcp/assistant` as an alias, and keep live Maria's in-process
+token (`mintProcessToken`, `McpIdentity.tools`) working. Until then an
+assistant token has no grants, and its page only changes its access.
 
 ## Adding a platform to the Credentials tab
 

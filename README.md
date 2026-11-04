@@ -1346,8 +1346,8 @@ the same as Run now, Resume, Replay and the pause switch.
 
 ### Asking an agent about them
 
-`/mcp/tables` is a **separate MCP endpoint** from `/mcp`, with its own tools and
-its own tokens:
+The data tables are one of the things an MCP token can be given: tick **Data
+tables** when you create it. That brings these tools:
 
 | Tool | |
 |---|---|
@@ -1356,14 +1356,15 @@ its own tokens:
 | `totals` | Sums, counts and averages, grouped — the arithmetic happens in SQL. |
 | `add_row` `edit_row` `delete_row` | Writes. Full-scope tokens only. |
 
-Two endpoints rather than one list of sixteen tools, because a tool is a cost
-paid on every turn of every conversation whether or not anything calls it — a
-"what is failing" chat should not be carrying ledger tools.
+A token gets them only if it was given the data tables. A tool is a cost paid
+on every turn of every conversation whether or not anything calls it, so a
+"what is failing" chat should not be carrying ledger tools. `/mcp/tables`
+still answers for clients set up before this, with just these tools.
 
-A token can be **scoped to named tables** (on the MCP tab, **Which data
-tables → Only the ones I tick**, or `tables` in the API body). It then sees
-only those: not in a result, not in its tool list, and not tables added later.
-**All tables** (or an empty `tables`) is every one of them.
+A token can be **limited to named tables** (on the MCP tab, **Which data
+tables → Only the ones I tick**, or `"limits": { "tables": [...] }` in the
+API). It then sees only those: not in a result, not in its tool list, and not
+tables added later. **All tables** (`"tables": null`) is every one of them.
 
 `totals` adds `currency` to the grouping whenever it is summing a `money()`
 column and you did not ask for it, because a total across currencies is a
@@ -2929,35 +2930,44 @@ worth fixing. Unlike a tool, a prompt costs nothing until it is run — which is
 why a routine you repeat belongs in one rather than becoming an eighteenth
 tool.
 
-#### Connections: your accounts, limited to what you pick
+#### What a token can use: grants
 
-A **connections** token uses the same `/mcp`, but gets none of the operations
-tools. What it gets instead depends on the **grants** you give it. A grant has
-three parts:
+A token gets exactly the tools of what you give it, called its **grants**:
 
-- a credential from the Credentials tab;
-- read or full access;
-- that platform's own limits.
+| Grant | Tools | Limits |
+|---|---|---|
+| **Operations** (`ops`) | `overview`, `runs`, `failures`… and, with full access, `trigger`, `replay`… | none |
+| **Data tables** (`tables`) | `tables`, `rows`, `totals`, and with full access `add_row`… | all tables, or the ones you tick |
+| **Telegram** (`telegram_user`) | `telegram_chats`, `telegram_history`, `telegram_search` (read only) | `folders` by name and/or `chats` by id; at least one |
+
+One token can hold several, for example operations plus your Telegram, but
+each one adds tools to every turn of the chat. A token for one job should
+have one grant.
+
+A grant for a platform names one of its credentials from the Credentials tab.
+It has read or full access, and that platform's own limits.
 
 For example: *my Telegram account, read, only the chats in the folder "Work"*.
 That token sees `telegram_chats`, `telegram_history` and `telegram_search`, and
 nothing else. The server checks the limits on every call. A chat outside them
 is refused by name, even if the client asks for it by id.
 
-On the MCP tab, pick **Create token → Connections**, tick the credentials and
-fill in their limits. Over the API it looks like this:
+On the MCP tab, choose **Create token**, tick what it can use, and fill in
+the limits. A token's own page changes them later, and the token keeps
+working. Over the API it looks like this:
 
 ```bash
 curl -u user:pass -X POST https://<PUBLIC_URL>/api/mcp-tokens -H 'content-type: application/json' -d '{
-  "name": "work-laptop", "audience": "connections",
-  "grants": [{ "provider": "telegram_user", "credential": "me", "access": "read",
-               "limits": { "folders": ["Work"], "chats": [] } }]
+  "name": "work-laptop", "audience": "connections", "scope": "read",
+  "grants": [{ "connector": "ops" },
+             { "connector": "telegram_user", "credential": "me", "limits": { "folders": ["Work"] } }]
 }'
 ```
 
-| Platform | Tools | Limits |
-|---|---|---|
-| Telegram (user account) | `telegram_chats`, `telegram_history`, `telegram_search` (read only) | `folders` by name, `chats` by id; at least one |
+`"audience": "ops"` and `"audience": "tables"` still work as shorthand for a
+token with just that one grant. Tokens made before grants existed keep
+working as the grant they always were in effect. The personal assistant's
+tools are separate for now: they are its own kind of token, not a grant.
 
 **A folder is a live limit.** The grant stores the folder's name, not the chats
 in it. When you move a chat into or out of the folder on your phone, what the

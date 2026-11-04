@@ -80,7 +80,7 @@ const allowedCache = new Map<string, { at: number; chats: Promise<TelegramUserCh
 
 /** Every chat this grant may read, from its folders and its named chats. */
 function allowedChats(call: ConnectorCall<Limits>): Promise<TelegramUserChat[]> {
-  const key = JSON.stringify([call.grant.provider, call.grant.credential, call.limits]);
+  const key = JSON.stringify([call.grant.connector, call.grant.credential, call.limits]);
   const hit = allowedCache.get(key);
   if (hit && Date.now() - hit.at < ALLOWED_TTL_MS) return hit.chats;
 
@@ -194,8 +194,10 @@ const optId = (args: Record<string, unknown>, key: string) => {
 /* --------------------------------------------------------------- tools */
 
 export const telegramUser: Connector<Limits> = {
+  id: "telegram_user",
   provider: "telegram_user",
   label: "Telegram (user account)",
+  blurb: "Read your own chats — only the folders or chats you name.",
   prefix: "telegram",
   instructions:
     "telegram_* tools read the user's own Telegram chats, limited to the ones this token was given. " +

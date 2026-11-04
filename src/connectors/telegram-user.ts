@@ -31,8 +31,8 @@ import type { Connector, ConnectorCall } from "./types.ts";
  * if a folder contains it.
  *
  * There are no write tools. Sending as somebody's account from an MCP client
- * is a decision of its own — the assistant's endpoint refuses to have one at
- * all — and should arrive as a `write` tool here only with that taken again.
+ * is a decision of its own — an agent that sends does it through its own
+ * tools, with its own rules — and should arrive as a `write` tool here only with that taken again.
  */
 
 interface Limits {

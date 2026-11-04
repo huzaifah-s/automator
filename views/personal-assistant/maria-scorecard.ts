@@ -1,21 +1,15 @@
-import {
-  defineView,
-  note,
-  rows,
-  scorecard,
-  scorecardSlots,
-  stats,
-  type Headline,
-  type ScorecardWhich,
-} from "../../src/core/define.ts";
+import { defineView, note, rows, stats } from "../../src/core/define.ts";
+// A view may import its own project's `_` files (AGENTS.md, "Adding a view").
+import { scorecard, scorecardSlots, type Headline, type ScorecardWhich } from "../../workflows/personal-assistant/_scorecard.ts";
 
 /**
  * Maria's scorecard — whether the assistant is getting better, in numbers.
  *
  * The same numbers as the card she sends Wednesday and Sunday at 20:00 and
  * her own `scorecard` tool: all three call `scorecard()` in
- * src/core/scorecard.ts, so they cannot disagree. A period is the half-week
- * ending at a card, against the same days a week earlier.
+ * workflows/personal-assistant/_scorecard.ts, so they cannot disagree. A
+ * period is the half-week ending at a card, against the same days a week
+ * earlier.
  *
  * Not shareable: it counts how a private assistant handled private chats,
  * and nobody outside the dashboard needs it.

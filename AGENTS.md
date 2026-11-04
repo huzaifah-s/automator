@@ -107,11 +107,18 @@ workflows/         user workflows — the only directory most changes touch
                    subdirectories just group them: workflows/pblsh/thing.ts
                    loads the same way, and names stay global and flat.
                    A project's agent lives here too, beside its workflows
-                   (workflows/personal-assistant/agent.ts and its _tools.ts)
+                   (workflows/personal-assistant/agent.ts and its _tools.ts),
+                   and so does project code its views share
+                   (_scorecard.ts, read by views/personal-assistant/)
 ```
 
-`src/core/define.ts` is the **public API surface** that workflow files import
-from. Nothing in `workflows/` should reach deeper than that.
+`src/core/define.ts` is the **public API surface** that workflow, view and
+table files import from. Nothing in `workflows/`, `views/` or `tables/`
+should reach deeper than that. The one other import a project file may make
+is its own project's `_` files (below). `src/` names no project: code that
+knows one project's tables, people or timetable lives in that project's
+folder, and `src/` gains only the generic piece it needed (`moveChat` for
+`_chat-link.ts`).
 
 ## The most common task: adding a workflow
 
@@ -127,6 +134,13 @@ needs it. Everything else there must default-export a workflow (or an agent,
 than a quiet skip, because that is what catches a typo'd
 export. Keep `_` files to what one folder owns; the moment two folders want the
 same helper it is an integration.
+
+A view in `views/<project>/` may import `workflows/<project>/_*.ts` — the
+same project's `_` files, never another's, and never a workflow file itself.
+That is how `views/personal-assistant/maria-scorecard.ts` reads the same
+`scorecard()` as the card and the tool. A `_` file a view imports must itself
+import only from `define.ts` (and its own folder's `_` files): it is loaded
+into the view's request, and a view only reads.
 
 One wart to know about: a workflow's "updated" time is a hash of *its own*
 source, so editing a `_` file it imports does not move any workflow's
@@ -266,9 +280,11 @@ for it alone, refused by `/mcp` and `/mcp/tables`, and no other token —
 
 **One WhatsApp person is one chat key, and links never come from names.**
 A person can arrive as a phone number and as a hidden privacy id (`@lid`).
-`src/core/chat-link.ts` links the two — the number is canonical, because
+`workflows/personal-assistant/_chat-link.ts` links the two — the number is canonical, because
 replies go there — and moves the chat log, lessons, questions and drafts onto
-it; the `@lid` row keeps only `people.same_as`. Every tool takes either key
+it (the chat log through `moveChat` from `define.ts`, which only renames a
+chat; what counts as one person stays in the project); the `@lid` row keeps
+only `people.same_as`. Every tool takes either key
 because `chatArg` resolves it, so a new tool that reads a chat key from its
 arguments goes through `chatArg`, and a new reader of `people` skips rows
 with `same_as`. A link comes from Evolution (`chatAlt`, a message's
@@ -285,7 +301,7 @@ copy. Keep a new kind of memory out of the wrong one — a fact in `lessons` is
 followed as an order, and a pending thing in `notes` is never closed. Loops
 carry a `chat_key`, so `linkChats` moves them with the rest.
 
-**The scorecard is counted in one place.** `src/core/scorecard.ts` is the
+**The scorecard is counted in one place.** `workflows/personal-assistant/_scorecard.ts` is the
 only code that adds up how the assistant did — the dashboard view, the
 Wednesday and Sunday card (`personal-assistant-lessons-review`) and her
 `scorecard` tool all call `scorecard()`, so the three cannot disagree. A
@@ -372,7 +388,10 @@ the model's half is skipped and the draft saved. Never make the check able
 to stop a draft for good — a check that blocks is worse than none. All of
 Claude Code — `runClaude`, `askClaude`, the locked-down environment — is
 `src/core/claude-code.ts`, shared by live Maria, learn-style and the
-check; `_check.ts` declares the two optional token secrets itself.
+check, and generic: it knows Claude Code, not which agent drives it.
+`_check.ts` declares the two optional token secrets itself.
+`CLAUDE_OWN_LOGIN=1` (`ASSISTANT_LIVE_LOGIN` before 2026-11-05) uses the
+CLI's own login on a developer's machine.
 
 **`thread` shows his words, not a description of them.** `voiceOf` adds his
 earlier messages to the chat (the log keeps his 90 days), his messages to
@@ -835,7 +854,11 @@ so there is nothing to be caught half-applied, which is exactly what makes
 `loadTables` boot-only. The two watchers in `reload.ts` are separate on purpose:
 sharing the shared-file staleness flag would let an edit to a workflow's
 `_helper.ts` switch off view reloading too, which is two unrelated directories
-refusing on each other's behalf.
+refusing on each other's behalf. The view watcher does hash the `_` files of
+`workflows/<project>/` for each project with a `views/<project>/` folder
+(`hashViewShared`), because a view may import those: an edit to
+`_scorecard.ts` switches view reloading off until a restart, and an edit to a
+helper in a project with no views does not.
 
 **A table's structure is code and its rows are data, and the dashboard may
 only ever touch the second.** The Tables tab adds, edits and soft-deletes
@@ -1250,6 +1273,12 @@ and clearing an optional value becomes impossible.
 One file under `views/`, default-exporting `defineView()`. The loader finds it,
 subdirectories included, and the watcher swaps it in without a restart — a view
 only reads, so there is nothing to be caught half-applied.
+
+It imports from `define.ts`. When it needs numbers its project already
+computes elsewhere (a card, an agent's tool), it imports that project's `_`
+file rather than a copy of the maths, or a new helper in `src/` that names the
+project: `views/<project>/x.ts` may import `../../workflows/<project>/_y.ts`.
+Only the same project's, and only `_` files.
 
 ```ts
 import { bars, defineView, formatMoney, stats } from "../src/core/define.ts";

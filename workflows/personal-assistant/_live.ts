@@ -204,7 +204,7 @@ export async function answerLive(
   oauthTokens: readonly string[],
   arrived: { messageId: number; task: string; note: Row | null },
 ): Promise<LiveResult> {
-  // ASSISTANT_LIVE_LOGIN=1 is for a developer's machine: use the CLI's own
+  // CLAUDE_OWN_LOGIN=1 is for a developer's machine: use the CLI's own
   // login instead of a token. Never set it on the server.
   const ownLogin = claudeOwnLogin();
   const accounts = ownLogin ? [""] : oauthTokens.filter(Boolean);

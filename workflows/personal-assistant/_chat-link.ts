@@ -1,6 +1,4 @@
-import { db } from "./db.ts";
-import { table, type Row } from "./tables.ts";
-import { realName } from "../integrations/evolution.ts";
+import { moveChat, realName, table, type Row } from "../../src/core/define.ts";
 
 /**
  * One person, one chat — for the personal assistant's WhatsApp chats.
@@ -74,13 +72,6 @@ export function canonicalKey(key: string, links: Map<string, string> = aliases()
   for (let i = 0; i < 5 && links.has(k); i++) k = links.get(k)!;
   return k;
 }
-
-const moveMessages = db.prepare(
-  `UPDATE OR IGNORE chat_messages SET chat = ? WHERE channel = 'whatsapp' AND chat = ?`,
-);
-// A message stored under both halves — the same id — is one message; the
-// copy the update could not move is the duplicate.
-const dropLeftovers = db.prepare(`DELETE FROM chat_messages WHERE channel = 'whatsapp' AND chat = ?`);
 
 const jidOf = (key: string) => key.slice("whatsapp:".length);
 
@@ -177,8 +168,8 @@ export function linkChats(one: string, other: string, writtenBy: string): LinkRe
     }
   }
 
-  const messages = moveMessages.run(jidOf(canonical), jidOf(aliasKey)).changes;
-  dropLeftovers.run(jidOf(aliasKey));
+  // A message stored under both halves is one message; moveChat drops the copy.
+  const messages = moveChat("whatsapp", jidOf(aliasKey), jidOf(canonical));
 
   const repoint = (name: string, extra?: (r: Row) => Record<string, unknown>) => {
     const t = table(name);

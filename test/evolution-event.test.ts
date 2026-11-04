@@ -113,7 +113,7 @@ describe("evolutionMessage", () => {
   });
 
   test("a chat filed under a hidden id names its number when WhatsApp gave it", () => {
-    // What links the two halves of one person (src/core/chat-link.ts).
+    // What links the two halves of one person (workflows/personal-assistant/_chat-link.ts).
     const paired = {
       ...dm,
       key: { ...dm.key, remoteJid: "100000000000004@lid", remoteJidAlt: "60120000004@s.whatsapp.net", addressingMode: "lid" },

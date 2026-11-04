@@ -487,8 +487,7 @@ export function createApp(registry: Registry): Hono {
   registerConnector(opsConnector(registry));
   registerConnector(tablesConnector);
   // One router for a token's own /mcp/<id>, whatever it is for; the shared
-  // /mcp is the runner's endpoint and refuses an agent's token, as the old
-  // assistant endpoint's tokens always were.
+  // /mcp is the runner's endpoint and refuses an agent's token.
   const opsMcp = createMcpRouter();
   const sharedMcp = createMcpRouter({ refuseAgents: true });
   // The old single-purpose path: the same router, narrowed to the tables

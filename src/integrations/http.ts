@@ -18,7 +18,7 @@ export interface HttpOptions {
   private?: boolean;
   /**
    * Keep the *request* body off the run page as well, recorded as its size —
-   * for a send whose body is somebody's words, like the assistant's answer
+   * for a send whose body is somebody's words, like an agent's answer
    * on Telegram, which can quote a chat. Errors are still recorded with
    * their response; the request stays withheld.
    */

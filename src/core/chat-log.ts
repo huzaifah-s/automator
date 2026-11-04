@@ -4,12 +4,12 @@ import { redact } from "./redact.ts";
 
 /**
  * The chat log — messages read from WhatsApp and Telegram, kept for a couple
- * of weeks so an assistant can ask "who is waiting on me?" without reading
+ * of weeks so an agent can ask "who is waiting on me?" without reading
  * every chat again each time.
  *
  * **Not a data table, on purpose.** A table renders on the Tables tab and is
  * served over `/mcp/tables`; this is somebody's private conversations, and
- * the only thing that should read it is the assistant that was given it. So
+ * the only thing that should read it is the agent that was given it. So
  * it is invisible the way `ctx.state` is — no tab, no route — and it ages
  * out: `CHAT_LOG_RETENTION_DAYS` (default 14) after a message was sent, the
  * nightly prune deletes it, whatever happens to the run that recorded it.
@@ -127,10 +127,9 @@ export const chatLog: ChatLog = {
 /* ------------------------------------------------------------- reading */
 
 /**
- * Reads for an agent's tools (the personal assistant's, in
- * workflows/personal-assistant/_tools.ts) — exported from define.ts for
- * that, because an agent lives in its project's folder. Deliberately not on
- * `ctx`: a workflow that wants to act on a conversation is an agent's job,
+ * Reads for an agent's tools — exported from define.ts for that, because
+ * an agent lives in its project's folder. Deliberately not on `ctx`: a
+ * workflow that wants to act on a conversation is an agent's job,
  * and one more reader is one more place a message can be copied out of the
  * log. Whatever reads these follows the chat log's rules: text goes to the
  * model and nowhere else — not a step's result, not a log line.
@@ -236,8 +235,8 @@ const NO_BOUND = Number.MAX_SAFE_INTEGER;
 
 /**
  * The latest `limit` messages in one chat, oldest first. `before` reads the
- * chat as it stood at a past moment — the replay test
- * (workflows/personal-assistant/_eval.ts) must not see the reply it is grading.
+ * chat as it stood at a past moment — a replay test must not see the reply
+ * it is grading.
  */
 export function chatThread(channel: ChatChannel, chat: string, limit: number, before = NO_BOUND): StoredMessage[] {
   return (threadQuery.all(channel, chat, before, limit) as Raw[]).map(toStored);
@@ -348,4 +347,22 @@ export function chatLogKeeps(m: { sentAt: number; outgoing: boolean }, now = Dat
 export function pruneChatLog(): number {
   const now = Date.now();
   return prune.run(chatLogKeepsFrom(now), chatLogKeepsFrom(now, true)).changes;
+}
+
+const moveChatRows = db.prepare(`UPDATE OR IGNORE chat_messages SET chat = ? WHERE channel = ? AND chat = ?`);
+const dropChatRows = db.prepare(`DELETE FROM chat_messages WHERE channel = ? AND chat = ?`);
+
+/**
+ * Files every message of chat `from` under chat `to` instead — for a project
+ * that learns two chat ids are one conversation. A message already stored
+ * under both (the same id) is one message, so the copy left behind is
+ * dropped. Returns how many moved; `from` has none afterwards.
+ */
+export function moveChat(channel: ChatChannel, from: string, to: string): number {
+  if (from === to) return 0;
+  return db.transaction(() => {
+    const moved = moveChatRows.run(to, channel, from).changes;
+    dropChatRows.run(channel, from);
+    return moved;
+  })();
 }

@@ -371,7 +371,7 @@ void recoverInbox(registry).catch((err) =>
 // already read. Starting it earlier would let a change land mid-boot, against
 // a scheduler or a webhook reconciliation that had not finished setting up.
 startWorkflowWatch(process.env.WORKFLOWS_DIR ?? "./workflows", registry);
-startViewWatch(process.env.VIEWS_DIR ?? "./views");
+startViewWatch(process.env.VIEWS_DIR ?? "./views", process.env.WORKFLOWS_DIR ?? "./workflows");
 
 if (registry.enabled().some((w) => w.trigger.kind === "cron")) {
   const soonest = registry

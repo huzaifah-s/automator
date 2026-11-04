@@ -3855,8 +3855,8 @@ export function mcpTokensPage(args: {
             <code class="mono">${base}/mcp/&lt;id&gt;</code>, and gets exactly the tools of
             what it is for. A token for <b>the runner and your accounts</b> gets the boxes you
             tick — operations, data tables, a Telegram account limited to some folders — and
-            nothing else. A token for an <b>agent</b> — one the project defines in its folder,
-            like the personal assistant — gets that agent's own tools, and only those.
+            nothing else. A token for an <b>agent</b> — one a project defines in its own folder —
+            gets that agent's own tools, and only those.
             Separate tool lists on purpose: a tool costs context on every turn of every
             conversation whether or not anything calls it, so an incident chat should not be
             carrying ledger tools.
@@ -4105,7 +4105,7 @@ const AUDIENCE_ABOUT: Record<McpAudience, { title: string; about: string }> = {
     title: "Data tables",
     about:
       "Reading and writing rows in the data tables below. It is refused by the operations " +
-      "and assistant endpoints, so it cannot trigger a workflow or read a chat.",
+      "and agent endpoints, so it cannot trigger a workflow or read a chat.",
   },
   // An agent's own label and description are shown instead; these are the
   // fallback for a row whose agent cannot be named.

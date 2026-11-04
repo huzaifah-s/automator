@@ -31,7 +31,7 @@
  * the last change to a retired row, which is close enough for a count.
  */
 
-import { table, type Row } from "./tables.ts";
+import { table, type Row } from "../../src/core/define.ts";
 
 const TZ = process.env.ASSISTANT_TZ ?? "Asia/Kuala_Lumpur";
 const DAY_MS = 24 * 3_600_000;

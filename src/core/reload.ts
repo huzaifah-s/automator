@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, watch, type FSWatcher } from "node:fs";
+import { existsSync, readFileSync, statSync, watch, type FSWatcher } from "node:fs";
 import { basename, resolve } from "node:path";
 import { loadWorkflows, type Registry } from "./loader.ts";
 import { loadViews, viewRegistry } from "./views.ts";
@@ -231,13 +231,17 @@ let viewSharedHashes = new Map<string, string>();
 let viewSharedStale = false;
 let viewGeneration = 0;
 
-export function startViewWatch(dir: string): void {
+/** Where the views' own projects keep their `_` files; see `hashViewShared`. */
+let viewWorkflowsRoot: string | undefined;
+
+export function startViewWatch(dir: string, workflowsDir?: string): void {
   if (!ENABLED) return;
 
   const root = resolve(dir);
   if (!existsSync(root)) return;
 
-  viewSharedHashes = hashShared(root);
+  viewWorkflowsRoot = workflowsDir ? resolve(workflowsDir) : undefined;
+  viewSharedHashes = hashViewShared(root);
 
   try {
     viewWatcher = watch(root, { recursive: true }, (_event, filename) => {
@@ -283,7 +287,7 @@ async function reloadViews(root: string): Promise<void> {
     // Same hole as the workflow reloader has, for the same reason: the
     // cache-busting query does not reach a relative import, so a changed
     // `_shared.ts` would leave new view code running against the old copy.
-    const now = hashShared(root);
+    const now = hashViewShared(root);
     const { stale: changed, added: newShared } = sharedDrift(viewSharedHashes, now);
     if (changed) {
       viewSharedStale = true;
@@ -333,6 +337,24 @@ async function reloadViews(root: string): Promise<void> {
       viewTimer = setTimeout(() => void reloadViews(root), QUIET_MS);
     }
   }
+}
+
+/**
+ * The shared code a view can be running: `_` files under views/, and those
+ * of each project that has views — `views/<project>/` may import
+ * `workflows/<project>/_*.ts`, which this watcher would otherwise never see.
+ * Only those projects, so an edit to another folder's helper leaves view
+ * reloading alone; the two watchers keep separate flags for that reason.
+ */
+function hashViewShared(root: string): Map<string, string> {
+  const out = hashShared(root);
+  if (!viewWorkflowsRoot) return out;
+  for (const project of new Bun.Glob("*").scanSync({ cwd: root, onlyFiles: false })) {
+    const dir = `${viewWorkflowsRoot}/${project}`;
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) continue;
+    for (const [rel, hash] of hashShared(dir)) out.set(`workflows/${project}/${rel}`, hash);
+  }
+  return out;
 }
 
 /** Current contents of every `_`-prefixed module, by path. */

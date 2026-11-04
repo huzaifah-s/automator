@@ -5,22 +5,22 @@ import type { Logger } from "./logger.ts";
 import { holdBack, isPractice } from "./practice.ts";
 
 /**
- * Claude Code, run headless (`claude -p`) on his subscription — the one way
- * this server asks a model anything. Live Maria
- * (workflows/personal-assistant/_live.ts) runs it with the assistant's tools;
- * `askClaude` runs it with none, for a workflow or the endpoint that needs a
- * model to read something and say one thing back (learn-style, the draft
- * check in workflows/personal-assistant/_check.ts).
+ * Claude Code, run headless (`claude -p`) on a Claude subscription — the one way
+ * this server asks a model anything. A project that drives its agent with
+ * Claude Code calls `runClaude` with that agent's MCP server
+ * (`agentConnection`); `askClaude` runs it with no tools at all, for a
+ * workflow or a tool that needs a model to read something and say one thing
+ * back.
  *
  * Signed in with an OAuth token from `claude setup-token`
  * (`CLAUDE_CODE_OAUTH_TOKEN`, then `CLAUDE_CODE_OAUTH_TOKEN_2`), or — on a
  * developer's machine only — the CLI's own login with
- * `ASSISTANT_LIVE_LOGIN=1`. The CLI gets an empty home and an environment of
+ * `CLAUDE_OWN_LOGIN=1`. The CLI gets an empty home and an environment of
  * a handful of variables, **never this process's own**, which holds every
  * secret the server has.
  */
 
-/** Every answer is Opus: he would rather wait seconds for one that checked (8 Oct). */
+/** Every answer is Opus: an answer that checked is worth waiting seconds for. */
 export const CLAUDE_MODEL = "claude-opus-5-5";
 /** The CLI, installed in the image (Dockerfile). */
 const CLAUDE = process.env.CLAUDE_CODE_BIN ?? "claude";
@@ -41,8 +41,8 @@ export interface ClaudeCaller {
   signal: AbortSignal;
 }
 
-/** ASSISTANT_LIVE_LOGIN=1: the CLI's own login, for a developer's machine. Never set it on the server. */
-export const claudeOwnLogin = (): boolean => process.env.ASSISTANT_LIVE_LOGIN === "1";
+/** CLAUDE_OWN_LOGIN=1: the CLI's own login, for a developer's machine. Never set it on the server. */
+export const claudeOwnLogin = (): boolean => process.env.CLAUDE_OWN_LOGIN === "1";
 
 /** An empty home for the CLI under the temp dir, readable by this user only. */
 export function claudeHome(name: string): string {
@@ -97,7 +97,7 @@ export async function runClaude(
     clearTimeout(timer);
     ctx.signal.removeEventListener("abort", kill);
 
-    // One JSON object per line: assistant turns (for the tool names) and,
+    // One JSON object per line: the model's turns (for the tool names) and,
     // last, the result.
     let result: { subtype?: string; is_error?: boolean; result?: string; num_turns?: number; usage?: Record<string, number> } | null = null;
     for (const raw of out.split("\n")) {
@@ -110,7 +110,8 @@ export async function runClaude(
       }
       if (msg.type === "assistant") {
         for (const b of msg.message?.content ?? []) {
-          if (b?.type === "tool_use") run.used.push(String(b.name).replace(/^mcp__assistant__/, ""));
+          // An MCP tool arrives as mcp__<server>__<tool>; the bare name is what a log wants.
+          if (b?.type === "tool_use") run.used.push(String(b.name).replace(/^mcp__.+?__/, ""));
         }
       } else if (msg.type === "result") result = msg;
     }
@@ -138,7 +139,7 @@ export async function runClaude(
 
 /**
  * One question to Claude with no tools at all — no MCP server, no shell.
- * Same account order as live Maria: the next is tried when one fails, which
+ * Accounts are tried in the order given: the next when one fails, which
  * is always safe here because nothing can have been done. Null when there
  * is no token, in a practice run, or on failure.
  */
@@ -155,7 +156,9 @@ export async function askClaude(
     holdBack({ method: "SPAWN", url: `${CLAUDE} -p (${q.who}, ${model})`, body: { tools: 0 }, why: "starts Claude Code" });
     return null;
   }
-  const home = claudeHome("maria-ask");
+  // Nothing is kept between runs (--no-session-persistence): an empty home
+  // and working directory, shared by every caller.
+  const home = claudeHome("claude-ask");
   const args = [
     "-p",
     "--output-format", "stream-json",
@@ -182,7 +185,7 @@ export async function askClaude(
   return null;
 }
 
-/** A spawn the practice gate would hold, for a caller that runs the CLI itself (live Maria). */
+/** A spawn the practice gate would hold, for a caller that runs the CLI itself with an agent's tools. */
 export function holdClaudeSpawn(who: string, model: string, tools: number): void {
-  holdBack({ method: "SPAWN", url: `${CLAUDE} -p (${who}, ${model})`, body: { tools }, why: "starts Claude Code, which acts through the assistant's tools" });
+  holdBack({ method: "SPAWN", url: `${CLAUDE} -p (${who}, ${model})`, body: { tools }, why: "starts Claude Code, which acts through an agent's tools" });
 }

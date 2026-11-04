@@ -294,12 +294,8 @@ export { chatLogKeeps, chatLogKeepsFrom } from "./chat-log.ts";
  * model, never into a step's result or a log line. See src/core/chat-log.ts.
  */
 export { chatMessage, chatThread, hisMessages, lastWordMine, messagesSince, waitingChats } from "./chat-log.ts";
-/** One person, one chat: a WhatsApp `@lid` linked to its phone number. See src/core/chat-link.ts. */
-export { aliases, canonicalKey, isLidKey, linkChats } from "./chat-link.ts";
-export type { LinkResult } from "./chat-link.ts";
-/** Whether the assistant is getting better, in numbers. See src/core/scorecard.ts. */
-export { SCORECARD_CRON, scorecard, scorecardMarks, scorecardPeriod, scorecardSlots, scorecardText } from "./scorecard.ts";
-export type { Area, CountLine, Headline, Scorecard, ScorecardSpan, ScorecardWhich } from "./scorecard.ts";
+/** Two chat ids found to be one conversation: files one's messages under the other. */
+export { moveChat } from "./chat-log.ts";
 /**
  * Agents — a project's own AI agent: its tools and instructions, declared in
  * a file under `workflows/` whose default export is `defineAgent(...)`. The

@@ -13,7 +13,7 @@ import { defineTable, enumOf, text } from "../../src/core/define.ts";
  * A WhatsApp person can arrive twice, as a phone number and as a hidden
  * privacy id (`@lid`). Once the two are known to be one person, the `@lid`
  * row keeps only `same_as`, pointing at the number's row, which holds
- * everything else (src/core/chat-link.ts).
+ * everything else (workflows/personal-assistant/_chat-link.ts).
  *
  * A priority is set by him (a tap, a reply, the dashboard) or by the
  * assistant, which sorts new chats itself and says why in `reason`
@@ -71,7 +71,7 @@ export default defineTable({
       label: "Same as",
       help:
         "Set on a WhatsApp hidden id (@lid) that is the same person as a phone number: that " +
-        "chat's key. Its priority, notes and messages live there. See src/core/chat-link.ts.",
+        "chat's key. Its priority, notes and messages live there. See workflows/personal-assistant/_chat-link.ts.",
     }),
   },
 

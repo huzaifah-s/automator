@@ -1,11 +1,12 @@
-import { cron, defineCredential, defineWorkflow, SCORECARD_CRON, scorecard, scorecardMarks } from "../../src/core/define.ts";
+import { cron, defineCredential, defineWorkflow } from "../../src/core/define.ts";
+import { SCORECARD_CRON, scorecard, scorecardMarks } from "./_scorecard.ts";
 import { botApi, chatLabel, LESSONS_MAX, lessonsCard, rich } from "./_bot.ts";
 
 /**
  * Personal assistant — twice a week, Wednesday and Sunday at 20:00: the
  * scorecard, then the lessons it learned since the last card.
  *
- * **The scorecard** (src/core/scorecard.ts) says in numbers whether Maria got
+ * **The scorecard** (`_scorecard.ts`) says in numbers whether Maria got
  * better over the half-week — drafts sent as written, questions per day,
  * tasks kept as made, how fast she answered your notes, outcomes she has not
  * learned from, her sorting kept — against the same days a week earlier.

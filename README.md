@@ -119,6 +119,13 @@ Keep that narrow. It is for code one folder owns. Anything the whole runner
 would use is an integration, and the moment two folders want the same helper
 that is what it has become.
 
+The one exception is a project's own views. A view in `views/<project>/` may
+import `workflows/<project>/_*.ts`, so a page shows the numbers its project
+already counts rather than a second copy of them:
+`views/personal-assistant/maria-scorecard.ts` reads the same `scorecard()`
+(`workflows/personal-assistant/_scorecard.ts`) as the twice-weekly card and
+the assistant's own tool. Nothing in `src/` knows about any one project.
+
 ### Triggers
 
 ```ts
@@ -1479,6 +1486,11 @@ board, whatever is worth looking at rather than querying. It is a file under
 and tables are, and — like a workflow and unlike a table — **it reloads on a
 file change without a restart**, because a view only ever reads. There is no
 schema to bring into line and nothing that can be caught half-applied.
+
+A view imports from `define.ts`, and may import its own project's `_` files
+under `workflows/<project>/` (see "A file whose name starts with `_`" above).
+Editing one of those switches view reloading off until a restart, as editing a
+workflow's `_` file does for workflows — the old copy stays in memory.
 
 ```ts
 import { bars, defineView, formatMoney, stats } from "../src/core/define.ts";

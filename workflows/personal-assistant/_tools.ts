@@ -53,7 +53,7 @@
  * So no piece of feedback is read once and forgotten: it is either turned
  * into a lesson or still on the list next run.
  *
- * Twice a week she also gets numbers: `scorecard` (src/core/scorecard.ts)
+ * Twice a week she also gets numbers: `scorecard` (`_scorecard.ts`)
  * is the half-week's drafts, questions, tasks, reply times and sorting
  * against the same days a week before, and `now` reminds her until she has
  * written one `scorecard` lesson aimed at the worst of them — how she
@@ -88,10 +88,6 @@ import {
   lastWordMine,
   waitingChats,
   table,
-  canonicalKey,
-  linkChats,
-  scorecard,
-  scorecardText,
   startWorkflow,
   workflowLoaded,
   workflowRuns,
@@ -101,7 +97,9 @@ import {
   type Row,
   type StoredMessage,
 } from "../../src/core/define.ts";
+import { canonicalKey, linkChats } from "./_chat-link.ts";
 import { checkDraft } from "./_check.ts";
+import { scorecard, scorecardText } from "./_scorecard.ts";
 import { chatPassOn } from "./_writer.ts";
 
 const MAX_BYTES = Number(process.env.MCP_MAX_BYTES ?? 24_000);
@@ -533,7 +531,7 @@ function num(args: Record<string, unknown>, key: string, fallback: number, max: 
 /**
  * `whatsapp:<jid>` or `telegram:<id>` — the people table's key. A WhatsApp
  * hidden id linked to a number comes back as the number, so every tool reads
- * and writes one person in one place (src/core/chat-link.ts).
+ * and writes one person in one place (`_chat-link.ts`).
  */
 function chatArg(
   args: Record<string, unknown>,

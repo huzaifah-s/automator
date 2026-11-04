@@ -8,6 +8,36 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-11-05
 
+### The last of the assistant leaves `src/`
+
+`src/core/scorecard.ts` and `src/core/chat-link.ts` were the personal
+assistant's, through and through — its tables, its targets, its Wednesday and
+Sunday card, WhatsApp's `@lid`s — and sat in the core only because a view
+reached the scorecard through `define.ts`. They are now
+`workflows/personal-assistant/_scorecard.ts` and `_chat-link.ts`, and nothing
+under `src/` names the assistant except the legacy `assistant` token audience.
+
+- **A view may import its own project's `_` files.** `views/<project>/` can
+  import `workflows/<project>/_*.ts`, so the scorecard view, the card and the
+  tool still call one `scorecard()`. *Considered:* keeping the period and
+  headline maths as a generic core helper and having the project register its
+  measures for the view to look up by agent name — it keeps "views import only
+  `define.ts`", but adds a mechanism one project uses, and the view would still
+  depend on the project, just by a string. The view watcher now hashes those
+  project `_` files too (`hashViewShared`), so an edit to `_scorecard.ts` stops
+  view reloading until a restart instead of serving new view code on the old
+  copy; a project with no views is left out, so its helpers do not.
+- **`moveChat`** (`define.ts`) is the one generic piece `_chat-link.ts`
+  needed: it refiles one chat's messages under another, dropping duplicates.
+  What counts as one person stays in the project.
+- **`claude-code.ts` is generic.** Its comments no longer describe live Maria,
+  a tool name's `mcp__<server>__` prefix is stripped whatever the server is
+  called, `askClaude`'s empty home is `claude-ask` (was `maria-ask`; nothing
+  is kept in it, so an old one in the temp dir is just left behind), and the
+  developer-only own-login switch is `CLAUDE_OWN_LOGIN=1` — **rename
+  `ASSISTANT_LIVE_LOGIN` in any local launch config**; it is never set on the
+  server.
+
 ### Agents: a project's own AI agent, out of the core
 
 The personal assistant's MCP tools — about 3,000 lines written for one

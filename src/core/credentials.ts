@@ -102,6 +102,27 @@ export function credentialReady(provider: string, id: string): boolean {
   return status !== undefined && status.provider !== undefined && status.missing.length === 0;
 }
 
+/**
+ * A credential's current values, for server code that uses one on a
+ * client's behalf (an MCP connector) rather than a workflow's
+ * `defineCredential`. Throws when it does not exist or is missing a field.
+ */
+export function credentialValues(provider: string, id: string): Record<string, string> {
+  const status = getCredential(provider, id);
+  if (!status) throw new Error(`No credential ${credentialRef(provider, id)} on the Credentials tab`);
+  if (status.missing.length > 0) {
+    throw new Error(`${credentialRef(provider, id)} is not connected — ${status.missing.join(", ")} not set`);
+  }
+  const values: Record<string, string> = {};
+  for (const { field, key } of fieldKeys(provider, id)) {
+    const value = secretValue(key);
+    if (value === undefined) continue;
+    if (status.provider?.fields[field]?.secret !== false) registerSecret(value);
+    values[field] = value;
+  }
+  return values;
+}
+
 /* ----------------------------------------------------------------- write */
 
 export interface CredentialInput {

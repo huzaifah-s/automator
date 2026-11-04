@@ -501,10 +501,16 @@ export interface McpTokenRecord {
    */
   tables: string | null;
   /**
-   * Which MCP endpoint this token is for — "ops" or "tables". NULL on tokens
-   * minted before the two were separate, and read as "ops".
+   * Which MCP endpoint this token is for — "ops", "tables", "assistant" or
+   * "connections". NULL on tokens minted before the endpoints were separate,
+   * and read as "ops".
    */
   audience: string | null;
+  /**
+   * JSON array of grants — the connections a "connections" token may use on
+   * /mcp, each with its access and limits (src/connectors/). Null otherwise.
+   */
+  grants: string | null;
   calls: number;
 }
 

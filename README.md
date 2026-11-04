@@ -2914,6 +2914,45 @@ worth fixing. Unlike a tool, a prompt costs nothing until it is run — which is
 why a routine you repeat belongs in one rather than becoming an eighteenth
 tool.
 
+#### Connections: your accounts, limited to what you pick
+
+A **connections** token uses the same `/mcp`, but gets none of the operations
+tools. What it gets instead depends on the **grants** you give it. A grant has
+three parts:
+
+- a credential from the Credentials tab;
+- read or full access;
+- that platform's own limits.
+
+For example: *my Telegram account, read, only the chats in the folder "Work"*.
+That token sees `telegram_chats`, `telegram_history` and `telegram_search`, and
+nothing else. The server checks the limits on every call. A chat outside them
+is refused by name, even if the client asks for it by id.
+
+On the MCP tab, pick **Create token → Connections**, tick the credentials and
+fill in their limits. Over the API it looks like this:
+
+```bash
+curl -u user:pass -X POST https://<PUBLIC_URL>/api/mcp-tokens -H 'content-type: application/json' -d '{
+  "name": "work-laptop", "audience": "connections",
+  "grants": [{ "provider": "telegram_user", "credential": "me", "access": "read",
+               "limits": { "folders": ["Work"], "chats": [] } }]
+}'
+```
+
+| Platform | Tools | Limits |
+|---|---|---|
+| Telegram (user account) | `telegram_chats`, `telegram_history`, `telegram_search` (read only) | `folders` by name, `chats` by id; at least one |
+
+**A folder is a live limit.** The grant stores the folder's name, not the chats
+in it. When you move a chat into or out of the folder on your phone, what the
+token can read changes within a minute. A folder built from rules ("all groups")
+reaches whatever those rules match.
+
+**Nothing read through a connection is stored.** It isn't in a run, a table or
+a log line. Each connection's tools come from a file in `src/connectors/` (see
+AGENTS.md, "Adding a connector").
+
 #### Why it is shaped like this
 
 The n8n MCP this replaces was unusable, and not for a subtle reason: asking it

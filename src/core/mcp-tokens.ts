@@ -45,9 +45,31 @@ export type McpScope = "read" | "full";
  * could do both — the table scope narrowed what it saw on `/mcp/tables` and
  * said nothing about `/mcp`, which is not what anybody minting it intended.
  */
-export type McpAudience = "ops" | "tables" | "assistant";
+export type McpAudience = "ops" | "tables" | "assistant" | "connections";
 
-export const AUDIENCES: readonly McpAudience[] = ["ops", "tables", "assistant"];
+export const AUDIENCES: readonly McpAudience[] = ["ops", "tables", "assistant", "connections"];
+
+/**
+ * One connection a "connections" token may use: a credential from the
+ * Credentials tab, how far it may go, and the connector's own limits on what
+ * it may touch (src/connectors/). Which tools a grant brings, and what its
+ * limits mean, is code; the grant only picks among them.
+ *
+ * Stored as JSON on the token's row. Validated against the connector when the
+ * token is minted, and again when it is used — a connector can change shape
+ * in a deploy, and a grant that no longer fits is refused rather than read
+ * loosely.
+ */
+export interface McpGrant {
+  /** The credential's platform — a key of PROVIDERS that has a connector. */
+  provider: string;
+  /** The credential's name on the Credentials tab. */
+  credential: string;
+  /** `read` gets the connector's read tools; `full` its write tools as well. */
+  access: McpScope;
+  /** The connector's limits, in the shape its `limits.schema` accepts. */
+  limits: Record<string, unknown>;
+}
 
 export function isAudience(value: unknown): value is McpAudience {
   return AUDIENCES.includes(value as McpAudience);
@@ -58,12 +80,16 @@ export const AUDIENCE_PATH: Record<McpAudience, string> = {
   ops: "/mcp",
   tables: "/mcp/tables",
   assistant: "/mcp/assistant",
+  // The one endpoint everything is meant to end up on: a connections token is
+  // served at /mcp next to the operations tools, not on a path of its own.
+  connections: "/mcp",
 };
 
 const AUDIENCE_NAME: Record<McpAudience, string> = {
   ops: "an operations token",
   tables: "a data-table token",
   assistant: "an assistant token",
+  connections: "a connections token",
 };
 
 /**
@@ -116,9 +142,17 @@ export function createMcpToken(
      * calls it.
      */
     tables?: string[];
+    /**
+     * For a "connections" token: what it may use. Validated by the caller
+     * (src/connectors/ knows what a grant's limits mean; this file does not).
+     */
+    grants?: McpGrant[];
   } = {},
 ): { token: string; id: string } {
-  const { audience = "ops", tables } = opts;
+  const { audience = "ops", tables, grants } = opts;
+  if (audience === "connections" && !grants?.length) {
+    throw new Error("A connections token needs at least one connection");
+  }
   const token = PREFIX + randomBytes(24).toString("hex");
   const id = randomBytes(4).toString("hex");
   store.insertMcpToken({
@@ -129,10 +163,14 @@ export function createMcpToken(
     prefix: token.slice(0, HINT_LENGTH),
     tables: tables && tables.length ? tables : null,
     audience,
+    grants: audience === "connections" ? grants : null,
   });
   log.info(
     `MCP token "${name}" created (${audience}, ${scope} scope, ${id}` +
-      `${tables && tables.length ? `, tables: ${tables.join(", ")}` : ""})`,
+      `${tables && tables.length ? `, tables: ${tables.join(", ")}` : ""}` +
+      // Which credentials, never the limits: a folder or chat name says more
+      // about somebody's life than a log line needs to.
+      `${audience === "connections" && grants ? `, connections: ${grants.map((g) => `${g.provider}:${g.credential}`).join(", ")}` : ""})`,
   );
   return { token, id };
 }
@@ -164,6 +202,23 @@ export function updateMcpTokenAccess(
   return done;
 }
 
+/**
+ * Replaces a connections token's grants in place — a changed access, or
+ * folders added — so the client keeps its token. Validated by the caller,
+ * like createMcpToken's. Logged by credential, never by limit.
+ */
+export function updateMcpTokenGrants(id: string, grants: McpGrant[]): boolean {
+  if (grants.length === 0) throw new Error("A connections token needs at least one connection");
+  const done = store.updateMcpTokenGrants(id, grants);
+  if (done) {
+    log.info(
+      `MCP token ${id} connections changed: ` +
+        grants.map((g) => `${g.provider}:${g.credential} (${g.access})`).join(", "),
+    );
+  }
+  return done;
+}
+
 export function mcpTokenById(id: string): McpTokenRecord | null {
   return store.mcpTokenById(id);
 }
@@ -190,6 +245,13 @@ export interface McpIdentity {
    * minted for.
    */
   audiences: McpAudience[];
+  /**
+   * The connections this token may use on /mcp, each with its own access and
+   * limits. Empty for every token that is not a "connections" token —
+   * including the environment one, which is the way back in and has no
+   * business carrying somebody's chats into an operations conversation.
+   */
+  grants: McpGrant[];
   /**
    * The only tools this identity may list or call, when set. Only an
    * in-process token has one (`mintProcessToken`): live Maria is given the
@@ -258,6 +320,7 @@ export function identify(presented: string): McpIdentity | null {
       label: "MCP_TOKEN (environment)",
       tables: null,
       audiences: [...AUDIENCES],
+      grants: [],
     };
   }
 
@@ -275,6 +338,7 @@ export function identify(presented: string): McpIdentity | null {
     // endpoints were separate was minted for the only one that existed, and
     // widening it here would hand out an access its creator never chose.
     audiences: [isAudience(row.audience) ? row.audience : "ops"],
+    grants: row.audience === "connections" ? parseGrants(row.grants) : [],
   };
 }
 
@@ -311,6 +375,36 @@ function parseTables(raw: string | null): string[] | null {
   }
   log.warn(`An MCP token has an unreadable table list — treating it as every table`);
   return null;
+}
+
+/**
+ * The stored grants, defensively — and in the opposite direction from the
+ * table list above. An unreadable grant is dropped, not widened: a table list
+ * picks among this server's own tables, while a grant reaches somebody's
+ * account somewhere else, so the failure that reads as "this token can see
+ * nothing" is the right one here.
+ */
+function parseGrants(raw: string | null): McpGrant[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.filter(
+        (g): g is McpGrant =>
+          g !== null &&
+          typeof g === "object" &&
+          typeof g.provider === "string" &&
+          typeof g.credential === "string" &&
+          isScope(g.access) &&
+          g.limits !== null &&
+          typeof g.limits === "object",
+      );
+    }
+  } catch {
+    /* falls through */
+  }
+  log.warn(`An MCP token has an unreadable grant list — treating it as no connections`);
+  return [];
 }
 
 function constantTimeEqual(a: string, b: string): boolean {

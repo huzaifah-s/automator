@@ -574,6 +574,16 @@ font-size:11.5px;color:var(--muted);margin-top:2px;line-height:1.4}
 .tablelinks .gone{border-style:dashed;color:var(--muted);padding:9px 11px;border-radius:8px;border:1px dashed var(--border)}
 .mr .name a{color:inherit;min-width:0}
 .mr .name a:hover b{color:var(--accent)}
+/* The connections a token can be given — shown only for a connections token.
+   Unlike the table list, this one is hidden by default: without :has() it is
+   simply absent, and a server that cannot show the pick refuses the token
+   with a sentence saying which box to tick. */
+.connscope{display:none}
+.form:has(#aud-connections:checked) .connscope{display:grid}
+.conn{display:grid;gap:8px;padding:10px 12px;border-radius:9px;border:1px solid var(--border);background:var(--sunk)}
+.conn .limits{display:none;gap:8px}
+.conn:has(.pick:checked) .limits{display:grid}
+.conn:has(.pick:checked){border-color:var(--accent)}
 
 /* ---- tiles ---- */
 /* A tile's job is to be scannable, so the counts come first and the
@@ -3565,6 +3575,25 @@ export interface McpTokenView {
   tables: string[] | null;
   /** Which endpoint it is for: "ops" (/mcp), "tables" (/mcp/tables) or "assistant" (/mcp/assistant). */
   audience: McpAudience;
+  /** A connections token's grants, one described line each. */
+  grants: string[];
+  /** The same grants as the form holds them, to fill in the edit form. */
+  grantValues: { ref: string; limits: Record<string, string[]> }[];
+}
+
+/** A credential a connections token can be given, as the form offers it. */
+export interface ConnectionChoice {
+  /** `provider:id`. */
+  ref: string;
+  /** The platform's name. */
+  label: string;
+  /** The credential's name. */
+  id: string;
+  /** Connected — every required field set. */
+  ready: boolean;
+  fields: { name: string; label: string; placeholder?: string; help: string }[];
+  /** The tools a grant on it brings, for the form's help line. */
+  tools: string[];
 }
 
 /** How each audience reads on the MCP tab: its tag, its endpoint, a client name. */
@@ -3572,6 +3601,7 @@ const AUDIENCE_UI: Record<McpAudience, { tag: string; path: string; client: stri
   ops: { tag: "ops", path: "/mcp", client: "automator" },
   tables: { tag: "tables", path: "/mcp/tables", client: "automator-tables" },
   assistant: { tag: "assistant", path: "/mcp/assistant", client: "automator-assistant" },
+  connections: { tag: "connections", path: "/mcp", client: "automator" },
 };
 
 /** A loaded data table, as the token forms offer it. */
@@ -3588,6 +3618,8 @@ export interface McpTokenDraft {
   scope: "read" | "full";
   /** Null for "all tables". */
   tables: string[] | null;
+  /** The connection boxes as they were, for a connections token. */
+  grants?: { ref: string; limits: Record<string, string[]> }[];
 }
 
 /** The first sentence of a description, for a card with two lines of room. */
@@ -3685,6 +3717,8 @@ export function mcpTokensPage(args: {
   dataTables: TablePickView[];
   /** What the form held when it was refused, so it comes back filled in. */
   draft?: McpTokenDraft | null;
+  /** Credentials whose platform has MCP tools, offered to a connections token. */
+  connections: ConnectionChoice[];
   envToken: boolean;
   publicUrl: string | null;
   failedInWindow: number;
@@ -3761,7 +3795,10 @@ export function mcpTokensPage(args: {
             <code class="mono">${base}/mcp</code> for operations — workflows, runs, triggers —
             <code class="mono">${base}/mcp/tables</code> for the data tables, and
             <code class="mono">${base}/mcp/assistant</code> for the personal assistant, which
-            reads your WhatsApp and Telegram. They have
+            reads your Telegram. A <b>connections</b> token also uses
+            <code class="mono">${base}/mcp</code>, and gets only the tools of the connections
+            you give it — your Telegram, limited to some folders, say — and none of the
+            operations tools. They have
             separate tool lists on purpose: a tool costs context on every turn of every
             conversation whether or not anything calls it, so an incident chat should not be
             carrying ledger tools. A token reaches one endpoint and is refused by the other.
@@ -3823,6 +3860,13 @@ export function mcpTokensPage(args: {
                           Reads private messages; give it only to the assistant.
                         </span>
                       </label>
+                      <label class="opt">
+                        <input type="radio" id="aud-connections" name="audience" value="connections" ${audienceChecked("connections")}>
+                        <span><b>Connections</b>
+                          Tools for accounts on the Credentials tab, limited to what you pick —
+                          <code class="mono">/mcp</code>, without the operations tools.
+                        </span>
+                      </label>
                     </div>
                     <div class="help">
                       A token reaches one of them, never another. One minted for the tables is
@@ -3850,6 +3894,10 @@ export function mcpTokensPage(args: {
                     <div class="help">
                       You can change this later from the token's own page, without a new token.
                     </div>
+                  </div>
+                  <div class="field connscope">
+                    <label>Which connections</label>
+                    ${connectionPicker(args.connections, args.draft?.grants ?? [])}
                   </div>
                   <div class="bar">
                     <button class="btn primary" type="submit">Create</button>
@@ -3915,6 +3963,9 @@ export function mcpTokensPage(args: {
                               t.tables.join(", ").length <= 24 ? t.tables.join(", ") : `${t.tables.length} tables`
                             }</div>`
                           : html`<div class="detail" title="Every data table, including ones added later">all tables</div>`}
+                      ${t.grants.map(
+                        (g) => html`<div class="detail mono trunc" title="${g}">${g}</div>`,
+                      )}
                     </div>
                     <div class="mono muted trunc hide-sm">${t.prefix}…</div>
                     <div class="muted trunc lused"
@@ -3948,6 +3999,62 @@ export function mcpTokensPage(args: {
   );
 }
 
+/**
+ * The connection boxes on a token form: one per credential that has a
+ * connector, each with its limit inputs, filled from `current` when editing.
+ * Shared by the create form and a token's own page so they cannot drift.
+ */
+function connectionPicker(
+  choices: ConnectionChoice[],
+  current: { ref: string; limits: Record<string, string[]> }[],
+) {
+  if (choices.length === 0) {
+    return html`<div class="help">
+      No credential on the Credentials tab has MCP tools yet. Connect one
+      (Telegram user account, for now) and it shows up here.
+    </div>`;
+  }
+  const held = new Map(current.map((g) => [g.ref, g.limits]));
+  return html`
+    ${choices.map((k) => {
+      const limits = held.get(k.ref);
+      return html`
+        <div class="conn">
+          <label class="opt" style="border:0;padding:0;background:none">
+            <input class="pick" type="checkbox" name="grant" value="${k.ref}"
+                   ${limits ? raw("checked") : ""} ${k.ready || limits ? "" : raw("disabled")}>
+            <span><b>${k.label} · ${k.id}</b>
+              ${k.ready
+                ? html`Brings <code class="mono">${k.tools.join(" ")}</code>.`
+                : html`Not connected — finish it on the Credentials tab first.`}
+            </span>
+          </label>
+          <div class="limits">
+            ${k.fields.map(
+              (f) => html`
+                <div class="field">
+                  <label for="lim-${k.ref}-${f.name}">${f.label}</label>
+                  <input type="text" id="lim-${k.ref}-${f.name}"
+                         name="limit:${k.ref}:${f.name}"
+                         value="${(limits?.[f.name] ?? []).join(", ")}"
+                         placeholder="${f.placeholder ?? ""}"
+                         autocomplete="off" spellcheck="false">
+                  <div class="help">${f.help}</div>
+                </div>
+              `,
+            )}
+          </div>
+        </div>
+      `;
+    })}
+    <div class="help">
+      Access applies to each connection: read gets the read tools only. The limits
+      are checked by the server on every call — the client never sees a chat outside
+      them, whatever it asks for.
+    </div>
+  `;
+}
+
 /** What each audience is, in a sentence, for the token page. */
 const AUDIENCE_ABOUT: Record<McpAudience, { title: string; about: string }> = {
   ops: {
@@ -3968,6 +4075,12 @@ const AUDIENCE_ABOUT: Record<McpAudience, { title: string; about: string }> = {
       "Your WhatsApp and Telegram chats, drafts, people and Notion tasks. It reads private " +
       "messages — give it only to the assistant.",
   },
+  connections: {
+    title: "Connections",
+    about:
+      "Tools for the accounts below, limited to what each grant names. It gets none of the " +
+      "operations tools, and the data-table and assistant endpoints refuse it.",
+  },
 };
 
 /**
@@ -3985,6 +4098,8 @@ export function mcpTokenPage(args: {
   dataTables: TablePickView[];
   /** The endpoint's tools, read-only and write alike. */
   tools: { name: string; description: string; write: boolean }[];
+  /** Credentials a connections token can be given, for its edit form. */
+  connections: ConnectionChoice[];
   writable: boolean;
   authenticated: boolean;
   publicUrl: string | null;
@@ -4073,6 +4188,11 @@ export function mcpTokenPage(args: {
               : html`<span class="mono">${t.tables.join(", ")}</span>
                   <span class="muted">— only these; others stay hidden</span>`}</td></tr>`
           : ""}
+        ${t.audience === "connections"
+          ? html`<tr><td>Connections</td><td>${t.grants.length
+              ? t.grants.map((g) => html`<div class="mono">${g}</div>`)
+              : html`<span class="muted">none readable — this token reaches nothing</span>`}</td></tr>`
+          : ""}
         <tr><td>Starts with</td><td class="mono">${t.prefix}… <span class="muted">— the rest is not stored</span></td></tr>
         <tr><td>Created</td><td class="mono">${fmt(t.createdAt)}</td></tr>
         <tr><td>Last used</td><td class="mono">${t.lastUsedAt === null
@@ -4160,6 +4280,12 @@ export function mcpTokenPage(args: {
                   ? html`<div class="field">
                       <label>Which data tables</label>
                       ${tablePicker(args.dataTables, t.tables === null ? null : t.tables.filter((n) => loaded.has(n)), "edit")}
+                    </div>`
+                  : ""}
+                ${t.audience === "connections"
+                  ? html`<div class="field">
+                      <label>Which connections</label>
+                      ${connectionPicker(args.connections, t.grantValues)}
                     </div>`
                   : ""}
                 <div class="field">

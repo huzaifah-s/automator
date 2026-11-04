@@ -169,6 +169,8 @@ function practiceTelegramUser(real: TelegramUserClient): TelegramUserClient {
     resolve: (peer, opts) => real.resolve(peer, opts),
     history: (peer, opts) => real.history(peer, opts),
     chats: (opts) => real.chats(opts),
+    search: (peer, query, opts) => real.search(peer, query, opts),
+    folders: (opts) => real.folders(opts),
     async send(peer, text, opts = {}) {
       return hold("sendText", peer, { text, format: opts.format ?? "plain", replyTo: opts.replyTo });
     },

@@ -492,6 +492,12 @@ if (!mcpTokenColumns.has("tables")) {
 if (!mcpTokenColumns.has("audience")) {
   db.exec("ALTER TABLE mcp_tokens ADD COLUMN audience TEXT");
 }
+// The connections a "connections" token may use on /mcp — a JSON array of
+// grants (src/connectors/). NULL on every other token, which reaches no
+// connection at all: the safe reading of an absent column.
+if (!mcpTokenColumns.has("grants")) {
+  db.exec("ALTER TABLE mcp_tokens ADD COLUMN grants TEXT");
+}
 
 /**
  * The executions tab's filter, and the shape both the run list and the counts
@@ -673,9 +679,10 @@ const stmts = {
   mcpTokenByHash: db.prepare(`SELECT * FROM mcp_tokens WHERE hash = ?`),
   mcpTokenById: db.prepare(`SELECT * FROM mcp_tokens WHERE id = ?`),
   updateMcpTokenAccess: db.prepare(`UPDATE mcp_tokens SET scope = ?, tables = ? WHERE id = ?`),
+  updateMcpTokenGrants: db.prepare(`UPDATE mcp_tokens SET grants = ? WHERE id = ?`),
   insertMcpToken: db.prepare(
-    `INSERT INTO mcp_tokens (id, name, scope, hash, prefix, created_at, tables, audience)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO mcp_tokens (id, name, scope, hash, prefix, created_at, tables, audience, grants)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ),
   deleteMcpToken: db.prepare(`DELETE FROM mcp_tokens WHERE id = ?`),
   touchMcpToken: db.prepare(
@@ -1196,8 +1203,10 @@ export const store = {
     prefix: string;
     /** Data tables this token may reach, or null for every one of them. */
     tables?: string[] | null;
-    /** Which MCP endpoint it is for: "ops" or "tables". */
+    /** Which MCP endpoint it is for: "ops", "tables", "assistant" or "connections". */
     audience?: string | null;
+    /** The connections a "connections" token may use, already validated. */
+    grants?: unknown[] | null;
   }): void => {
     stmts.insertMcpToken.run(
       row.id,
@@ -1208,6 +1217,7 @@ export const store = {
       Date.now(),
       row.tables && row.tables.length ? JSON.stringify(row.tables) : null,
       row.audience ?? null,
+      row.grants && row.grants.length ? JSON.stringify(row.grants) : null,
     );
   },
   deleteMcpToken: (id: string): boolean => stmts.deleteMcpToken.run(id).changes > 0,
@@ -1217,6 +1227,10 @@ export const store = {
   updateMcpTokenAccess: (id: string, scope: string, tables: string[] | null): boolean =>
     stmts.updateMcpTokenAccess.run(scope, tables && tables.length ? JSON.stringify(tables) : null, id)
       .changes > 0,
+
+  /** Replaces a connections token's grants, already validated by the caller. */
+  updateMcpTokenGrants: (id: string, grants: unknown[]): boolean =>
+    stmts.updateMcpTokenGrants.run(JSON.stringify(grants), id).changes > 0,
 
   /**
    * Records that a token was just used. The client name is only known on the

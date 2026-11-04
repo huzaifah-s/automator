@@ -2995,7 +2995,7 @@ export function liveConnection(label: string, exclude: readonly string[]): { url
     const names = tools(registry).map((t) => t.name).filter((n) => !exclude.includes(n));
     liveToken = {
       tools: names,
-      token: mintProcessToken({ scope: "full", label, tables: null, audiences: ["assistant"], tools: names }),
+      token: mintProcessToken({ scope: "full", label, tables: null, audiences: ["assistant"], grants: [], tools: names }),
     };
   }
   return { url: `http://127.0.0.1:${process.env.PORT ?? 3000}/mcp/assistant`, ...liveToken };
@@ -3021,7 +3021,7 @@ export function assistantTools(opts: { label: string; exclude?: readonly string[
 } {
   const registry = currentRegistry();
   if (!registry) throw new Error("No workflow registry yet — the assistant's tools need a booted server");
-  const identity: McpIdentity = { scope: "full", label: opts.label, tables: null, audiences: ["assistant"] };
+  const identity: McpIdentity = { scope: "full", label: opts.label, tables: null, audiences: ["assistant"], grants: [] };
   const all = tools(registry).filter((t) => !opts.exclude?.includes(t.name));
   const byName = new Map(all.map((t) => [t.name, t]));
   return {

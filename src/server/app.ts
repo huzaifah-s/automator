@@ -73,8 +73,18 @@ import {
   listMcpTokens,
   mcpTokenById,
   updateMcpTokenAccess,
+  updateMcpTokenGrants,
   type McpAudience,
+  type McpGrant,
 } from "../core/mcp-tokens.ts";
+import {
+  CONNECTORS,
+  connectorFor,
+  describeGrant,
+  grantToolList,
+  splitList,
+  validateGrant,
+} from "../connectors/index.ts";
 import type { LoadedWorkflow, RunRecord, WebhookDecision } from "../core/types.ts";
 import {
   credentialFormPage,
@@ -1045,12 +1055,52 @@ export function createApp(registry: Registry): Hono {
     calls: t.calls,
     tables: parseTokenTables(t.tables),
     audience: isAudience(t.audience) ? t.audience : "ops",
+    grants: t.audience === "connections" ? storedGrants(t.grants).map(describeGrant) : [],
+    grantValues:
+      t.audience === "connections"
+        ? storedGrants(t.grants).map((g) => ({
+            ref: `${g.provider}:${g.credential}`,
+            limits: Object.fromEntries(
+              Object.entries(g.limits ?? {}).map(([k, v]) => [k, Array.isArray(v) ? v.map(String) : []]),
+            ),
+          }))
+        : [],
   });
   const tokenViews = (): McpTokenView[] => listMcpTokens().map(tokenView);
 
   /** The loaded tables as the token forms offer them. */
   const tablePicks = () =>
     allTables().map((t) => ({ name: t.name, folder: t.folder, description: t.description ?? null }));
+
+  /** A token's stored grants for display — unreadable reads as none, as identify() has it. */
+  const storedGrants = (raw: string | null): McpGrant[] => {
+    try {
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  };
+
+  /**
+   * The credentials a connections token can be given: every one whose
+   * platform has a connector, connected or not — an unconnected one is shown
+   * so the form explains why it cannot be picked rather than hiding it.
+   */
+  const connectionChoices = () =>
+    listCredentials()
+      .filter((s) => connectorFor(s.row.provider))
+      .map((s) => {
+        const connector = connectorFor(s.row.provider)!;
+        return {
+          ref: `${s.row.provider}:${s.row.id}`,
+          label: connector.label,
+          id: s.row.id,
+          ready: s.missing.length === 0,
+          fields: connector.limits.fields,
+          tools: connector.tools.map((t) => `${connector.prefix}_${t.name}`),
+        };
+      });
 
   const renderMcp = (
     c: any,
@@ -1068,6 +1118,7 @@ export function createApp(registry: Registry): Hono {
         authenticated: dashboardAuthenticated,
         dataTables: tablePicks(),
         draft: opts.draft ?? null,
+        connections: connectionChoices(),
         envToken: Boolean(process.env.MCP_TOKEN),
         publicUrl,
         created: opts.created ?? null,
@@ -1135,6 +1186,25 @@ export function createApp(registry: Registry): Hono {
     return tableScopeFrom(picked);
   };
 
+  /**
+   * The grants on a new connections token, from the form: one ticked box per
+   * credential, its limit inputs named `limit:<provider>:<id>:<field>`, and
+   * the token's own access for each.
+   */
+  const grantsFromForm = (form: Record<string, unknown>, access: string): McpGrant[] => {
+    const picked = splitList(form.grant).filter((ref) => ref.includes(":"));
+    if (picked.length === 0) throw new Error("Tick at least one connection for this token.");
+    return picked.map((ref) => {
+      const [provider, credential] = [ref.slice(0, ref.indexOf(":")), ref.slice(ref.indexOf(":") + 1)];
+      const connector = connectorFor(provider);
+      const limits: Record<string, string[]> = {};
+      for (const f of connector?.limits.fields ?? []) {
+        limits[f.name] = splitList(form[`limit:${ref}:${f.name}`]);
+      }
+      return validateGrant({ provider, credential, access, limits });
+    });
+  };
+
   app.post("/mcp-tokens", async (c) => {
     const denied = requireWrite(c);
     if (denied) return denied;
@@ -1158,6 +1228,15 @@ export function createApp(registry: Registry): Hono {
       audience: isAudience(audience) ? audience : "ops",
       scope: scope === "full" ? "full" : "read",
       tables: tablePickFrom(form),
+      grants: splitList(form.grant).map((ref) => ({
+        ref,
+        limits: Object.fromEntries(
+          (connectorFor(ref.split(":")[0] ?? "")?.limits.fields ?? []).map((f) => [
+            f.name,
+            splitList(form[`limit:${ref}:${f.name}`]),
+          ]),
+        ),
+      })),
     };
     const refuse = (error: string) => renderMcp(c, { error, status: 400, draft });
 
@@ -1166,15 +1245,17 @@ export function createApp(registry: Registry): Hono {
     if (!isAudience(audience)) return refuse("Pick what the token is for.");
 
     let tables: string[] | undefined;
+    let grants: McpGrant[] | undefined;
     try {
       // Only meaningful for a table token; an operations token that carried a
       // table list would be stating a scope it never gets to use.
       tables = audience === "tables" ? tableScopeFromForm(form) : undefined;
+      grants = audience === "connections" ? grantsFromForm(form, scope) : undefined;
     } catch (err) {
       return refuse(err instanceof Error ? err.message : String(err));
     }
 
-    const { token } = createMcpToken(name, scope, { audience, tables });
+    const { token } = createMcpToken(name, scope, { audience, tables, grants });
     // Answered with the page rather than a redirect, which every other form
     // here does. The plaintext exists for exactly this response — it is not in
     // the database and cannot go in a query string — so a redirect would throw
@@ -1197,12 +1278,15 @@ export function createApp(registry: Registry): Hono {
         ? tableToolList()
         : view.audience === "assistant"
           ? assistantToolList(registry)
-          : opsToolList(registry);
+          : view.audience === "connections"
+            ? grantToolList(storedGrants(row.grants))
+            : opsToolList(registry);
     return c.html(
       mcpTokenPage({
         token: view,
         dataTables: tablePicks(),
         tools,
+        connections: connectionChoices(),
         writable,
         authenticated: dashboardAuthenticated,
         publicUrl,
@@ -1240,7 +1324,16 @@ export function createApp(registry: Registry): Hono {
       return renderToken(c, row, { error: "Scope must be read or full.", status: 400 });
     }
     let tables: string[] | null = null;
-    if (row.audience === "tables") {
+    let grants: McpGrant[] | null = null;
+    if (row.audience === "connections") {
+      try {
+        // The whole set again, from the form: a box unticked drops that
+        // connection, and the access applies to every one, as on creation.
+        grants = grantsFromForm(form, scope);
+      } catch (err) {
+        return renderToken(c, row, { error: err instanceof Error ? err.message : String(err), status: 400 });
+      }
+    } else if (row.audience === "tables") {
       try {
         tables = tableScopeFromForm(form) ?? null;
       } catch (err) {
@@ -1255,6 +1348,7 @@ export function createApp(registry: Registry): Hono {
       tables = parseTokenTables(row.tables);
     }
     updateMcpTokenAccess(row.id, scope, tables);
+    if (grants) updateMcpTokenGrants(row.id, grants);
     return c.redirect(`/mcp-tokens/${row.id}?saved=1`, 303);
   });
 
@@ -2279,6 +2373,9 @@ export function createApp(registry: Registry): Hono {
         lastUsedAt: t.last_used_at === null ? null : new Date(t.last_used_at).toISOString(),
         lastClient: t.last_client,
         calls: t.calls,
+        audience: isAudience(t.audience) ? t.audience : "ops",
+        // Which connections and limits, never anything a grant could reach.
+        grants: t.audience === "connections" ? storedGrants(t.grants) : null,
       })),
     ),
   );
@@ -2292,18 +2389,32 @@ export function createApp(registry: Registry): Hono {
 
     const audience = String((body as any).audience ?? "ops") as McpAudience;
     if (!isAudience(audience)) {
-      return c.json({ error: "audience must be 'ops', 'tables' or 'assistant'" }, 400);
+      return c.json({ error: "audience must be 'ops', 'tables', 'assistant' or 'connections'" }, 400);
     }
 
     let tables: string[] | undefined;
+    let grants: McpGrant[] | undefined;
     try {
       tables = audience === "tables" ? tableScopeFrom((body as any).tables) : undefined;
+      if (audience === "connections") {
+        const raw = (body as any).grants;
+        if (!Array.isArray(raw) || raw.length === 0) {
+          throw new Error(
+            "A connections token needs `grants`: [{ provider, credential, access, limits }] — " +
+              `connectors exist for ${CONNECTORS.map((k) => k.provider).join(", ")}`,
+          );
+        }
+        grants = raw.map((g: any) => validateGrant(g ?? {}));
+      }
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
 
-    const { token, id } = createMcpToken(name, scope, { audience, tables });
-    return c.json({ id, name, scope, audience, tables: tables ?? null, token }, 201);
+    // A connections token's own scope is the widest of its grants, so the
+    // tab's "read only" pill never claims less than the token can do.
+    const tokenScope = grants ? (grants.some((g) => g.access === "full") ? "full" : "read") : scope;
+    const { token, id } = createMcpToken(name, tokenScope, { audience, tables, grants });
+    return c.json({ id, name, scope: tokenScope, audience, tables: tables ?? null, grants: grants ?? null, token }, 201);
   });
 
   app.delete("/api/mcp-tokens/:id", (c) =>

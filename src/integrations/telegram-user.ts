@@ -169,8 +169,24 @@ export interface TelegramUserClient {
    */
   history(
     peer: TelegramPeer,
-    opts?: TelegramUserCallOptions & { limit?: number; after?: number },
+    opts?: TelegramUserCallOptions & {
+      limit?: number;
+      after?: number;
+      /** Only messages older than this id — the cursor for paging back. Not with `after`. */
+      before?: number;
+    },
   ): Promise<TelegramUserMessage[]>;
+  /**
+   * Messages in one chat that match `query`, **newest first** — Telegram's own
+   * search, so it reaches past anything `history()` would page through.
+   */
+  search(
+    peer: TelegramPeer,
+    query: string,
+    opts?: TelegramUserCallOptions & { limit?: number },
+  ): Promise<TelegramUserMessage[]>;
+  /** The account's chat folders, as the phone lists them. "All chats" is not one. */
+  folders(opts?: TelegramUserCallOptions): Promise<TelegramUserFolder[]>;
   /**
    * The chat list, as the phone orders it — pinned first, then newest
    * activity — each with its unread count and newest message. Reading it
@@ -184,8 +200,25 @@ export interface TelegramUserClient {
    * is set, the same as the main list.
    */
   chats(
-    opts?: TelegramUserCallOptions & { limit?: number; unread?: boolean; archived?: boolean },
+    opts?: TelegramUserCallOptions & {
+      limit?: number;
+      unread?: boolean;
+      archived?: boolean;
+      /**
+       * Only the chats in this folder, by its title (case does not matter).
+       * The folder decides about archived chats itself, so `archived` is
+       * ignored. Slower than the main list: Telegram has no "chats in folder"
+       * call, so the whole list is read and filtered here.
+       */
+      folder?: string;
+    },
   ): Promise<TelegramUserChat[]>;
+}
+
+/** One chat folder. */
+export interface TelegramUserFolder {
+  id: number;
+  title: string;
 }
 
 /** How long a connection is kept after its last call. */
@@ -303,8 +336,15 @@ export function createTelegramUser(signal: AbortSignal, record?: CallRecorder): 
           // `reverse` pages forward from the offset, oldest first, which is
           // the only way to ask for "after X" without fetching everything
           // newer than now and throwing most of it away.
+          if (opts.after !== undefined && opts.before !== undefined) {
+            throw new Error("history() takes `after` or `before`, not both");
+          }
           const page =
-            opts.after !== undefined
+            opts.before !== undefined
+              ? [...(await c.getHistory(chat, { limit, offset: { id: opts.before, date: 0 } }))]
+                  .filter((m) => m.id < opts.before!)
+                  .reverse()
+              : opts.after !== undefined
               ? await c.getHistory(chat, {
                   limit,
                   reverse: true,
@@ -317,22 +357,81 @@ export function createTelegramUser(signal: AbortSignal, record?: CallRecorder): 
       );
     },
 
+    search(peer, query, opts = {}) {
+      const limit = Math.min(Math.max(1, opts.limit ?? 20), MAX_HISTORY);
+      if (!query.trim()) return Promise.reject(new Error("search() needs something to search for"));
+      return call(
+        "searchMessages",
+        connection(opts.credential),
+        { peer, limit },
+        async (c) => {
+          const found = await c.searchMessages({ chatId: await target(c, peer), query, limit });
+          return [...found].map(toMessage);
+        },
+        opts,
+      );
+    },
+
+    folders(opts = {}) {
+      return call(
+        "getFolders",
+        connection(opts.credential),
+        {},
+        async (c) => (await c.getFolders()).filters.flatMap(toFolder),
+        opts,
+      );
+    },
+
     chats(opts = {}) {
       const limit = Math.min(Math.max(1, opts.limit ?? 30), MAX_CHATS);
       return call(
         "getDialogs",
         connection(opts.credential),
-        { limit, unread: opts.unread ?? false, archived: opts.archived ?? false },
+        {
+          limit,
+          unread: opts.unread ?? false,
+          archived: opts.archived ?? false,
+          ...(opts.folder !== undefined ? { folder: opts.folder } : {}),
+        },
         async (c) => {
+          // Resolved here rather than handed to mtcute by title: its match is
+          // exact and silently picks the first of two same-named folders, and
+          // a miss should name the folders that do exist.
+          let folder: Awaited<ReturnType<TelegramClient["getFolders"]>>["filters"][number] | undefined;
+          if (opts.folder !== undefined) {
+            const wanted = opts.folder.trim().toLowerCase();
+            const all = (await c.getFolders()).filters;
+            const matches = all.filter((f) => toFolder(f)[0]?.title.toLowerCase() === wanted);
+            if (matches.length === 0) {
+              const names = all.flatMap(toFolder).map((f) => `"${f.title}"`);
+              throw new Error(
+                `No Telegram folder called "${opts.folder}" — this account has ${names.join(", ") || "no folders"}`,
+              );
+            }
+            if (matches.length > 1) {
+              throw new Error(`Two Telegram folders are called "${opts.folder}" — rename one`);
+            }
+            folder = matches[0];
+          }
+          // A folder is matched with mtcute's own rule (included, excluded and
+          // pinned chats, plus "all groups"-style flags) over the whole list,
+          // archived chats included — the folder says whether it wants them.
+          // Done here rather than by passing `folder` to iterDialogs, which
+          // does the same but refuses a folder joined from a shared link.
+          const { Dialog } = await import("@mtcute/bun");
+          const inFolder = folder ? Dialog.filterFolder(folder) : undefined;
           const found: TelegramUserChat[] = [];
           let scanned = 0;
           for await (const d of c.iterDialogs({
-            archived: opts.archived ? "keep" : "exclude",
-            limit: opts.unread ? SCAN_CHATS : limit,
+            archived: folder || opts.archived ? "keep" : "exclude",
+            // A folder's chats are found by reading the whole list, so the
+            // cap on how far down to look does not apply to it.
+            limit: folder ? Infinity : opts.unread ? SCAN_CHATS : limit,
           })) {
             scanned++;
+            if (inFolder && !inFolder(d)) continue;
             if (!opts.unread || d.isUnread) found.push(toChat(d));
-            if (found.length >= limit || scanned >= SCAN_CHATS) break;
+            if (found.length >= limit || (!folder && scanned >= SCAN_CHATS)) break;
           }
           return found;
         },
@@ -543,6 +642,17 @@ function toChat(d: MtDialog): TelegramUserChat {
     archived: d.isArchived,
     lastMessage: d.lastMessage ? toMessage(d.lastMessage) : undefined,
   };
+}
+
+type MtFolder = Awaited<ReturnType<TelegramClient["getFolders"]>>["filters"][number];
+
+/** A folder with a title, or nothing for "All chats", which has none. */
+function toFolder(f: MtFolder): TelegramUserFolder[] {
+  if (f._ === "dialogFilterDefault") return [];
+  // Newer layers made the title text-with-entities, so a custom emoji in a
+  // folder name can be styled; the plain text is what a person types.
+  const title = typeof f.title === "string" ? f.title : f.title.text;
+  return [{ id: f.id, title }];
 }
 
 /**

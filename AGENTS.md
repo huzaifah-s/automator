@@ -94,6 +94,9 @@ src/server/        app (webhooks + REST + dashboard routes) · views (HTML)
                    assistant-writer (one chat, one decision — the chat pass)
                    assistant-eval (the replay test that grades the writer)
                    inspect (what app.ts and mcp.ts must not decide twice)
+src/connectors/    the MCP tools a platform offers a "connections" token —
+                   one file per platform, registered in index.ts. See
+                   "Adding a connector" below.
 tables/            data tables — one file per table, `defineTable()` as the
                    default export, grouped by subdirectory the way workflows
                    are (`tables/personal-finance/expenses.ts`). Structure only;
@@ -1301,6 +1304,44 @@ Prefer `fetch` or the service's official SDK over heavy vendor packages —
 image size is a core goal. Google Sheets deliberately signs its own JWT with
 WebCrypto rather than pulling in `googleapis`.
 
+## Adding a connector
+
+A connector is the MCP side of a platform. The Credentials tab entry says how
+to log in; the connector says which tools a client gets with that login, and
+how a grant can limit them. A **connections** token is served at `/mcp` and
+carries **grants**: credential + `read`/`full` + the connector's limits
+(`McpGrant` in `src/core/mcp-tokens.ts`). The form, validation and tool list
+are all derived from the connector.
+
+1. Write `src/connectors/<platform>.ts`, exporting a `Connector`
+   (`src/connectors/types.ts`), and add it to `CONNECTORS` in `index.ts`. The
+   `provider` must be a key of `PROVIDERS`.
+2. Write `limits.schema` as a strict zod object of lists. It must refuse an
+   empty grant, unless "everything" is really what a grant on that platform
+   should mean. Telegram requires a folder or a chat.
+3. Tools are named `<prefix>_<name>`. If a token has two grants on the same
+   platform, the credential's name goes in the middle
+   (`telegram_work_history`).
+4. **Enforce the limits inside each tool, before the call goes out.** Never
+   fetch everything and filter it afterwards. Resolve whatever the model
+   passed against the allowed set, and refuse anything outside it by name.
+5. Pass `private: true` on every read. Return compact text under the transport
+   byte ceiling. A failed connection tool logs only its name and the token's
+   label, because the arguments can carry a chat name or a search phrase.
+6. A `write` tool is only listed for a `full` grant. Adding one that sends as
+   somebody's account is a decision of its own. `/mcp/assistant` deliberately
+   cannot send at all.
+
+Credentials are read on every call (`credentialValues`), so a re-login on the
+Credentials tab takes effect without a restart. A grant whose limits no longer
+parse after a deploy brings no tools and logs a warning; it is never read
+loosely.
+
+**Planned:** `/mcp/tables` and `/mcp/assistant` (and the operations tools
+themselves) are meant to become built-in connectors on `/mcp`, keeping their
+old paths as aliases so existing `.mcp.json` files keep working. Until that
+happens, connections are the only thing that arrives through grants.
+
 ## Adding a platform to the Credentials tab
 
 One entry in `PROVIDERS` in `src/core/providers.ts`. Everything else — the
@@ -1457,6 +1498,15 @@ These were decided deliberately. Raise a trade-off before changing any of them:
   observe and a status dot would be inventing one. `set_secret` is deliberately
   absent for the same reason the Credentials form exists — see the store entry
   below.
+
+- **One endpoint; a token's grants decide its tools.** A connections token
+  gets only the tools its grants bring, so a chat about one account doesn't
+  carry tools for every other platform. That is the same goal that once
+  justified a separate path per surface, met by the token instead of the
+  URL. A grant only *picks* among what a connector offers in code:
+  this credential, this access, these limits. It never describes a call the
+  server should make. Folder names and chat ids live in the token row, never
+  in the repo.
 
 - **A platform's fields and its test live in code.** `src/core/providers.ts`,
   not a browser form and not a database row. A test request the server executes,

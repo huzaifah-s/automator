@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { Hono } from "hono";
 import type { MiddlewareHandler } from "hono";
 import { basicAuth } from "hono/basic-auth";
@@ -74,6 +75,7 @@ import {
   isScope,
   listMcpTokens,
   mcpTokenById,
+  renameMcpToken,
   updateMcpTokenAccess,
   updateMcpTokenGrants,
   tokenGrants,
@@ -1241,9 +1243,32 @@ export function createApp(registry: Registry): Hono {
       opts.status ?? 200,
     );
 
+  /**
+   * A new token's plaintext, held for the one GET the create form redirects
+   * to. Creating answers with a redirect like every other form, so a refresh
+   * re-reads the page instead of posting again — answering the POST with the
+   * page itself minted one more token per refresh (2026-11-05: three tokens
+   * from one create). The plaintext is still never stored or put in a URL:
+   * the URL carries a random handle, the first GET takes the entry out, and
+   * an entry nobody fetched is dropped after HANDOFF_MS. In memory only, so a
+   * restart in between loses it — create another.
+   */
+  const handoffs = new Map<string, { created: { name: string; token: string; audience: McpAudience; id: string }; until: number }>();
+  const HANDOFF_MS = 5 * 60_000;
+  const takeHandoff = (key: string | undefined) => {
+    const now = Date.now();
+    for (const [k, v] of handoffs) if (v.until < now) handoffs.delete(k);
+    if (!key) return null;
+    const entry = handoffs.get(key);
+    handoffs.delete(key);
+    return entry?.created ?? null;
+  };
+
   // `?agent=<name>` opens the form with that agent picked — the Agents tab's
-  // "create a token" link.
+  // "create a token" link. `?created=<handle>` is the redirect after a create.
   app.get("/mcp-tokens", (c) => {
+    const created = takeHandoff(c.req.query("created"));
+    if (created) return renderMcp(c, { created });
     const agent = c.req.query("agent");
     return renderMcp(
       c,
@@ -1340,11 +1365,11 @@ export function createApp(registry: Registry): Hono {
     }
 
     const { token, id } = createMcpToken(name, scope, { audience, grants });
-    // Answered with the page rather than a redirect, which every other form
-    // here does. The plaintext exists for exactly this response — it is not in
-    // the database and cannot go in a query string — so a redirect would throw
-    // away the only copy.
-    return renderMcp(c, { created: { name, token, audience, id } });
+    // Redirected, so a refresh cannot mint another; see `handoffs`.
+    takeHandoff(undefined);
+    const handle = randomBytes(16).toString("hex");
+    handoffs.set(handle, { created: { name, token, audience, id }, until: Date.now() + HANDOFF_MS });
+    return c.redirect(`/mcp-tokens?created=${handle}`, 303);
   });
 
   /**
@@ -1400,6 +1425,11 @@ export function createApp(registry: Registry): Hono {
     if (!isScope(scope)) {
       return renderToken(c, row, { error: "Scope must be read or full.", status: 400 });
     }
+    // A form without the field (a script, an older page) leaves the name be.
+    const rawName = Array.isArray(form.name) ? form.name[0] : form.name;
+    const name = rawName === undefined ? row.name : String(rawName).trim();
+    if (!name) return renderToken(c, row, { error: "A token needs a name.", status: 400 });
+    if (name.length > 40) return renderToken(c, row, { error: "A name is at most 40 characters.", status: 400 });
     // The whole set again, from the form: a box unticked drops that grant,
     // and the access applies to every one, as on creation. An operations,
     // data-table or assistant token minted before grants becomes a grants
@@ -1415,6 +1445,7 @@ export function createApp(registry: Registry): Hono {
     } catch (err) {
       return renderToken(c, row, { error: err instanceof Error ? err.message : String(err), status: 400 });
     }
+    if (name !== row.name) renameMcpToken(row.id, name);
     return c.redirect(`/mcp-tokens/${row.id}?saved=1`, 303);
   });
 

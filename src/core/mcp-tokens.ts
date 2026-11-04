@@ -261,6 +261,18 @@ export function updateMcpTokenGrants(
   return done;
 }
 
+/**
+ * Renames a token. Only the label changes — the secret, its URL and what it
+ * can reach stay — so the client using it keeps working. The name is also
+ * `caller.label`, who wrote a row, so rows written before keep the old one.
+ */
+export function renameMcpToken(id: string, name: string): boolean {
+  const before = store.mcpTokenById(id)?.name;
+  const done = store.updateMcpTokenName(id, name);
+  if (done && before !== name) log.info(`MCP token ${id} renamed from "${before}" to "${name}"`);
+  return done;
+}
+
 export function mcpTokenById(id: string): McpTokenRecord | null {
   return store.mcpTokenById(id);
 }

@@ -8,6 +8,21 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-11-05
 
+### One create is one token, and a token can be renamed
+
+Creating an MCP token answered the POST with the page, because that response
+was the only place the plaintext could be shown. Refreshing it posted again,
+so one create on the dashboard became three tokens, two of them never used.
+It now redirects like every other form, and the plaintext crosses to that
+GET through a one-time in-memory hand-off under a random handle — taken by
+the first read, dropped after five minutes, never in the URL or SQLite. The
+create form also ignores a second submit. *Considered:* an idempotency key
+on the form — it stops the duplicate, but the refresh would still need the
+plaintext it cannot have.
+
+A token's page now has a **Name** field beside its access. Only the label
+changes; the secret and URL stay, so nothing needs pasting again.
+
 ### The last of the assistant leaves `src/`
 
 `src/core/scorecard.ts` and `src/core/chat-link.ts` were the personal

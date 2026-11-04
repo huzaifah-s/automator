@@ -863,7 +863,13 @@ const SCRIPT = (seconds: number) => `
   // Delete is the one control here that cannot be undone by pressing it again.
   document.addEventListener("submit", function (e) {
     var ask = e.target && e.target.dataset && e.target.dataset.confirm;
-    if (ask && !confirm(ask)) e.preventDefault();
+    if (ask && !confirm(ask)) { e.preventDefault(); return; }
+    // A form that makes something new goes once: a double click on "Create"
+    // was a second token.
+    if (e.target && e.target.hasAttribute && e.target.hasAttribute("data-once")) {
+      if (e.target.dataset.sent) e.preventDefault();
+      else e.target.dataset.sent = "1";
+    }
   });
 
   // Persisted from the click and not from "toggle", because apply() opens and
@@ -3749,11 +3755,9 @@ function tablePicker(tables: TablePickView[], chosen: string[] | null, idPrefix:
  * recently, this many times. A token that has never been used says so, which
  * is the answer you actually want after pasting one into a config file.
  *
- * A new token's plaintext is rendered exactly once, on the response to the
- * POST that created it. That is why this page is returned from the POST rather
- * than redirecting to a GET the way every other form here does: the value
- * cannot go in a query string, and it is not in the database to be fetched on
- * the next request even if it could.
+ * A new token's plaintext is rendered exactly once, on the GET the create
+ * form redirects to, which takes it out of a one-time in-memory hand-off
+ * (`handoffs` in app.ts). It is never in a query string or the database.
  */
 export function mcpTokensPage(args: {
   tokens: McpTokenView[];
@@ -3889,7 +3893,7 @@ export function mcpTokensPage(args: {
                 <label class="btn primary" for="addtok">Create token</label>
               </div>
 
-              <form class="card adder" method="post" action="/mcp-tokens">
+              <form class="card adder" method="post" action="/mcp-tokens" data-once>
                 <div class="form">
                   <div class="field">
                     <label for="tname">Name <span class="req">— where this one lives</span></label>
@@ -4319,9 +4323,17 @@ export function mcpTokenPage(args: {
 
       ${canEdit
         ? html`
-            <h2>Change access</h2>
+            <h2>Change name or access</h2>
             <form class="card" method="post" action="/mcp-tokens/${t.id}" style="padding:14px">
               <div class="form">
+                <div class="field">
+                  <label for="ename">Name</label>
+                  <input type="text" id="ename" name="name" required maxlength="40" value="${t.name}">
+                  <div class="help">
+                    Only the label changes — same token, same URL. Rows it wrote before keep the
+                    old name as who wrote them.
+                  </div>
+                </div>
                 <div class="field">
                   <label for="escope">Access</label>
                   <select id="escope" name="scope">

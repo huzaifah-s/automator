@@ -2908,9 +2908,10 @@ cross-poster failing?", "show me what that webhook actually sent."
 
 **Tokens are made on the MCP tab**, one per place you connect from — a
 `laptop`, a `phone`, whatever. Each is read-only or full, each is deleted on
-its own, and the token is shown exactly once when it is created. Click a
-token's name for its own page: the endpoint, the tables it reaches, the tools
-its client sees, when it was last used and by what — and a form that changes
+its own, and the token is shown exactly once when it is created — refreshing
+that page shows it no more, and does not make another. Click a token's name
+for its own page: the endpoint, the tables it reaches, the tools its client
+sees, when it was last used and by what — and a form that changes its name,
 its access or its tables in place, without a new token to paste:
 
 ```bash

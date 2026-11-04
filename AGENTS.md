@@ -1582,7 +1582,14 @@ These were decided deliberately. Raise a trade-off before changing any of them:
   `DASHBOARD_WRITE=1` *and* `DASHBOARD_USER`/`DASHBOARD_PASS` — stricter than
   the Credentials tab, because this form emits a credential rather than
   consuming one. Nothing anywhere returns a token's plaintext after the moment
-  it is created, and nothing should start.
+  it is created, and nothing should start. Creating redirects like every other
+  form — answering the POST with the page made each refresh mint another token
+  (three from one create, 2026-11-05) — and the plaintext reaches that one GET
+  through `handoffs` in `app.ts`: in memory, under a random handle in the URL,
+  taken out by the first read and dropped after five minutes. Never put the
+  token itself in the URL or the database to "fix" a lost hand-off; a lost
+  one is a new token. The name is only a label (`renameMcpToken`); it is also
+  `caller.label`, so rows written before a rename keep the old one.
 
   The dashboard reports **last used**, not "connected", and that wording is
   load-bearing: MCP over HTTP holds nothing open, so there is no connection to

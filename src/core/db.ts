@@ -679,6 +679,7 @@ const stmts = {
   mcpTokenByHash: db.prepare(`SELECT * FROM mcp_tokens WHERE hash = ?`),
   mcpTokenById: db.prepare(`SELECT * FROM mcp_tokens WHERE id = ?`),
   updateMcpTokenAccess: db.prepare(`UPDATE mcp_tokens SET scope = ?, tables = ? WHERE id = ?`),
+  updateMcpTokenName: db.prepare(`UPDATE mcp_tokens SET name = ? WHERE id = ?`),
   // Grants and the scope that is their widest, together; an operations or
   // data-table token whose connections are edited becomes a connections token
   // — its tools are its grants from then on, whatever it was minted as.
@@ -1226,6 +1227,7 @@ export const store = {
     );
   },
   deleteMcpToken: (id: string): boolean => stmts.deleteMcpToken.run(id).changes > 0,
+  updateMcpTokenName: (id: string, name: string): boolean => stmts.updateMcpTokenName.run(name, id).changes > 0,
   mcpTokenById: (id: string) =>
     (stmts.mcpTokenById.get(id) as McpTokenRecord | null) ?? null,
   /** Changes what a token may do without changing the token itself. */

@@ -1,8 +1,14 @@
-import { askClaude, type ClaudeCaller } from "../core/claude-code.ts";
-import { chatThread, messagesSince, type StoredMessage } from "../core/chat-log.ts";
-import { table, type Row } from "../core/tables.ts";
-import { appOf, line, peopleByKey, splitKey, threadLines } from "./mcp-assistant.ts";
-import { chatPass, WRITER_VARIANTS } from "./assistant-writer.ts";
+import {
+  askClaude,
+  chatThread,
+  messagesSince,
+  table,
+  type ClaudeCaller,
+  type Row,
+  type StoredMessage,
+} from "../../src/core/define.ts";
+import { appOf, line, peopleByKey, splitKey, threadLines } from "./_tools.ts";
+import { chatPass, WRITER_VARIANTS } from "./_writer.ts";
 
 /**
  * The replay test — "is she smarter?" as a number, before a change ships.

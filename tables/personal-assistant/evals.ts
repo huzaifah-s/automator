@@ -7,7 +7,7 @@ import { defineTable, int, text } from "../../src/core/define.ts";
  * he corrected, a message he answered himself, a group message he let pass,
  * a chat he re-sorted) through the chat pass's writer as things stood then,
  * and a fresh Claude grades each new draft against what he really sent
- * (src/server/assistant-eval.ts). One row per system per run: `baseline` is
+ * (workflows/personal-assistant/_eval.ts). One row per system per run: `baseline` is
  * what she actually did at the time; the others are writer variants, side
  * by side on the same cases. Counts only — nothing anybody wrote.
  */

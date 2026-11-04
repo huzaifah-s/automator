@@ -127,10 +127,13 @@ export const chatLog: ChatLog = {
 /* ------------------------------------------------------------- reading */
 
 /**
- * Reads for the assistant's endpoint (src/server/mcp-assistant.ts) — the only
- * reader. Deliberately not on `ctx`: a workflow that wants to act on a
- * conversation is the assistant's job, and one more reader is one more place
- * a message can be copied out of the log.
+ * Reads for an agent's tools (the personal assistant's, in
+ * workflows/personal-assistant/_tools.ts) — exported from define.ts for
+ * that, because an agent lives in its project's folder. Deliberately not on
+ * `ctx`: a workflow that wants to act on a conversation is an agent's job,
+ * and one more reader is one more place a message can be copied out of the
+ * log. Whatever reads these follows the chat log's rules: text goes to the
+ * model and nowhere else — not a step's result, not a log line.
  */
 
 export interface StoredMessage {
@@ -234,7 +237,7 @@ const NO_BOUND = Number.MAX_SAFE_INTEGER;
 /**
  * The latest `limit` messages in one chat, oldest first. `before` reads the
  * chat as it stood at a past moment — the replay test
- * (src/server/assistant-eval.ts) must not see the reply it is grading.
+ * (workflows/personal-assistant/_eval.ts) must not see the reply it is grading.
  */
 export function chatThread(channel: ChatChannel, chat: string, limit: number, before = NO_BOUND): StoredMessage[] {
   return (threadQuery.all(channel, chat, before, limit) as Raw[]).map(toStored);

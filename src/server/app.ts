@@ -64,7 +64,7 @@ import type { Registry } from "../core/loader.ts";
 import { planReplay, workflowsBlockedBy } from "./inspect.ts";
 import { createMcpRouter, opsConnector } from "./mcp.ts";
 import { tablesConnector } from "./mcp-tables.ts";
-import { assistantToolList, createAssistantMcpRouter } from "./mcp-assistant.ts";
+import { agentByName, allAgents, processConnections, profileTools } from "../core/agents.ts";
 import {
   createMcpToken,
   identify,
@@ -81,6 +81,8 @@ import {
   type McpGrant,
 } from "../core/mcp-tokens.ts";
 import {
+  agentConnectors,
+  agentOf,
   allConnectors,
   connectorFor,
   grantRef,
@@ -89,6 +91,7 @@ import {
   grantToolList,
   splitList,
   validateGrant,
+  validateGrants,
 } from "../connectors/index.ts";
 import type { LoadedWorkflow, RunRecord, WebhookDecision } from "../core/types.ts";
 import {
@@ -100,6 +103,8 @@ import {
   variablesPage,
   mcpTokensPage,
   mcpTokenPage,
+  agentsPage,
+  agentPage,
   DEFAULT_RANGE,
   DEFAULT_RANGE_MS,
   executionsPage,
@@ -476,19 +481,45 @@ export function createApp(registry: Registry): Hono {
   // agent authenticates with MCP_TOKEN, not with the dashboard's basic-auth
   // credentials. Unset, the router answers 503 rather than opening.
   // Before "/mcp", so the more specific path wins: Hono matches in
-  // registration order and "/mcp" would otherwise swallow "/mcp/tables" and
-  // "/mcp/assistant".
+  // registration order and "/mcp" would otherwise swallow "/mcp/tables".
   // The runner's own tools are connectors like any platform's, built here
   // because they read the loaded workflows. A token gets them by grant.
   registerConnector(opsConnector(registry));
   registerConnector(tablesConnector);
-  const assistantMcp = createAssistantMcpRouter(registry);
+  // One router for a token's own /mcp/<id>, whatever it is for; the shared
+  // /mcp is the runner's endpoint and refuses an agent's token, as the old
+  // assistant endpoint's tokens always were.
   const opsMcp = createMcpRouter();
+  const sharedMcp = createMcpRouter({ refuseAgents: true });
   // The old single-purpose path: the same router, narrowed to the tables
   // grant, so a client set up for it sees exactly what it always saw.
   const tablesMcp = createMcpRouter({ only: "tables", here: "the data-table MCP", serverName: "automator-tables" });
   app.route("/mcp/tables", tablesMcp);
-  app.route("/mcp/assistant", assistantMcp);
+
+  /**
+   * Each agent's shared path, /mcp/<agent name>, for a client set up before
+   * tokens had URLs of their own and for an in-process token
+   * (`agentConnection`), which has no id. The same router again, narrowed to
+   * that agent's grant. Made on first use and kept by name: the
+   * router reads the agent's tools per request, so a reload of the agent
+   * needs no new router.
+   */
+  const agentRouters = new Map<string, ReturnType<typeof createMcpRouter>>();
+  const agentRouter = (name: string, label: string) => {
+    let r = agentRouters.get(name);
+    if (!r) {
+      r = createMcpRouter({ only: name, here: `the ${label} agent's MCP`, serverName: `automator-${name}` });
+      agentRouters.set(name, r);
+    }
+    return r;
+  };
+
+  /** Hands a request to a sub-router at "/", with its method, headers and body as they arrived. */
+  const handOver = (router: { fetch(req: Request): Response | Promise<Response> }, c: { req: { url: string; raw: Request } }) => {
+    const url = new URL(c.req.url);
+    url.pathname = "/";
+    return router.fetch(new Request(url, c.req.raw));
+  };
 
   /**
    * A token's own URL, /mcp/<id> — the one to give a client.
@@ -506,6 +537,11 @@ export function createApp(registry: Registry): Hono {
    * its own — it is the way back in and uses the shared paths.
    */
   app.all("/mcp/:id", async (c) => {
+    // An agent's name, not a token id: its shared path. An agent's name can
+    // never look like an id (defineAgent refuses eight hex characters).
+    const agent = agentByName(c.req.param("id"));
+    if (agent) return handOver(agentRouter(agent.name, agent.label), c);
+
     const presented =
       c.req.header("authorization")?.replace(/^Bearer\s+/i, "") ?? c.req.header("x-mcp-token") ?? "";
     const identity = identify(presented);
@@ -524,23 +560,18 @@ export function createApp(registry: Registry): Hono {
             code: -32001,
             message: identity.id
               ? `This URL is for another token. "${identity.label}" has its own: ${tokenPath(identity.id)}`
-              : `"${identity.label}" has no URL of its own — connect it to /mcp, /mcp/tables or /mcp/assistant.`,
+              : `"${identity.label}" has no URL of its own — connect it to /mcp, /mcp/tables or an agent's /mcp/<agent>.`,
           },
         },
         403,
       );
     }
-    // Whatever its grants bring — operations, tables, Telegram — is served by
-    // the one router. Only the assistant still has an endpoint of its own.
-    const router = identity.audiences[0] === "assistant" ? assistantMcp : opsMcp;
-    // The sub-routers serve "/", so the request is handed over at that path
-    // with its method, headers and body as they arrived.
-    const url = new URL(c.req.url);
-    url.pathname = "/";
-    return router.fetch(new Request(url, c.req.raw));
+    // Whatever its grants bring — operations, tables, Telegram, an agent —
+    // is served by the one router.
+    return handOver(opsMcp, c);
   });
 
-  app.route("/mcp", opsMcp);
+  app.route("/mcp", sharedMcp);
 
   /**
    * Running a view and rendering it.
@@ -670,6 +701,8 @@ export function createApp(registry: Registry): Hono {
       "/secrets/*",
       "/mcp-tokens",
       "/mcp-tokens/*",
+      "/agents",
+      "/agents/*",
       // Both of these were missing, which left the Variables tab — and every
       // write route on it — reachable without the dashboard's credentials.
       // Tables holds data rather than configuration, so the same omission
@@ -1116,6 +1149,12 @@ export function createApp(registry: Registry): Hono {
     const grants = tokenGrants(t);
     const tablesGrant = grants.find((g) => g.connector === "tables");
     const grantTables = tablesGrant?.limits["tables"];
+    // An agent's token — stored as one, or an `assistant` row from before
+    // agents, read as the grant on it. Shown even when the agent is not
+    // loaded now, so the page can say so rather than call it something else.
+    const stored = isAudience(t.audience) ? t.audience : "ops";
+    const agentName = agentOf(grants) ?? (stored === "agent" || stored === "assistant" ? grants[0]?.connector ?? null : null);
+    const agentConnector = agentName ? connectorFor(agentName) : undefined;
     return {
       id: t.id,
       name: t.name,
@@ -1129,7 +1168,15 @@ export function createApp(registry: Registry): Hono {
         ? Array.isArray(grantTables) ? grantTables.map(String) : null
         : parseTokenTables(t.tables),
       hasTables: Boolean(tablesGrant),
-      audience: isAudience(t.audience) ? t.audience : "ops",
+      audience: agentName ? "agent" : stored,
+      agent: agentName
+        ? {
+            name: agentName,
+            label: agentConnector?.label ?? agentName,
+            description: agentConnector?.blurb ?? "Not loaded on this server now — it reaches nothing until it is.",
+            loaded: Boolean(agentConnector),
+          }
+        : null,
       grants: grants.map(describeGrant),
       grantValues: grants.map((g) => ({ ref: grantRef(g), limits: g.limits })),
     };
@@ -1162,6 +1209,10 @@ export function createApp(registry: Registry): Hono {
     });
   };
 
+  /** The loaded agents, as the create form offers them: what a token can be for. */
+  const agentChoices = () =>
+    agentConnectors().map((k) => ({ name: k.id, label: k.label, description: k.blurb, tools: k.tools.length }));
+
   const renderMcp = (
     c: any,
     opts: {
@@ -1179,6 +1230,7 @@ export function createApp(registry: Registry): Hono {
         dataTables: tablePicks(),
         draft: opts.draft ?? null,
         connections: connectionChoices(),
+        agents: agentChoices(),
         envToken: Boolean(process.env.MCP_TOKEN),
         publicUrl,
         created: opts.created ?? null,
@@ -1190,7 +1242,17 @@ export function createApp(registry: Registry): Hono {
       opts.status ?? 200,
     );
 
-  app.get("/mcp-tokens", (c) => renderMcp(c));
+  // `?agent=<name>` opens the form with that agent picked — the Agents tab's
+  // "create a token" link.
+  app.get("/mcp-tokens", (c) => {
+    const agent = c.req.query("agent");
+    return renderMcp(
+      c,
+      agent && agentByName(agent)
+        ? { draft: { name: "", audience: "agent", agent, scope: "read", tables: null, grants: [] } }
+        : {},
+    );
+  });
 
   /**
    * The table boxes as the form sent them: null for "All tables", otherwise
@@ -1231,7 +1293,7 @@ export function createApp(registry: Registry): Hono {
   const grantsFromForm = (form: Record<string, unknown>, access: string): McpGrant[] => {
     const picked = splitList(form.grant);
     if (picked.length === 0) throw new Error("Tick at least one thing this token can use.");
-    return picked.map((ref) => validateGrant({ ...splitRef(ref), access, limits: limitsFromForm(form, ref) }));
+    return validateGrants(picked.map((ref) => ({ ...splitRef(ref), access, limits: limitsFromForm(form, ref) })));
   };
 
   app.post("/mcp-tokens", async (c) => {
@@ -1251,11 +1313,16 @@ export function createApp(registry: Registry): Hono {
     const one = (v: unknown) => String((Array.isArray(v) ? v[0] : v) ?? "");
     const name = one(form.name).trim();
     const scope = one(form.scope) || "read";
-    // Two kinds now: a token whose tools are its grants, or the assistant's.
-    const audience: McpAudience = one(form.audience) === "assistant" ? "assistant" : "connections";
+    // Two kinds: a client using the runner's capabilities, ticked as boxes,
+    // or one of the project's agents — `agent:<name>`. An agent token's one
+    // grant is the agent, and nothing is ticked beside it.
+    const picked = one(form.audience);
+    const agent = picked.startsWith("agent:") ? picked.slice("agent:".length) : null;
+    const audience: McpAudience = agent ? "agent" : "connections";
     const draft: McpTokenDraft = {
       name,
       audience,
+      agent,
       scope: scope === "full" ? "full" : "read",
       tables: tablePickFrom(form),
       grants: splitList(form.grant).map((ref) => ({ ref, limits: limitsFromForm(form, ref) })),
@@ -1265,9 +1332,10 @@ export function createApp(registry: Registry): Hono {
     if (!name) return refuse("A token needs a name.");
     if (!isScope(scope)) return refuse("Scope must be read or full.");
 
-    let grants: McpGrant[] | undefined;
+    let grants: McpGrant[];
     try {
-      grants = audience === "connections" ? grantsFromForm(form, scope) : undefined;
+      grants = agent ? validateGrants([{ connector: agent, access: scope }]) : grantsFromForm(form, scope);
+      if (agent && !agentOf(grants)) throw new Error(`"${agent}" is not an agent on this server.`);
     } catch (err) {
       return refuse(err instanceof Error ? err.message : String(err));
     }
@@ -1290,8 +1358,7 @@ export function createApp(registry: Registry): Hono {
     opts: { error?: string; status?: 200 | 400; saved?: boolean } = {},
   ) => {
     const view = tokenView(row);
-    const tools =
-      view.audience === "assistant" ? assistantToolList(registry) : grantToolList(tokenGrants(row));
+    const tools = grantToolList(tokenGrants(row));
     return c.html(
       mcpTokenPage({
         token: view,
@@ -1334,18 +1401,20 @@ export function createApp(registry: Registry): Hono {
     if (!isScope(scope)) {
       return renderToken(c, row, { error: "Scope must be read or full.", status: 400 });
     }
-    if (row.audience === "assistant") {
-      updateMcpTokenAccess(row.id, scope, null);
-    } else {
-      // The whole set again, from the form: a box unticked drops that grant,
-      // and the access applies to every one, as on creation. An operations
-      // or data-table token minted before grants becomes a grants token here
-      // — the same tools until something is ticked differently.
-      try {
+    // The whole set again, from the form: a box unticked drops that grant,
+    // and the access applies to every one, as on creation. An operations,
+    // data-table or assistant token minted before grants becomes a grants
+    // token here — the same tools until something is ticked differently. An
+    // agent's token stays that agent's: only its access changes.
+    const agent = tokenView(row).agent;
+    try {
+      if (agent) {
+        updateMcpTokenGrants(row.id, validateGrants([{ connector: agent.name, access: scope }]), "agent");
+      } else {
         updateMcpTokenGrants(row.id, grantsFromForm(form, scope));
-      } catch (err) {
-        return renderToken(c, row, { error: err instanceof Error ? err.message : String(err), status: 400 });
       }
+    } catch (err) {
+      return renderToken(c, row, { error: err instanceof Error ? err.message : String(err), status: 400 });
     }
     return c.redirect(`/mcp-tokens/${row.id}?saved=1`, 303);
   });
@@ -1355,6 +1424,63 @@ export function createApp(registry: Registry): Hono {
     if (denied) return denied;
     deleteMcpToken(c.req.param("id"));
     return c.redirect("/mcp-tokens", 303);
+  });
+
+  /* -------------------------------------------------------------- agents */
+
+  /** An agent as its tab shows it — the loaded definition, and what reaches it. */
+  const agentView = (name: string) => {
+    const a = agentByName(name);
+    if (!a) return null;
+    return {
+      name: a.name,
+      label: a.label,
+      description: a.description,
+      file: a.file,
+      instructions: a.instructions,
+      tools: a.tools.map((t) => ({ name: t.name, description: t.description, write: t.access === "write" })),
+      profiles: Object.keys(a.profiles ?? {}).map((p) => ({ name: p, tools: profileTools(a, p) })),
+      tokens: listMcpTokens()
+        .filter((t) => tokenView(t).agent?.name === a.name)
+        .map((t) => ({
+          id: t.id,
+          name: t.name,
+          scope: (isScope(t.scope) ? t.scope : "full") as "read" | "full",
+          lastUsedAt: t.last_used_at,
+          calls: t.calls,
+        })),
+      local: processConnections(a.name),
+    };
+  };
+  const shellCounts = () => ({
+    failedInWindow: store.statusCountsSince(Date.now() - DEFAULT_RANGE_MS).failed ?? 0,
+    workflowCount: registry.all().length,
+    unconnected: wantedCredentials().length,
+    agents: listMcpTokens().filter((t) => t.last_used_at !== null).length,
+  });
+
+  app.get("/agents", (c) =>
+    c.html(
+      agentsPage({
+        ...shellCounts(),
+        list: allAgents().flatMap((a) => agentView(a.name) ?? []),
+        publicUrl,
+      }) as any,
+    ),
+  );
+
+  app.get("/agents/:name", (c) => {
+    const view = agentView(c.req.param("name"));
+    if (!view) return c.notFound();
+    return c.html(
+      agentPage({
+        ...shellCounts(),
+        agent: view,
+        agentCount: allAgents().length,
+        publicUrl,
+        canMint: writable && dashboardAuthenticated,
+      }) as any,
+    );
   });
 
   /* -------------------------------------------------------- data tables */
@@ -2374,7 +2500,8 @@ export function createApp(registry: Registry): Hono {
         url: `${publicUrl ?? ""}${tokenPath(t.id)}`,
         audience: isAudience(t.audience) ? t.audience : "ops",
         // What it can use and its limits — never anything a grant could reach.
-        grants: t.audience === "assistant" ? null : tokenGrants(t),
+        grants: tokenGrants(t),
+        agent: agentOf(tokenGrants(t)),
       })),
     ),
   );
@@ -2387,15 +2514,24 @@ export function createApp(registry: Registry): Hono {
     if (!isScope(scope)) return c.json({ error: "scope must be 'read' or 'full'" }, 400);
 
     // "ops" and "tables" are still accepted, as shorthand for a token with
-    // that one grant — scripts written before grants keep working.
+    // that one grant, and "assistant" for the agent of that name — scripts
+    // written before grants and agents keep working.
     const asked = String((body as any).audience ?? "ops");
     if (!isAudience(asked)) {
-      return c.json({ error: "audience must be 'connections', 'assistant', 'ops' or 'tables'" }, 400);
+      return c.json({ error: "audience must be 'connections', 'agent', 'ops', 'tables' or 'assistant'" }, 400);
     }
-    const audience: McpAudience = asked === "assistant" ? "assistant" : "connections";
 
-    let grants: McpGrant[] | undefined;
+    let grants: McpGrant[] = [];
     try {
+      if (asked === "agent" || asked === "assistant") {
+        const agent = asked === "assistant" ? "assistant" : String((body as any).agent ?? "");
+        grants = validateGrants([{ connector: agent, access: scope }]);
+        if (!agentOf(grants)) {
+          throw new Error(
+            `"${agent}" is not an agent on this server — agents are ${agentConnectors().map((k) => k.id).join(", ") || "(none)"}`,
+          );
+        }
+      }
       if (asked === "ops") grants = [validateGrant({ connector: "ops", access: scope })];
       if (asked === "tables") {
         const raw = (body as any).tables;
@@ -2410,7 +2546,7 @@ export function createApp(registry: Registry): Hono {
               allConnectors().map((k) => k.id).join(", "),
           );
         }
-        grants = raw.map((g: any) => validateGrant({ access: scope, ...(g ?? {}) }));
+        grants = validateGrants(raw.map((g: any) => ({ access: scope, ...(g ?? {}) })));
       }
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
@@ -2418,7 +2554,8 @@ export function createApp(registry: Registry): Hono {
 
     // A grants token's own scope is the widest of its grants, so the tab's
     // "read only" pill never claims less than the token can do.
-    const tokenScope = grants ? (grants.some((g) => g.access === "full") ? "full" : "read") : scope;
+    const tokenScope = grants.some((g) => g.access === "full") ? "full" : "read";
+    const audience: McpAudience = agentOf(grants) ? "agent" : "connections";
     const { token, id } = createMcpToken(name, tokenScope, { audience, grants });
     return c.json(
       {
@@ -2426,7 +2563,7 @@ export function createApp(registry: Registry): Hono {
         name,
         scope: tokenScope,
         audience,
-        grants: grants ?? null,
+        grants,
         // The token's own address, relative unless PUBLIC_URL says where this runs.
         url: `${publicUrl ?? ""}${tokenPath(id)}`,
         token,

@@ -10,11 +10,15 @@ import {
   setLoadingFile,
 } from "./credentials.ts";
 import { isEnabled } from "./pause.ts";
+import { isAgentExport, setAgents, type AgentExport, type LoadedAgent } from "./agents.ts";
 import type { LoadedWorkflow, WorkflowDef } from "./types.ts";
 
 /**
  * Imports every .ts file under the workflows directory and collects the default
- * export. Everything is validated up front — a bad name, a duplicate, or a
+ * export — a workflow, or an agent (`defineAgent`, src/core/agents.ts), which
+ * lives beside the workflows of its project. The agents are swapped in only
+ * when the whole load succeeds, so a reload that fails keeps the previous
+ * set of both. Everything is validated up front — a bad name, a duplicate, or a
  * missing secret stops the boot rather than failing on the first trigger.
  *
  * `version` is for reloads: appended as a query string it makes the runtime
@@ -47,6 +51,7 @@ export async function loadWorkflows(
   resetCredentialRequirements();
 
   const workflows: LoadedWorkflow[] = [];
+  const agents: LoadedAgent[] = [];
   const errors: string[] = [];
   const seenNames = new Map<string, string>();
   const seenHooks = new Map<string, string>();
@@ -68,7 +73,7 @@ export async function loadWorkflows(
 
   for (const file of files) {
     const rel = file.slice(root.length + 1);
-    let mod: { default?: WorkflowDef<any> };
+    let mod: { default?: WorkflowDef<any> | AgentExport };
 
     // defineCredential() runs at module scope and has no other way to know
     // which workflow asked for it, so the importer says so first.
@@ -82,9 +87,20 @@ export async function loadWorkflows(
       setLoadingFile(null);
     }
 
-    const def = mod.default;
+    const exported = mod.default;
+    if (isAgentExport(exported)) {
+      const twin = agents.find((a) => a.name === exported.name);
+      if (twin) {
+        errors.push(`${rel}: duplicate agent name "${exported.name}" (already in ${twin.file})`);
+        continue;
+      }
+      const { kind: _kind, ...agent } = exported;
+      agents.push({ ...agent, file: rel });
+      continue;
+    }
+    const def = exported;
     if (!def || typeof def.run !== "function") {
-      errors.push(`${rel}: no default export from defineWorkflow()`);
+      errors.push(`${rel}: no default export from defineWorkflow() or defineAgent()`);
       continue;
     }
 
@@ -190,12 +206,14 @@ export async function loadWorkflows(
     );
   }
 
+  setAgents(agents);
   const enabled = workflows.filter((w) => w.enabled !== false);
   log.info(
     `Loaded ${enabled.length} workflow(s)` +
       (workflows.length > enabled.length
         ? ` (${workflows.length - enabled.length} disabled)`
-        : ""),
+        : "") +
+      (agents.length ? ` and ${agents.length} agent(s): ${agents.map((a) => a.name).join(", ")}` : ""),
   );
   return workflows;
 }

@@ -14,7 +14,11 @@ import type { McpGrant } from "../core/mcp-tokens.ts";
  *
  * A platform connector is one file in this folder. The built-in ones live
  * beside the tools they wrap (`server/mcp.ts`, `server/mcp-tables.ts`) and
- * are registered at boot, because they need the loaded workflows.
+ * are registered at boot, because they need the loaded workflows. A
+ * project's agent (`defineAgent`, src/core/agents.ts) is served through the
+ * same machinery, as a connector built from the loaded agent — but it is
+ * not one of the things a token picks among: a token for an agent is for
+ * that agent alone.
  */
 export interface Connector<L = unknown> {
   /** What a grant names it by: `ops`, `tables`, `telegram_user`. */
@@ -47,6 +51,8 @@ export interface Connector<L = unknown> {
   logErrors?: boolean;
   /** MCP prompts this connector brings — only the operations one has any. */
   prompts?: readonly ConnectorPrompt[];
+  /** Set for a project's agent: offered as what a token is for, never as a box beside the others. */
+  agent?: true;
 }
 
 export interface ConnectorPrompt {

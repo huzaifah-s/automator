@@ -4,12 +4,9 @@ import {
   cron,
   defineSecrets,
   defineWorkflow,
-  evalCases,
-  evalVariants,
   isPractice,
-  runEval,
-  scoreSystems,
 } from "../../src/core/define.ts";
+import { evalCases, evalVariants, runEval, scoreSystems } from "./_eval.ts";
 
 /**
  * Personal assistant — the replay test: is Maria's writing getting better,
@@ -17,12 +14,12 @@ import {
  *
  * Replays moments that already happened through the chat pass's writer, as
  * things stood then, and has a fresh Claude grade each draft against what he
- * really sent (src/server/assistant-eval.ts). Each run writes one `evals`
+ * really sent (workflows/personal-assistant/_eval.ts). Each run writes one `evals`
  * row per system: `baseline` (what she actually did at the time), `current`
  * (the writer the chat pass runs) and any variant named.
  *
  * **Before a change to how she writes**: add it to `WRITER_VARIANTS`
- * (src/server/assistant-writer.ts), deploy — the chat pass still runs
+ * (workflows/personal-assistant/_writer.ts), deploy — the chat pass still runs
  * `current` — then run this with `{ "variants": ["current", "<yours>"] }`.
  * Promote it only if it scores higher on the same cases.
  *

@@ -1,6 +1,8 @@
+import { z } from "zod";
 import { credentialRef, credentialValues, getCredential } from "../core/credentials.ts";
 import { log } from "../core/logger.ts";
 import { isScope, type McpGrant, type McpIdentity } from "../core/mcp-tokens.ts";
+import { agentByName, agentLog, allAgents, type LoadedAgent } from "../core/agents.ts";
 import type { Connector, ConnectorPrompt, ConnectorTool } from "./types.ts";
 import { telegramUser } from "./telegram-user.ts";
 
@@ -35,13 +37,63 @@ export function registerConnector(c: Connector<any>): void {
 
 registerConnector(telegramUser);
 
-/** Every connector, built-in first, in the order the token form shows them. */
+/**
+ * Every connector a token can pick among, built-in first, in the order the
+ * token form shows them. Agents are not among them — see `agentConnectors`.
+ */
 export function allConnectors(): readonly Connector<any>[] {
   return [...connectors].sort((a, b) => Number(Boolean(a.provider)) - Number(Boolean(b.provider)));
 }
 
+/**
+ * A loaded agent as a connector: its tools under their own names, no limits,
+ * no credential. Built per loaded agent object, so a reload — which loads a
+ * new one — is served from its next request.
+ */
+const asConnector = new WeakMap<LoadedAgent, Connector<Record<string, never>>>();
+function agentConnector(agent: LoadedAgent): Connector<Record<string, never>> {
+  let c = asConnector.get(agent);
+  if (c) return c;
+  const log = agentLog(agent.name);
+  c = {
+    id: agent.name,
+    label: agent.label,
+    blurb: agent.description,
+    prefix: "",
+    agent: true,
+    // An agent reads somebody's data; its errors can quote it. A tool that
+    // has something safe to say throws a ToolRefusal, whose logAs is logged.
+    logErrors: false,
+    instructions: agent.instructions,
+    limits: {
+      schema: z.object({}).strict() as unknown as z.ZodType<Record<string, never>>,
+      fields: [],
+      describe: () => "",
+    },
+    tools: agent.tools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      access: t.access,
+      inputSchema: t.inputSchema,
+      run: (args, call) => t.run(args, { label: call.token.label, log, signal: call.signal }),
+    })),
+  };
+  asConnector.set(agent, c);
+  return c;
+}
+
+/** The loaded agents, as connectors — what an agent token can be for. */
+export function agentConnectors(): Connector<any>[] {
+  return allAgents()
+    .filter((a) => !connectors.some((k) => k.id === a.name))
+    .map(agentConnector);
+}
+
 export function connectorFor(id: string): Connector<any> | undefined {
-  return connectors.find((c) => c.id === id);
+  const own = connectors.find((c) => c.id === id);
+  if (own) return own;
+  const agent = agentByName(id);
+  return agent ? agentConnector(agent) : undefined;
 }
 
 /** `ops`, or `telegram_user:me` — how a grant is named on the tab and in a log line. */
@@ -65,7 +117,8 @@ export function validateGrant(input: {
   const id = String(input.connector ?? input.provider ?? "");
   const connector = connectorFor(id);
   if (!connector) {
-    throw new Error(`No connection called "${id}" — there are ${connectors.map((c) => c.id).join(", ")}`);
+    const known = [...connectors.map((c) => c.id), ...agentConnectors().map((c) => c.id)];
+    throw new Error(`No connection called "${id}" — there are ${known.join(", ")}`);
   }
   let credential: string | undefined;
   if (connector.provider) {
@@ -96,6 +149,32 @@ export function validateGrant(input: {
     access,
     limits: parsed.data as Record<string, unknown>,
   };
+}
+
+/**
+ * Checks a whole token's worth of grants: each one by `validateGrant`, and
+ * that a token for an agent is for that agent alone. An agent is an
+ * application with its own rules, not a capability to mix with operations
+ * or an account: a chat that holds its tools and the runner's would carry
+ * both on every turn, and its tool names are not prefixed, so two in one
+ * token could collide.
+ */
+export function validateGrants(inputs: Parameters<typeof validateGrant>[0][]): McpGrant[] {
+  const grants = inputs.map(validateGrant);
+  if (grants.length === 0) throw new Error("Tick at least one thing this token can use.");
+  const agents = grants.filter((g) => connectorFor(g.connector)?.agent);
+  if (agents.length && grants.length > 1) {
+    throw new Error(
+      `A token for an agent (${agents.map((g) => g.connector).join(", ")}) is for that agent alone — ` +
+        "make a separate token for anything else.",
+    );
+  }
+  return grants;
+}
+
+/** Whether a token's grants make it an agent's token — and which agent. */
+export function agentOf(grants: McpGrant[]): string | null {
+  return grants.length === 1 && connectorFor(grants[0]!.connector)?.agent ? grants[0]!.connector : null;
 }
 
 /**
@@ -175,8 +254,12 @@ export function grantTools(identity: McpIdentity, only?: string): GrantTool[] {
       : connector.prefix;
 
     for (const tool of connector.tools) {
+      // An in-process token (an agent's profile) may list and call only its
+      // own tools: left out here, a call to another is "Unknown tool".
+      const name = (prefix ? `${prefix}_${tool.name}` : tool.name).slice(0, 64);
+      if (identity.tools && !identity.tools.includes(name)) continue;
       tools.push({
-        name: (prefix ? `${prefix}_${tool.name}` : tool.name).slice(0, 64),
+        name,
         description: tool.description,
         scope: tool.access,
         inputSchema: tool.inputSchema,

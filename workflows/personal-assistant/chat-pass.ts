@@ -1,18 +1,14 @@
 import { z } from "zod";
 import {
-  assistantTools,
-  CATEGORIES,
-  chatPass,
-  chatsToPass,
+  agentTools,
   claudeOwnLogin,
   cron,
   defineSecrets,
   defineWorkflow,
   isPractice,
   type Ctx,
-  type Decision,
-  type PassTarget,
 } from "../../src/core/define.ts";
+import { CATEGORIES, chatPass, chatsToPass, type Decision, type PassTarget } from "./_writer.ts";
 
 /**
  * Personal assistant — the chat pass: every five minutes, each chat where
@@ -22,10 +18,10 @@ import {
  * This is the part of the hourly routine that matters most — reading chats,
  * deciding what needs him, drafting his replies, sorting new chats, filing
  * the tasks and loops a chat makes plain — moved out of one long session
- * that did eight jobs at once (src/server/assistant-writer.ts says why). The
+ * that did eight jobs at once (workflows/personal-assistant/_writer.ts says why). The
  * loop is code; the model sees one chat at a time and answers with one
  * decision; this file applies it through the assistant's own tools
- * (`assistantTools`), so every rule they enforce still holds: a draft only
+ * (`agentTools`, the `assistant` agent in agent.ts), so every rule they enforce still holds: a draft only
  * for a chat in `people`, one open draft per chat, the second reader on every
  * draft, his priority beating hers, the hourly question budget.
  *
@@ -70,7 +66,7 @@ const dayCap = () => {
 };
 const today = () => new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(new Date());
 
-type Box = ReturnType<typeof assistantTools>;
+type Box = ReturnType<typeof agentTools>;
 
 export default defineWorkflow({
   name: "personal-assistant-chat-pass",
@@ -103,7 +99,7 @@ export default defineWorkflow({
 
     const stored = await ctx.state.get<{ day: string; calls: number }>(USAGE);
     const usage = stored?.day === today() ? stored : { day: today(), calls: 0 };
-    const box = assistantTools({ label: LABEL });
+    const box = agentTools("assistant", { label: LABEL });
     const started = Date.now();
     const counts = { read: 0, drafts: 0, revised: 0, withdrawn: 0, none: 0, failed: 0, sorted: 0, tasks: 0, loops: 0, sentBack: 0 };
     let capped = false;

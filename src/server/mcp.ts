@@ -69,7 +69,8 @@ import { listCredentials, testCredential, credentialRef } from "../core/credenti
 import { secretStoreReady, storedSecretKeys } from "../core/secret-store.ts";
 import { listVariables, setVariable } from "../core/variables.ts";
 import { planReplay, workflowsBlockedBy } from "./inspect.ts";
-import { grantInstructions, grantPrompts, grantTools } from "../connectors/index.ts";
+import { agentOf, grantInstructions, grantPrompts, grantTools } from "../connectors/index.ts";
+import { toolFailureLine } from "../core/agents.ts";
 import type { Connector } from "../connectors/types.ts";
 import { z } from "zod";
 import type { Registry } from "../core/loader.ts";
@@ -1376,6 +1377,9 @@ export function opsConnector(registry: Registry): Connector<Record<string, never
   };
 }
 
+/** Said once at boot, however many routers are made. */
+let warnedClosed = false;
+
 /** How long one tool call may take before the client is answered. */
 const CALL_TIMEOUT_MS = 60_000;
 
@@ -1383,7 +1387,8 @@ const CALL_TIMEOUT_MS = 60_000;
  * The MCP router: serves a token whatever its grants bring (src/connectors/).
  *
  * Mounted at /mcp, at every token's own /mcp/<id>, and — narrowed with
- * `only` — at the old /mcp/tables, which serves just the data-table grant.
+ * `only` — at the old /mcp/tables, which serves just the data-table grant,
+ * and at each agent's /mcp/<agent name>, which serves just that agent.
  * There is one router because there is one rule: the token decides the
  * tools. Registered before the dashboard's basic auth with its own bearer
  * check, the same way /hooks is — an agent authenticates as itself.
@@ -1395,14 +1400,21 @@ export function createMcpRouter(
     /** What this path is, for the refusal a token without that grant gets. */
     here?: string;
     serverName?: string;
+    /**
+     * Refuse an agent's token — the shared /mcp, which is the runner's own
+     * endpoint. An agent's token is served at its own /mcp/<id> and at the
+     * agent's /mcp/<name>, never at the address of the runner's tools.
+     */
+    refuseAgents?: boolean;
   } = {},
 ): Hono<{ Variables: { mcp: McpIdentity } }> {
   // The identity rides on the context rather than being resolved twice, so the
   // Hono instance is typed with it.
   const app = new Hono<{ Variables: { mcp: McpIdentity } }>();
-  const { only, here = "the runner's MCP", serverName = "automator" } = opts;
+  const { only, here = "the runner's MCP", serverName = "automator", refuseAgents = false } = opts;
 
-  if (!only && !mcpEnabled()) {
+  if (!only && !mcpEnabled() && !warnedClosed) {
+    warnedClosed = true;
     log.warn(
       "No MCP token exists — /mcp is closed. Create one on the dashboard (MCP tab), " +
         "or set MCP_TOKEN.",
@@ -1435,9 +1447,10 @@ export function createMcpRouter(
     }
     // Refused outright rather than let in with an empty tool list: a token
     // with nothing to do here was pointed at the wrong place, and an empty
-    // list reads as a broken server. An assistant token has no grants — its
-    // tools are /mcp/assistant's, which says so.
-    const reaches = only ? identity.grants.some((g) => g.connector === only) : identity.grants.length > 0;
+    // list reads as a broken server.
+    const reaches = only
+      ? identity.grants.some((g) => g.connector === only)
+      : identity.grants.length > 0 && !(refuseAgents && agentOf(identity.grants));
     if (!reaches) {
       return c.json(rpcError(null, -32001, wrongEndpoint(identity, here)), 403);
     }
@@ -1529,11 +1542,7 @@ export function createMcpRouter(
           // The message only for the runner's own tools: a connection's
           // arguments and errors can carry a chat name or a search phrase,
           // and a log line is not the place for either.
-          log.warn(
-            tool.logErrors
-              ? `MCP tool ${name} failed: ${message}`
-              : `MCP tool ${name} failed (token "${identity.label}")`,
-          );
+          log.warn(tool.logErrors ? `MCP tool ${name} failed: ${message}` : toolFailureLine(name, identity.label, err));
           // A tool error is a result, not a protocol error — the model has to
           // be able to read it and try something else.
           return {

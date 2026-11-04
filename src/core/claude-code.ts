@@ -10,7 +10,7 @@ import { holdBack, isPractice } from "./practice.ts";
  * (workflows/personal-assistant/_live.ts) runs it with the assistant's tools;
  * `askClaude` runs it with none, for a workflow or the endpoint that needs a
  * model to read something and say one thing back (learn-style, the draft
- * check in src/server/mcp-assistant.ts).
+ * check in workflows/personal-assistant/_check.ts).
  *
  * Signed in with an OAuth token from `claude setup-token`
  * (`CLAUDE_CODE_OAUTH_TOKEN`, then `CLAUDE_CODE_OAUTH_TOKEN_2`), or — on a

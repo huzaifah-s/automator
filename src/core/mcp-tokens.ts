@@ -45,9 +45,16 @@ export type McpScope = "read" | "full";
  * could do both — the table scope narrowed what it saw on `/mcp/tables` and
  * said nothing about `/mcp`, which is not what anybody minting it intended.
  */
-export type McpAudience = "ops" | "tables" | "assistant" | "connections";
+export type McpAudience = "ops" | "tables" | "assistant" | "agent" | "connections";
 
-export const AUDIENCES: readonly McpAudience[] = ["ops", "tables", "assistant", "connections"];
+/**
+ * `connections` and `agent` are what tokens are minted as now: a client
+ * using the runner's capabilities, or one of the project's agents
+ * (src/core/agents.ts), either way decided by its grants. `ops`, `tables`
+ * and `assistant` are what older rows say; each is read as the grant it
+ * implied (`tokenGrants`).
+ */
+export const AUDIENCES: readonly McpAudience[] = ["ops", "tables", "assistant", "agent", "connections"];
 
 /**
  * One connection a "connections" token may use: a credential from the
@@ -80,6 +87,8 @@ export const AUDIENCE_PATH: Record<McpAudience, string> = {
   ops: "/mcp",
   tables: "/mcp/tables",
   assistant: "/mcp/assistant",
+  // An agent's own shared path is /mcp/<its name>; see wrongEndpoint.
+  agent: "/mcp",
   // The one endpoint everything is meant to end up on: a connections token is
   // served at /mcp next to the operations tools, not on a path of its own.
   connections: "/mcp",
@@ -88,7 +97,8 @@ export const AUDIENCE_PATH: Record<McpAudience, string> = {
 const AUDIENCE_NAME: Record<McpAudience, string> = {
   ops: "an operations token",
   tables: "a data-table token",
-  assistant: "an assistant token",
+  assistant: "an agent token",
+  agent: "an agent token",
   connections: "a connections token",
 };
 
@@ -99,9 +109,11 @@ const AUDIENCE_NAME: Record<McpAudience, string> = {
  */
 export function wrongEndpoint(identity: McpIdentity, here: string): string {
   const its = identity.audiences[0] ?? "ops";
+  const agent = its === "agent" || its === "assistant" ? identity.grants[0]?.connector : undefined;
+  const path = identity.id ? tokenPath(identity.id) : agent ? `/mcp/${agent}` : AUDIENCE_PATH[its];
   return (
     `"${identity.label}" is ${AUDIENCE_NAME[its]}. This endpoint is ${here} — ` +
-    `connect this token to ${identity.id ? tokenPath(identity.id) : AUDIENCE_PATH[its]} instead, ` +
+    `connect this token to ${path} instead, ` +
     "or create one for this endpoint on the dashboard's MCP tab."
   );
 }
@@ -168,8 +180,9 @@ export function createMcpToken(
   } = {},
 ): { token: string; id: string } {
   const { audience = "ops", tables, grants } = opts;
-  if (audience === "connections" && !grants?.length) {
-    throw new Error("A connections token needs at least one connection");
+  const granted = audience === "connections" || audience === "agent";
+  if (granted && !grants?.length) {
+    throw new Error(audience === "agent" ? "An agent token needs its agent" : "A connections token needs at least one connection");
   }
   const token = PREFIX + randomBytes(24).toString("hex");
   const id = randomBytes(4).toString("hex");
@@ -181,14 +194,14 @@ export function createMcpToken(
     prefix: token.slice(0, HINT_LENGTH),
     tables: tables && tables.length ? tables : null,
     audience,
-    grants: audience === "connections" ? grants : null,
+    grants: granted ? grants : null,
   });
   log.info(
     `MCP token "${name}" created (${audience}, ${scope} scope, ${id}` +
       `${tables && tables.length ? `, tables: ${tables.join(", ")}` : ""}` +
       // Which credentials, never the limits: a folder or chat name says more
       // about somebody's life than a log line needs to.
-      `${audience === "connections" && grants ? `, connections: ${grants.map(grantLabel).join(", ")}` : ""})`,
+      `${granted && grants ? `, connections: ${grants.map(grantLabel).join(", ")}` : ""})`,
   );
   return { token, id };
 }
@@ -221,13 +234,24 @@ export function updateMcpTokenAccess(
 }
 
 /**
- * Replaces a connections token's grants in place — a changed access, or
- * folders added — so the client keeps its token. Validated by the caller,
- * like createMcpToken's. Logged by credential, never by limit.
+ * Replaces a token's grants in place — a changed access, or folders added —
+ * so the client keeps its token. Validated by the caller, like
+ * createMcpToken's. Logged by credential, never by limit. `audience` is what
+ * the row becomes: an older operations, data-table or assistant token is
+ * stored as a grants token from its first edit.
  */
-export function updateMcpTokenGrants(id: string, grants: McpGrant[]): boolean {
-  if (grants.length === 0) throw new Error("A connections token needs at least one connection");
-  const done = store.updateMcpTokenGrants(id, grants, grants.some((g) => g.access === "full") ? "full" : "read");
+export function updateMcpTokenGrants(
+  id: string,
+  grants: McpGrant[],
+  audience: "connections" | "agent" = "connections",
+): boolean {
+  if (grants.length === 0) throw new Error("A token needs at least one thing it can use");
+  const done = store.updateMcpTokenGrants(
+    id,
+    grants,
+    grants.some((g) => g.access === "full") ? "full" : "read",
+    audience,
+  );
   if (done) {
     log.info(
       `MCP token ${id} connections changed: ` +
@@ -272,8 +296,8 @@ export interface McpIdentity {
   grants: McpGrant[];
   /**
    * The only tools this identity may list or call, when set. Only an
-   * in-process token has one (`mintProcessToken`): live Maria is given the
-   * assistant's tools minus the hourly run's own.
+   * in-process token has one (`agentConnection` in src/core/agents.ts): an
+   * agent's profile, for a CLI agent a workflow spawns.
    */
   tools?: readonly string[];
 }
@@ -283,8 +307,8 @@ const processTokens = new Map<string, McpIdentity>();
 
 /**
  * A token for a client this process starts itself and talks to over
- * 127.0.0.1 — live Maria's Claude Code, which reaches /mcp/assistant like the
- * routine does. Kept in memory only: nothing to leak from the database or
+ * 127.0.0.1 — a CLI agent a workflow spawns (`agentConnection`). Kept in
+ * memory only: nothing to leak from the database or
  * the dashboard, nothing to rotate, and it dies with the process. Not shown
  * on the MCP tab, because it is not anybody's to manage.
  */
@@ -439,9 +463,10 @@ function grantLabel(g: McpGrant): string {
  * The grants a stored token has. A token minted with grants has them as
  * stored. One minted before grants existed is read as the grant it always
  * was in effect: an operations token as `ops` at its scope, a data-table
- * token as `tables` with its table list — so it keeps working unchanged, at
- * any of its URLs, and its page can show and edit it like any other. An
- * assistant token has none: its tools are not a connector (yet).
+ * token as `tables` with its table list, and an `assistant` token — from
+ * before agents were declared in their project's folder — as the agent
+ * named `assistant`. So it keeps working unchanged, at any of its URLs, and
+ * its page can show and edit it like any other.
  */
 export function tokenGrants(row: Pick<McpTokenRecord, "audience" | "scope" | "tables" | "grants">): McpGrant[] {
   if (row.grants) return parseGrants(row.grants);
@@ -449,6 +474,7 @@ export function tokenGrants(row: Pick<McpTokenRecord, "audience" | "scope" | "ta
   const audience = isAudience(row.audience) ? row.audience : "ops";
   if (audience === "ops") return [{ connector: "ops", access: scope, limits: {} }];
   if (audience === "tables") return [{ connector: "tables", access: scope, limits: { tables: parseTables(row.tables) } }];
+  if (audience === "assistant") return [{ connector: "assistant", access: scope, limits: {} }];
   return [];
 }
 

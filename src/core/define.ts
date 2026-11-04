@@ -141,6 +141,11 @@ export { defineSecrets, defineSecretGroup, optionalSecret } from "./secrets.ts";
  */
 export {
   defineTable,
+  /**
+   * A table's client by name, for code with no `ctx` — an agent's tool.
+   * A workflow uses `ctx.table`, which records who wrote.
+   */
+  table,
   text,
   int,
   real,
@@ -281,25 +286,36 @@ export type {
   WorkflowDef,
 } from "./types.ts";
 export type { StateClient, StateStore, StateSetOptions } from "./state.ts";
-export type { ChatChannel, ChatLog, ChatLogEntry } from "./chat-log.ts";
+export type { ChatChannel, ChatLog, ChatLogEntry, StoredMessage, WaitingChat } from "./chat-log.ts";
 export { chatLogKeeps, chatLogKeepsFrom } from "./chat-log.ts";
+/**
+ * The chat log's readers, for an agent's tools (see below). Not on `ctx` on
+ * purpose, and bound by the chat log's rules: what they return goes to a
+ * model, never into a step's result or a log line. See src/core/chat-log.ts.
+ */
+export { chatMessage, chatThread, hisMessages, lastWordMine, messagesSince, waitingChats } from "./chat-log.ts";
 /** One person, one chat: a WhatsApp `@lid` linked to its phone number. See src/core/chat-link.ts. */
 export { aliases, canonicalKey, isLidKey, linkChats } from "./chat-link.ts";
 export type { LinkResult } from "./chat-link.ts";
 /** Whether the assistant is getting better, in numbers. See src/core/scorecard.ts. */
-export { SCORECARD_CRON, scorecard, scorecardMarks, scorecardPeriod, scorecardSlots } from "./scorecard.ts";
+export { SCORECARD_CRON, scorecard, scorecardMarks, scorecardPeriod, scorecardSlots, scorecardText } from "./scorecard.ts";
 export type { Area, CountLine, Headline, Scorecard, ScorecardSpan, ScorecardWhich } from "./scorecard.ts";
-/** The assistant's MCP tools, called in-process by live Maria. See src/server/mcp-assistant.ts. */
-export { assistantTools, liveConnection } from "../server/mcp-assistant.ts";
-export { CATEGORIES, chatPass, chatPassOn, chatsToPass, CHAT_PASS_WORKFLOW, WRITER_VARIANTS } from "../server/assistant-writer.ts";
-export type { Decision, Pass, PassOptions, PassTarget, WriterVariant } from "../server/assistant-writer.ts";
-export { evalCases, evalVariants, runEval, scoreSystems } from "../server/assistant-eval.ts";
-export type { CaseKind, CaseResult, EvalCase, Grade, SystemScore } from "../server/assistant-eval.ts";
+/**
+ * Agents — a project's own AI agent: its tools and instructions, declared in
+ * a file under `workflows/` whose default export is `defineAgent(...)`. The
+ * runner serves it over MCP to a token minted for it, and a workflow can
+ * call its tools in-process (`agentTools`) or hand a CLI it spawns a
+ * connection (`agentConnection`). See src/core/agents.ts.
+ */
+export { agentConnection, agentTools, defineAgent, ToolRefusal } from "./agents.ts";
+export type { AgentCall, AgentDef, AgentProfile, AgentTool, AgentToolSpec } from "./agents.ts";
+/** Workflows by name from outside a run — for an agent's tools, which have no `ctx`. See src/core/workflow-calls.ts. */
+export { startWorkflow, workflowIsLive, workflowLoaded, workflowRuns } from "./workflow-calls.ts";
+export type { PastRun, RunOutcome } from "./workflow-calls.ts";
 /** For a workflow that starts something a practice run cannot gate itself, like a child process. */
 export { holdBack, isPractice } from "./practice.ts";
 export { askClaude, CLAUDE_MODEL, claudeHome, claudeOwnLogin, holdClaudeSpawn, runClaude } from "./claude-code.ts";
 export type { ClaudeCaller, ClaudeRun } from "./claude-code.ts";
-export type { AssistantToolSpec } from "../server/mcp-assistant.ts";
 export type { OAuthConfig, OAuthCredential, TokenStatus } from "../integrations/oauth.ts";
 export type {
   HttpOptions,

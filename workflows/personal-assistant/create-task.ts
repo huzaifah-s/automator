@@ -20,7 +20,7 @@ import {
 /**
  * Personal assistant — adds a task to the Notion "To Do" database.
  *
- * Started by the assistant's `create_task` tool (src/server/mcp-assistant.ts)
+ * Started by the assistant's `create_task` tool (workflows/personal-assistant/_tools.ts)
  * rather than called from there directly, so that every task it creates is a
  * run: on the run page, alerted on failure, and in the same place as the
  * todo-repeat workflow that works the same database.

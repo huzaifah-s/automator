@@ -568,16 +568,19 @@ font-size:11.5px;color:var(--muted);margin-top:2px;line-height:1.4}
 .tablelinks a{display:block;padding:9px 11px;border-radius:8px;border:1px solid var(--border-soft);
 background:var(--sunk);min-width:0;color:var(--fg)}
 .tablelinks a:hover{border-color:var(--accent);text-decoration:none}
+/* An agent's card carries a description and a line of counts: wider than a table's. */
+.tablelinks.agentlist{grid-template-columns:repeat(auto-fill,minmax(min(100%,340px),1fr))}
+.tablelinks.agentlist small{-webkit-line-clamp:3}
 .tablelinks b{font-family:var(--mono,monospace);font-size:12.5px;font-weight:600}
 .tablelinks small{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
 font-size:11.5px;color:var(--muted);margin-top:2px;line-height:1.4}
 .tablelinks .gone{border-style:dashed;color:var(--muted);padding:9px 11px;border-radius:8px;border:1px dashed var(--border)}
 .mr .name a{color:inherit;min-width:0}
 .mr .name a:hover b{color:var(--accent)}
-/* What a token can use — hidden when the token is the assistant's, whose
+/* What a token can use — hidden when the token is for an agent, whose
    tools are not a pick. Without :has() it is always shown, and the server
-   ignores it for an assistant token. */
-.form:has(#aud-assistant:checked) .connscope{display:none}
+   ignores it for an agent token. */
+.form:has(.aud-agent:checked) .connscope{display:none}
 .conn{display:grid;gap:8px;padding:10px 12px;border-radius:9px;border:1px solid var(--border);background:var(--sunk)}
 .conn .limits{display:none;gap:8px}
 .conn:has(.pick:checked) .limits{display:grid}
@@ -1171,6 +1174,7 @@ type Tab =
   | "executions"
   | "views"
   | "tables"
+  | "agents"
   | "credentials"
   | "variables"
   | "mcp"
@@ -1193,6 +1197,8 @@ interface Shell {
     agents?: number | null;
     /** How many data tables are loaded. */
     tables?: number | null;
+    /** How many agents the project defines. */
+    agentCount?: number | null;
   };
 }
 
@@ -1217,6 +1223,9 @@ function layout(shell: Shell, body: HtmlEscapedString | Promise<HtmlEscapedStrin
       <a class="tab" href="/views" ${tab === "views" ? raw('aria-current="page"') : ""}>Views</a>
       <a class="tab" href="/tables" ${tab === "tables" ? raw('aria-current="page"') : ""}>Tables${
         badges.tables ? html`<span class="n">${badges.tables}</span>` : ""
+      }</a>
+      <a class="tab" href="/agents" ${tab === "agents" ? raw('aria-current="page"') : ""}>Agents${
+        badges.agentCount ? html`<span class="n">${badges.agentCount}</span>` : ""
       }</a>
       <a class="tab" href="/credentials" ${tab === "credentials" ? raw('aria-current="page"') : ""}>Credentials${
         badges.unconnected ? html`<span class="n bad">${badges.unconnected}</span>` : ""
@@ -3571,8 +3580,14 @@ export interface McpTokenView {
   calls: number;
   /** Data tables this token may reach on /mcp/tables, or null for all of them. */
   tables: string[] | null;
-  /** Which endpoint it is for: "ops" (/mcp), "tables" (/mcp/tables) or "assistant" (/mcp/assistant). */
+  /**
+   * What it is for: "agent" for one of the project's agents (an older
+   * "assistant" row reads as that too), otherwise what its grants bring —
+   * "connections", or "ops"/"tables" on a row from before grants.
+   */
   audience: McpAudience;
+  /** The agent, for an agent's token. `loaded` is false when no such agent is loaded now. */
+  agent: { name: string; label: string; description: string; loaded: boolean } | null;
   /** What it can use, one described line per grant. */
   grants: string[];
   /** Whether a grant brings the data tables — `tables` is then that grant's list. */
@@ -3618,9 +3633,23 @@ function clientName(tokenName: string): string {
 const AUDIENCE_UI: Record<McpAudience, { tag: string; path: string; client: string }> = {
   ops: { tag: "ops", path: "/mcp", client: "automator" },
   tables: { tag: "tables", path: "/mcp/tables", client: "automator-tables" },
-  assistant: { tag: "assistant", path: "/mcp/assistant", client: "automator-assistant" },
+  assistant: { tag: "agent", path: "/mcp/assistant", client: "automator-assistant" },
+  // The path is the agent's own, /mcp/<name>; see sharedPath.
+  agent: { tag: "agent", path: "/mcp", client: "automator" },
   connections: { tag: "connections", path: "/mcp", client: "automator" },
 };
+
+/** The shared path a token also works at: its kind's, or an agent's /mcp/<name>. */
+const sharedPath = (t: Pick<McpTokenView, "audience" | "agent">) =>
+  t.agent ? `/mcp/${t.agent.name}` : AUDIENCE_UI[t.audience].path;
+
+/** A loaded agent, as the create form offers it. */
+export interface AgentChoice {
+  name: string;
+  label: string;
+  description: string;
+  tools: number;
+}
 
 /** A loaded data table, as the token forms offer it. */
 export interface TablePickView {
@@ -3633,6 +3662,8 @@ export interface TablePickView {
 export interface McpTokenDraft {
   name: string;
   audience: McpAudience;
+  /** The agent picked, for an agent's token. */
+  agent?: string | null;
   scope: "read" | "full";
   /** Null for "all tables". */
   tables: string[] | null;
@@ -3737,6 +3768,8 @@ export function mcpTokensPage(args: {
   draft?: McpTokenDraft | null;
   /** Credentials whose platform has MCP tools, offered to a connections token. */
   connections: ConnectionChoice[];
+  /** The project's loaded agents — the other thing a token can be for. */
+  agents: AgentChoice[];
   envToken: boolean;
   publicUrl: string | null;
   failedInWindow: number;
@@ -3746,8 +3779,11 @@ export function mcpTokensPage(args: {
 }) {
   const { tokens, writable, created, authenticated, envToken } = args;
   const draft = args.draft ?? null;
-  const audienceChecked = (a: McpAudience) =>
-    (draft?.audience === "assistant" ? "assistant" : "connections") === a ? raw("checked") : "";
+  // The draft's agent, if it named one that is still loaded; otherwise the
+  // first choice, a client of the runner.
+  const draftAgent = draft?.agent && args.agents.some((a) => a.name === draft.agent) ? draft.agent : null;
+  const audienceChecked = (value: string) =>
+    (draftAgent ? `agent:${draftAgent}` : "connections") === value ? raw("checked") : "";
   const base = args.publicUrl ?? "https://your-runner";
   const canMint = writable && authenticated;
 
@@ -3755,7 +3791,7 @@ export function mcpTokensPage(args: {
   const calls = tokens.reduce((sum, t) => sum + t.calls, 0);
   // Same rule as the Variables tab: folded away, unless the form is the thing
   // you came for — an error to correct, or no token to connect with at all.
-  const formOpen = Boolean(args.error) || tokens.length === 0;
+  const formOpen = Boolean(args.error) || Boolean(draft) || tokens.length === 0;
 
   return layout(
     {
@@ -3815,17 +3851,15 @@ export function mcpTokensPage(args: {
         </summary>
         <div class="body">
           <p>
-            Tokens an AI agent authenticates with, at one of three endpoints:
-            <code class="mono">${base}/mcp</code> for operations — workflows, runs, triggers —
-            <code class="mono">${base}/mcp/tables</code> for the data tables, and
-            <code class="mono">${base}/mcp/assistant</code> for the personal assistant, which
-            reads your Telegram. A <b>connections</b> token also uses
-            <code class="mono">${base}/mcp</code>, and gets only the tools of the connections
-            you give it — your Telegram, limited to some folders, say — and none of the
-            operations tools. They have
-            separate tool lists on purpose: a tool costs context on every turn of every
+            Tokens an AI client authenticates with. Each has its own URL,
+            <code class="mono">${base}/mcp/&lt;id&gt;</code>, and gets exactly the tools of
+            what it is for. A token for <b>the runner and your accounts</b> gets the boxes you
+            tick — operations, data tables, a Telegram account limited to some folders — and
+            nothing else. A token for an <b>agent</b> — one the project defines in its folder,
+            like the personal assistant — gets that agent's own tools, and only those.
+            Separate tool lists on purpose: a tool costs context on every turn of every
             conversation whether or not anything calls it, so an incident chat should not be
-            carrying ledger tools. A token reaches one endpoint and is refused by the other.
+            carrying ledger tools.
           </p>
           <p>
             One token per place you connect from, so losing a laptop is one deletion rather
@@ -3872,13 +3906,15 @@ export function mcpTokensPage(args: {
                           Telegram account. It gets only their tools.
                         </span>
                       </label>
-                      <label class="opt">
-                        <input type="radio" id="aud-assistant" name="audience" value="assistant" ${audienceChecked("assistant")}>
-                        <span><b>Personal assistant</b>
-                          Maria's chats, drafts and Notion tasks — its own tool set, not one of
-                          the boxes below. Reads private messages; give it only to the assistant.
-                        </span>
-                      </label>
+                      ${args.agents.map(
+                        (a) => html`<label class="opt">
+                          <input type="radio" class="aud-agent" id="aud-agent-${a.name}" name="audience"
+                                 value="agent:${a.name}" ${audienceChecked(`agent:${a.name}`)}>
+                          <span><b>${a.label}</b> <span class="tag">agent</span>
+                            ${a.description} Its own ${a.tools} tools, nothing from the boxes below.
+                          </span>
+                        </label>`,
+                      )}
                     </div>
                   </div>
 
@@ -3948,8 +3984,8 @@ export function mcpTokensPage(args: {
                       <span class="dot ${t.lastUsedAt === null ? "" : "success"}"
                             title="${t.lastUsedAt === null ? "never used" : "has been used"}"></span>
                       <a class="trunc" href="/mcp-tokens/${t.id}" title="See what this token reaches"><b>${t.name}</b></a>
-                      <span class="tag" title="Reaches ${AUDIENCE_UI[t.audience].path} only"
-                        >${AUDIENCE_UI[t.audience].tag}</span>
+                      <span class="tag" title="Also works at ${sharedPath(t)}"
+                        >${t.agent ? `agent · ${t.agent.name}` : AUDIENCE_UI[t.audience].tag}</span>
                     </div>
                     <div class="scope">
                       <span class="pill ${t.scope === "full" ? "skipped" : "muted"}">
@@ -4071,12 +4107,10 @@ const AUDIENCE_ABOUT: Record<McpAudience, { title: string; about: string }> = {
       "Reading and writing rows in the data tables below. It is refused by the operations " +
       "and assistant endpoints, so it cannot trigger a workflow or read a chat.",
   },
-  assistant: {
-    title: "Personal assistant",
-    about:
-      "Your WhatsApp and Telegram chats, drafts, people and Notion tasks. It reads private " +
-      "messages — give it only to the assistant.",
-  },
+  // An agent's own label and description are shown instead; these are the
+  // fallback for a row whose agent cannot be named.
+  assistant: { title: "An agent", about: "One of the project's agents, with its own tools." },
+  agent: { title: "An agent", about: "One of the project's agents, with its own tools." },
   connections: {
     title: "The runner and your accounts",
     about:
@@ -4113,8 +4147,9 @@ export function mcpTokenPage(args: {
   agents: number;
 }) {
   const t = args.token;
-  const ui = AUDIENCE_UI[t.audience];
-  const about = AUDIENCE_ABOUT[t.audience];
+  const about = t.agent
+    ? { title: t.agent.label, about: t.agent.loaded ? t.agent.description : `${t.agent.name}: ${t.agent.description}` }
+    : AUDIENCE_ABOUT[t.audience];
   const base = args.publicUrl ?? "https://your-runner";
   // The token's own URL. The shared path still works, but this one is what a
   // client should be given: unique per token, so claude.ai can hold one
@@ -4183,7 +4218,7 @@ export function mcpTokenPage(args: {
         <tr><td>For</td><td><b>${about.title}</b> <span class="muted">— ${about.about}</span></td></tr>
         <tr><td>URL</td><td class="mono" style="word-break:break-all">${endpoint}
           <div class="muted" style="font-family:var(--sans);font-size:12px">This token's own address. The shared
-            <span class="mono">${ui.path}</span> still works for clients set up before it.</div></td></tr>
+            <span class="mono">${sharedPath(t)}</span> still works for clients set up before it.</div></td></tr>
         <tr><td>Access</td><td>${t.scope === "full"
           ? html`<span class="pill skipped">full</span>
               <span class="muted">every tool, including the ones that change things</span>`
@@ -4195,7 +4230,13 @@ export function mcpTokenPage(args: {
               : html`<span class="mono">${t.tables.join(", ")}</span>
                   <span class="muted">— only these; others stay hidden</span>`}</td></tr>`
           : ""}
-        ${t.audience !== "assistant"
+        ${t.agent
+          ? html`<tr><td>Agent</td><td>${t.agent.loaded
+                ? html`<a class="mono" href="/agents/${t.agent.name}">${t.agent.name}</a>`
+                : html`<span class="mono">${t.agent.name}</span>`}
+              <span class="muted">— an agent's token gets its tools and nothing beside them</span></td></tr>`
+          : ""}
+        ${!t.agent
           ? html`<tr><td>Uses</td><td>${t.grants.length
               ? t.grants.map((g) => html`<div class="mono">${g}</div>`)
               : html`<span class="muted">none readable — this token reaches nothing</span>`}</td></tr>`
@@ -4288,7 +4329,7 @@ export function mcpTokenPage(args: {
                     <option value="full" ${t.scope === "full" ? raw("selected") : ""}>Full — can also change things</option>
                   </select>
                 </div>
-                ${t.audience !== "assistant"
+                ${!t.agent
                   ? html`<div class="field">
                       <label>What it can use</label>
                       ${connectionPicker(args.connections, t.grantValues, args.dataTables, "edit")}
@@ -4326,6 +4367,194 @@ export function mcpTokenPage(args: {
               </form>
             </div>`
         : ""}
+    `,
+  );
+}
+
+/* -------------------------------------------------------------- agents */
+
+/** One agent as the Agents tab shows it. */
+export interface AgentView {
+  name: string;
+  label: string;
+  description: string;
+  /** Its file, relative to workflows/. */
+  file: string;
+  instructions: string;
+  tools: { name: string; description: string; write: boolean }[];
+  profiles: { name: string; tools: string[] }[];
+  /** Stored tokens for it. */
+  tokens: { id: string; name: string; scope: "read" | "full"; lastUsedAt: number | null; calls: number }[];
+  /** In-process connections minted since boot — a workflow driving it. */
+  local: { label: string; profile: string | null; tools: number }[];
+}
+
+interface ShellCounts {
+  failedInWindow: number;
+  workflowCount: number;
+  unconnected: number;
+  agents: number;
+}
+
+const agentBadges = (c: ShellCounts, agentCount: number) => ({
+  workflows: c.workflowCount,
+  failed: c.failedInWindow,
+  unconnected: c.unconnected || null,
+  agents: c.agents || null,
+  agentCount: agentCount || null,
+});
+
+/**
+ * The Agents tab — the AI agents this project defines, one per
+ * `defineAgent` file under workflows/.
+ *
+ * Read-only about what an agent *is*, like every page about code here: its
+ * tools, profiles and instructions are in its file. What the page adds is
+ * where it is reachable and by what — the tokens minted for it, and the
+ * connections a workflow made for it in this process.
+ */
+export function agentsPage(args: ShellCounts & { list: AgentView[]; publicUrl: string | null }) {
+  const base = args.publicUrl ?? "https://your-runner";
+  return layout(
+    { title: "Agents", tab: "agents", refresh: null, badges: agentBadges(args, args.list.length) },
+    html`
+      <details class="note" ${args.list.length === 0 ? raw("open") : ""}>
+        <summary>
+          <span>
+            <b>An agent is the project's, not the runner's.</b> Its tools and instructions are a
+            file under <code class="mono">workflows/</code>; what drives it is whatever connects.
+          </span>
+        </summary>
+        <div class="body">
+          <p>
+            Operations, data tables and a Telegram account are things the runner offers, and a
+            token is given some of them on the MCP tab. An agent is built on top of things like
+            those: a set of tools with its own rules — what it may write, to whom, and what it
+            can never do — declared with <code class="mono">defineAgent</code> beside the
+            workflows and tables of its project.
+          </p>
+          <p>
+            The runner serves each agent over MCP at <code class="mono">${base}/mcp/&lt;agent&gt;</code>
+            and at the own URL of every token minted for it, and lets a workflow call its tools
+            in-process. The loop that decides what to call is never here: a person's Claude, a CLI
+            a workflow starts, or a workflow's own code.
+          </p>
+        </div>
+      </details>
+
+      ${args.list.length === 0
+        ? html`<div class="card"><div class="empty">
+            <b>No agents</b>
+            A file under <code class="mono">workflows/</code> whose default export is
+            <code class="mono">defineAgent({ name, label, description, instructions, tools })</code>
+            shows up here and on the MCP tab's token form.
+          </div></div>`
+        : html`<div class="card"><div class="tablelinks agentlist">
+            ${args.list.map((a) => {
+              const writes = a.tools.filter((t) => t.write).length;
+              const used = a.tokens.filter((t) => t.lastUsedAt !== null).length;
+              return html`<a href="/agents/${a.name}">
+                <b>${a.label}</b> <span class="tag">${a.name}</span>
+                <small>${firstSentence(a.description)}</small>
+                <small class="mono">${a.tools.length} tools (${writes} change things) ·
+                  ${a.tokens.length} ${a.tokens.length === 1 ? "token" : "tokens"}${used ? `, ${used} used` : ""}
+                  · ${a.file}</small>
+              </a>`;
+            })}
+          </div></div>`}
+    `,
+  );
+}
+
+/** One agent: what it can do, where it is reachable, and what reaches it. */
+export function agentPage(args: ShellCounts & { agent: AgentView; agentCount: number; publicUrl: string | null; canMint: boolean }) {
+  const a = args.agent;
+  const base = args.publicUrl ?? "https://your-runner";
+  const writes = a.tools.filter((t) => t.write);
+  return layout(
+    {
+      title: a.label,
+      tab: "agents",
+      refresh: null,
+      crumb: html`<span class="crumb"><a href="/agents">Agents</a> / <b>${a.label}</b></span>`,
+      badges: agentBadges(args, args.agentCount),
+    },
+    html`
+      <div class="stats">
+        <div class="stat"><b>${a.tools.length}</b><span>tools</span></div>
+        <div class="stat"><b class="${writes.length ? "skipped" : ""}">${writes.length}</b><span>change things — full tokens only</span></div>
+        <div class="stat"><b>${a.tokens.length}</b><span>${a.tokens.length === 1 ? "token" : "tokens"}</span></div>
+        <div class="stat"><b>${a.local.length}</b><span>in-process since boot</span></div>
+      </div>
+
+      <h2>Agent</h2>
+      <div class="card"><table class="kv"><tbody>
+        <tr><td>Name</td><td><b>${a.label}</b> <span class="muted mono">— ${a.name}</span></td></tr>
+        <tr><td>What</td><td>${a.description}</td></tr>
+        <tr><td>File</td><td class="mono">workflows/${a.file}</td></tr>
+        <tr><td>URL</td><td class="mono" style="word-break:break-all">${base}/mcp/${a.name}
+          <div class="muted" style="font-family:var(--sans);font-size:12px">The agent's shared path. A token minted
+            for it also has its own, <span class="mono">/mcp/&lt;id&gt;</span> — give a client that one.</div></td></tr>
+      </tbody></table></div>
+
+      <h2>Reached by</h2>
+      <div class="card">
+        ${a.tokens.length === 0 && a.local.length === 0
+          ? html`<div class="empty"><b>Nothing yet</b>No token is minted for it, and no workflow has connected to it since boot.</div>`
+          : html`<table class="kv"><tbody>
+              ${a.tokens.map(
+                (t) => html`<tr><td><a href="/mcp-tokens/${t.id}">${t.name}</a></td><td>
+                  <span class="pill ${t.scope === "full" ? "skipped" : "muted"}">${t.scope === "full" ? "full" : "read only"}</span>
+                  <span class="muted">${t.lastUsedAt === null ? "never used" : html`used ${relative(t.lastUsedAt)} · ${t.calls} calls`}</span>
+                </td></tr>`,
+              )}
+              ${a.local.map(
+                (l) => html`<tr><td>${l.label}</td><td>
+                  <span class="pill muted">in-process</span>
+                  <span class="muted">${l.profile ? html`profile <span class="mono">${l.profile}</span>, ` : ""}${l.tools} tools ·
+                    a token this process minted for a client it started; never stored</span>
+                </td></tr>`,
+              )}
+            </tbody></table>`}
+      </div>
+      ${args.canMint
+        ? html`<p style="margin:8px 0 0"><a class="btn" href="/mcp-tokens?agent=${a.name}">Create a token for ${a.label}</a></p>`
+        : ""}
+
+      ${a.profiles.length
+        ? html`<h2>Profiles</h2>
+            <p class="muted" style="margin:0 0 8px;font-size:12.5px">
+              Named subsets of its tools, for one of the things that drive it — declared in its file, and
+              enforced by the server on an in-process connection's tool list and calls.
+            </p>
+            <div class="card"><table class="kv"><tbody>
+              ${a.profiles.map(
+                (p) => html`<tr><td class="mono">${p.name}</td><td>${p.tools.length} tools
+                  <span class="muted">— without <span class="mono">${a.tools
+                    .map((t) => t.name)
+                    .filter((n) => !p.tools.includes(n))
+                    .join(", ") || "nothing"}</span></span></td></tr>`,
+              )}
+            </tbody></table></div>`
+        : ""}
+
+      <h2>Tools</h2>
+      <div class="card">
+        <div class="toollist">
+          ${a.tools.map(
+            (x) => html`<div class="t" title="${x.description}">
+              <b>${x.name}</b>${x.write ? html`<span class="tag" title="Changes something">changes</span>` : ""}
+              <small>${firstSentence(x.description)}</small>
+            </div>`,
+          )}
+        </div>
+      </div>
+
+      <h2>Instructions</h2>
+      <details class="note">
+        <summary><span>Sent to every client on its handshake — ${a.instructions.length} characters.</span></summary>
+        <div class="body"><p style="white-space:pre-wrap">${a.instructions}</p></div>
+      </details>
     `,
   );
 }

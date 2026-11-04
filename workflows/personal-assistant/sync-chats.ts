@@ -4,12 +4,12 @@ import {
   defineCredential,
   defineWorkflow,
   defineSecrets,
-  chatPassOn,
   type ChatLogEntry,
   type Ctx,
   type Row,
   type TelegramUserMessage,
 } from "../../src/core/define.ts";
+import { chatPassOn } from "./_writer.ts";
 import { fireAssistant } from "./_routine.ts";
 
 /**

@@ -1,13 +1,13 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  assistantTools,
+  agentConnection,
+  agentTools,
   CLAUDE_MODEL,
   claudeHome,
   claudeOwnLogin,
   holdClaudeSpawn,
   isPractice,
-  liveConnection,
   runClaude,
   type Ctx,
   type Row,
@@ -33,8 +33,8 @@ import { allTaskLinks, rich, type botApi } from "./_bot.ts";
  *
  * The CLI reaches the assistant's tools the way the routine does, as an MCP
  * server — /mcp/assistant on 127.0.0.1, with a token this process minted in
- * memory (`liveConnection`). That token is limited to the assistant's tools
- * minus the hourly run's own — `digest`, `log_run`, `outcomes` (learning
+ * memory (`agentConnection`). That token is limited to the agent's `live`
+ * profile (agent.ts): its tools minus the hourly run's own — `digest`, `log_run`, `outcomes` (learning
  * from finished drafts is the sweep's; a comment she learns from at once), `scorecard` (so is its lesson), `awaiting` and
  * `offer_followup` (offering follow-ups is the sweep's), `ask` (she
  * is talking to you already) and `brief` (her answer *is* the reply) — and the endpoint enforces the limit,
@@ -72,7 +72,9 @@ import { allTaskLinks, rich, type botApi } from "./_bot.ts";
  */
 const MODEL = CLAUDE_MODEL;
 const LABEL = "live Maria";
-const EXCLUDE = ["digest", "log_run", "outcomes", "ask", "brief", "scorecard", "awaiting", "offer_followup"] as const;
+/** The agent (agent.ts) and the profile of its tools she gets. */
+const AGENT = "assistant";
+const PROFILE = "live";
 const TZ = process.env.ASSISTANT_TZ ?? "Asia/Kuala_Lumpur";
 
 /**
@@ -211,14 +213,14 @@ export async function answerLive(
   if (!ok) return { answered: false, why: "cap" };
 
   const model = MODEL;
-  const conn = liveConnection(LABEL, EXCLUDE);
+  const conn = agentConnection(AGENT, { label: LABEL, profile: PROFILE });
   if (isPractice()) {
     holdClaudeSpawn("live Maria", model, conn.tools.length);
     return { answered: false, why: "practice" };
   }
 
   const started = Date.now();
-  const box = assistantTools({ label: LABEL, exclude: EXCLUDE });
+  const box = agentTools(AGENT, { label: LABEL, profile: PROFILE });
   const read = async (name: string) => (await box.call(name, {})).text;
   const prompt = [
     // `now` also nags about the scorecard lesson, which is the hourly run's.

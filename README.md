@@ -407,7 +407,7 @@ WhatsApp broadcast lists and channels, and always Telegram's service account
 (777000, which sends login codes). A `people` row set to `ignore` skips a chat;
 `always` reads one the defaults would skip.
 
-### The assistant's endpoint
+### The assistant's tools
 
 **What is still on (since 2026-10-25).** Nothing about the assistant runs on
 a schedule any more except the copying: Telegram chats into the chat log
@@ -420,10 +420,14 @@ read, but nothing new comes in and a draft to WhatsApp is refused. The
 switched-off workflows say `enabled: false` and why; turning one back on is
 removing that line.
 
-`/mcp/assistant` is what a scheduled Claude connects to: the chat log, the
-`tables/personal-assistant/` tables, and the Notion To Do list. It needs
-its own token — on the MCP tab, **Create token → Personal assistant**, full
-access — and refuses the operations and data-table ones, as they refuse it.
+The assistant is an [agent](#agents--a-projects-own-ai-agent), `assistant`,
+declared in `workflows/personal-assistant/agent.ts` with its tools in
+`_tools.ts` beside it: the chat log, the `tables/personal-assistant/`
+tables, and the Notion To Do list. A client reaches them with a token minted
+for it — **Create token → Personal assistant** on the MCP tab, or the button
+on its page on the Agents tab, full access — at the token's own
+`/mcp/<id>`, or at `/mcp/assistant`. That token reaches nothing else, and no
+other token reaches these tools.
 
 | Tool | Does |
 |---|---|
@@ -577,14 +581,14 @@ written from carries your own words — your earlier messages to that person
 have written little there, and drafts you did not take as written: its first
 try, what you said, and what went out. Then every `draft_reply` goes past a
 second Claude that did not write it, holding it against those words, the
-lessons and your comments (`src/server/assistant-check.ts`), plus a code
+lessons and your comments (`workflows/personal-assistant/_check.ts`), plus a code
 check for a Malay "aku/saya/awak…" you never use with that person. A draft
 it fails goes back to be rewritten before you see it; the rewrite is checked
 once more and saved either way. Every verdict is a row in `draft_checks`.
 
 **Chats are read one at a time, by the server.** `personal-assistant-chat-pass`
 (off since 2026-10-25) runs every five minutes from 08:00 to 23:55 and gives each chat where somebody
-wrote last a Claude call of its own (`src/server/assistant-writer.ts`): that
+wrote last a Claude call of its own (`workflows/personal-assistant/_writer.ts`): that
 chat, its lessons, the brain, your own words to them and your comments on
 earlier drafts — nothing else. It answers with one decision — draft or leave
 it, and the priority, task, loop or note the chat makes plain — and the
@@ -605,7 +609,7 @@ already happened — a draft you corrected or took, a message you answered
 yourself, a group message you let pass, a chat you re-sorted — through that
 writer, with everything as it stood at the time, and a fresh Claude grades
 each new draft against what you really sent: send as written, edit, or wrong
-(`src/server/assistant-eval.ts`). `baseline` is what she actually did then.
+(`workflows/personal-assistant/_eval.ts`). `baseline` is what she actually did then.
 It runs Wednesday and Sunday at 19:00 and writes counts to `evals`. To try a
 change to how she writes, add it to `WRITER_VARIANTS`, deploy, run the eval
 with `{"variants": ["current", "<name>"]}`, and promote it only if it scores
@@ -1669,6 +1673,57 @@ seriously:
 Untick everything in a row and you get an empty page saying exactly that,
 rather than the whole ledger back. See `kind: "multi"` under *Controls* for why
 that is the right way round.
+
+## Agents — a project's own AI agent
+
+Operations, data tables and a Telegram account are things the runner
+*offers*; a token is given some of them. An **agent** is something a project
+*builds* on top of things like those: a set of tools with its own rules —
+what it may write, to whom, and what it can never do — and the instructions
+a client is handed with them. It lives beside its workflows and tables, as a
+file under `workflows/` whose default export is `defineAgent`:
+
+```ts
+// workflows/support/agent.ts
+import { defineAgent } from "../../src/core/define.ts";
+import { TOOLS } from "./_tools.ts";
+
+export default defineAgent({
+  name: "support",                       // its grant, and /mcp/support
+  label: "Support desk",
+  description: "Reads the ticket tables and drafts replies — never sends.",
+  instructions: "You help with support tickets. Draft; a person sends.",
+  tools: TOOLS,                          // { name, description, access, inputSchema, run }
+  profiles: { triage: ["tickets", "ticket", "draft_reply"] },
+});
+```
+
+A tool is a function and a JSON schema, like an MCP tool anywhere, with
+`access: "read"` or `"write"`. Its rules go *in* the function — refuse a
+recipient you don't know, refuse what a read token may not do — because the
+model only picks which tool to call; it cannot change what one does. A tool
+that has nothing to call from `ctx` reads tables with `table(name)` and starts
+workflows with `startWorkflow(name, input)`, both from `define.ts`. An error
+whose text quotes somebody's words is a `ToolRefusal`, which logs only its
+safe half; anything else a tool throws is logged by the tool's name alone.
+
+The loop that decides what to call is never in the runner. It is whatever
+connects:
+
+- **An MCP client** — your Claude, a scheduled session — with a token minted
+  for the agent, at the token's own `/mcp/<id>` or at `/mcp/<agent>`. That
+  token gets the agent's tools and nothing else: an agent is not mixed with
+  operations or an account in one token.
+- **A CLI a workflow starts**, such as Claude Code run headless:
+  `agentConnection(name, { label, profile })` gives it a URL on 127.0.0.1 and
+  a token kept in memory, limited by the server to the profile's tools.
+- **A workflow's own code**, as the loop: `agentTools(name, { label })` calls
+  the same functions in-process, with the same rules.
+
+The **Agents** tab lists every agent the project defines: its tools, its
+profiles, its instructions, the tokens minted for it and the in-process
+connections made for it since boot. Editing the agent file reloads it like
+a workflow; its `_` helpers, like any shared code, need a restart.
 
 ## Approval gates
 
@@ -2851,8 +2906,8 @@ claude mcp add --transport http automator-laptop https://<PUBLIC_URL>/mcp/<token
 ```
 
 **Every token has its own URL, `/mcp/<token id>`**, and that's the one to give
-a client. The server serves whatever the token is for there: operations, data
-tables, the assistant or connections. Because each token's URL is different,
+a client. The server serves whatever the token is for there: what its grants
+bring, or its agent's tools. Because each token's URL is different,
 claude.ai can hold a separate connector for each one; it refuses two
 connectors with the same URL. To add one in claude.ai, choose **Add custom
 connector**, enter that URL, and add a request header `Authorization` with the
@@ -2861,9 +2916,12 @@ value `Bearer <token>`.
 The id isn't a secret. It's the same id as the token's page on the dashboard,
 so the URL is safe in a log or a screenshot. The token itself travels only in
 the header, and it must be the token the URL names: a token sent to another
-token's URL is refused. The shared paths `/mcp`, `/mcp/tables` and
-`/mcp/assistant` keep working for clients set up before per-token URLs
-existed, and `MCP_TOKEN`, which has no id, uses them.
+token's URL is refused. The shared paths `/mcp`, `/mcp/tables` and an
+agent's `/mcp/<agent>` (`/mcp/assistant`) keep working for clients set up
+before per-token URLs existed, and `MCP_TOKEN`, which has no id, uses the
+first two. An agent's token is refused at `/mcp` and `/mcp/tables`, and
+`MCP_TOKEN` at an agent's path: the way back in is the runner's, not an
+agent's.
 
 Only the digest is stored, so a copy of the database is not a set of working
 keys and a lost token is replaced rather than recovered. Minting one needs
@@ -2966,8 +3024,10 @@ curl -u user:pass -X POST https://<PUBLIC_URL>/api/mcp-tokens -H 'content-type: 
 
 `"audience": "ops"` and `"audience": "tables"` still work as shorthand for a
 token with just that one grant. Tokens made before grants existed keep
-working as the grant they always were in effect. The personal assistant's
-tools are separate for now: they are its own kind of token, not a grant.
+working as the grant they always were in effect. A token for an
+[agent](#agents--a-projects-own-ai-agent) is
+`{ "audience": "agent", "agent": "assistant" }` — and `"audience":
+"assistant"`, from before agents, still means that agent.
 
 **A folder is a live limit.** The grant stores the folder's name, not the chats
 in it. When you move a chat into or out of the folder on your phone, what the

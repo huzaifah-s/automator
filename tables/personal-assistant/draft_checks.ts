@@ -5,7 +5,7 @@ import { defineTable, enumOf, int, text } from "../../src/core/define.ts";
  *
  * `draft_reply` has a fresh Claude — one that did not write the draft —
  * check it against your own messages to that person, the lessons and what
- * you said about earlier drafts (src/server/assistant-check.ts). A draft it
+ * you said about earlier drafts (workflows/personal-assistant/_check.ts). A draft it
  * fails is sent back to the assistant once with what to fix, and never
  * reaches you; the rewrite is checked again and then saved either way, so
  * a check can never stop a draft. Each attempt is a row here, so how often

@@ -1,12 +1,17 @@
-import { askClaude, claudeOwnLogin } from "../core/claude-code.ts";
-import { log } from "../core/logger.ts";
-import { secretValue } from "../core/secret-store.ts";
+import { z } from "zod";
+import { askClaude, claudeOwnLogin, defineSecrets, type ClaudeCaller } from "../../src/core/define.ts";
+
+/** Optional, so a server without Claude Code still boots — the check is then skipped. */
+const claude = defineSecrets({
+  CLAUDE_CODE_OAUTH_TOKEN: z.string().min(20).optional(),
+  CLAUDE_CODE_OAUTH_TOKEN_2: z.string().min(20).optional(),
+});
 
 /**
  * The second reader of every draft — a fresh Claude that did not write it,
  * checking it against his own messages, the lessons and what he said about
  * earlier drafts before it reaches him. `draft_reply`
- * (src/server/mcp-assistant.ts) runs it and sends a failed draft back once
+ * (_tools.ts) runs it and sends a failed draft back once
  * with what to fix.
  *
  * A model grading its own work skews kind to it; a second one in a clean
@@ -105,6 +110,8 @@ export async function checkDraft(o: {
   his: readonly string[];
   to: string;
   checksToday: number;
+  /** The calling tool's logger: the line askClaude writes is counts. */
+  log: ClaudeCaller["log"];
 }): Promise<CheckResult> {
   const started = Date.now();
   const coded = registerIssues(o.draft, o.his, o.to);
@@ -114,13 +121,13 @@ export async function checkDraft(o: {
     return { ...r, verdict, issues, ms: Date.now() - started };
   };
 
-  const tokens = [secretValue("CLAUDE_CODE_OAUTH_TOKEN") ?? "", secretValue("CLAUDE_CODE_OAUTH_TOKEN_2") ?? ""];
+  const tokens = [claude.CLAUDE_CODE_OAUTH_TOKEN ?? "", claude.CLAUDE_CODE_OAUTH_TOKEN_2 ?? ""];
   if (!tokens.some(Boolean) && !claudeOwnLogin()) {
     return done({ verdict: "skipped", skipped: "no token", tokens: 0 });
   }
   if (o.checksToday >= cap()) return done({ verdict: "skipped", skipped: "cap", tokens: 0 });
 
-  const answer = await askClaude({ log, signal: AbortSignal.timeout(DEADLINE_MS + 5_000) }, tokens, {
+  const answer = await askClaude({ log: o.log, signal: AbortSignal.timeout(DEADLINE_MS + 5_000) }, tokens, {
     who: "Draft check",
     system: SYSTEM,
     prompt: `${o.context}\n\n## The draft\nWhy it was written: ${o.why ?? "-"}\n<<<\n${o.draft}\n>>>`,

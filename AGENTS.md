@@ -86,17 +86,15 @@ src/server/        app (webhooks + REST + dashboard routes) · views (HTML)
                    view-render (panels and charts — note the name collision:
                    `src/server/views.ts` is the dashboard's HTML, while
                    `src/core/views.ts` is the Views *feature*)
-                   mcp (the endpoint an AI agent connects to)
-                   mcp-tables (the same, for data tables, on its own tokens)
-                   mcp-assistant (the personal assistant: chats, drafts,
-                   questions, Notion tasks — on its own tokens again)
-                   assistant-check (the second reader of every draft)
-                   assistant-writer (one chat, one decision — the chat pass)
-                   assistant-eval (the replay test that grades the writer)
+                   mcp (the endpoint an AI client connects to — one
+                   router for every token, whatever its grants or agent)
+                   mcp-tables (the data-table tools, the `tables` grant)
                    inspect (what app.ts and mcp.ts must not decide twice)
 src/connectors/    the MCP tools a platform offers a "connections" token —
                    one file per platform, registered in index.ts. See
                    "Adding a connector" below.
+src/core/agents.ts a project's own AI agent (`defineAgent`): its tools,
+                   served over MCP and in-process. See "Adding an agent".
 tables/            data tables — one file per table, `defineTable()` as the
                    default export, grouped by subdirectory the way workflows
                    are (`tables/personal-finance/expenses.ts`). Structure only;
@@ -107,7 +105,9 @@ views/             read-only pages — one file per view, `defineView()` as the
                    "Views" below.
 workflows/         user workflows — the only directory most changes touch
                    subdirectories just group them: workflows/pblsh/thing.ts
-                   loads the same way, and names stay global and flat
+                   loads the same way, and names stay global and flat.
+                   A project's agent lives here too, beside its workflows
+                   (workflows/personal-assistant/agent.ts and its _tools.ts)
 ```
 
 `src/core/define.ts` is the **public API surface** that workflow files import
@@ -122,8 +122,9 @@ changes.
 
 A file whose basename starts with `_` is skipped by the loader — the one way to
 put shared code inside `workflows/`, for a folder of related workflows that
-needs it. Everything else there must default-export a workflow, and not doing
-so is an error rather than a quiet skip, because that is what catches a typo'd
+needs it. Everything else there must default-export a workflow (or an agent,
+`defineAgent` — see "Adding an agent"), and not doing so is an error rather
+than a quiet skip, because that is what catches a typo'd
 export. Keep `_` files to what one folder owns; the moment two folders want the
 same helper it is an integration.
 
@@ -246,7 +247,7 @@ debugging `console.log` — follows the same rules. Telegram's service account
 (777000) is never read: it is where login codes arrive.
 
 **The assistant cannot send, and that is enforced by absence.**
-`src/server/mcp-assistant.ts` has no tool that sends a message: `draft_reply`
+`workflows/personal-assistant/_tools.ts` has no tool that sends a message: `draft_reply`
 writes a `pending` row and stops, and only a person's approval moves it on —
 on a path that does not go through that endpoint. Do not add a "send" or
 "approve" tool there, however convenient it would be for testing; a prompt
@@ -256,10 +257,12 @@ handed to the model inside a message cannot become a recipient. (`find_chat`
 was the one other way into `people`; it went with WhatsApp on 2026-10-25 —
 Evolution was shut down, and `draft_reply` refuses a WhatsApp chat.) The
 sync records only what is inside the chat log's window
-(`chatLogKeepsFrom`) and returns counts, never message text. The endpoint's log lines
-carry the tool name and the refusal, never the arguments, which are messages.
-An `assistant` token is refused by `/mcp` and `/mcp/tables` (it has no grants), and a
-grants token by `/mcp/assistant`.
+(`chatLogKeepsFrom`) and returns counts, never message text. A failed tool's
+log line carries its name and the token's label, never the arguments, which
+are messages — a `ToolRefusal` adds its `logAs`, which must hold no words
+either. The assistant is the `assistant` agent (`agent.ts`): its token is
+for it alone, refused by `/mcp` and `/mcp/tables`, and no other token —
+`MCP_TOKEN` included — reaches its tools.
 
 **One WhatsApp person is one chat key, and links never come from names.**
 A person can arrive as a phone number and as a hidden privacy id (`@lid`).
@@ -331,11 +334,12 @@ inside `personal-assistant-bot`'s run by spawning the Claude Code CLI
 headless, signed in with the optional secret `CLAUDE_CODE_OAUTH_TOKEN` (from
 `claude setup-token`) — no API key. `CLAUDE_CODE_OAUTH_TOKEN_2`, from a
 second account, is tried only when the first failed before any tool ran (a
-usage limit, a lapsed sign-in): a retry after a tool call could draft twice. Its tools are /mcp/assistant itself, on
-127.0.0.1, with a token `mintProcessToken` keeps in memory (never stored,
-gone on restart) and limited by `McpIdentity.tools`, which the endpoint
-enforces on `tools/list` and `tools/call`. Do not give it a tool of its
-own; add it to the endpoint. The CLI is started with `--tools ""`,
+usage limit, a lapsed sign-in): a retry after a tool call could draft twice. Its tools are the agent's own, at /mcp/assistant on
+127.0.0.1, through `agentConnection("assistant", { profile: "live" })`: a
+token kept in memory (never stored, gone on restart) whose `McpIdentity.tools`
+is the `live` profile in `agent.ts`, enforced by the server on `tools/list`
+and `tools/call`. Do not give it a tool of its own; add it to `_tools.ts`,
+and to the profile's `exclude` if the hourly run's alone. The CLI is started with `--tools ""`,
 `--strict-mcp-config`, `--permission-mode dontAsk`, an empty home and an
 environment of a handful of variables: **never pass it `process.env`**,
 which holds every secret this server has, and never let it have a shell —
@@ -355,12 +359,12 @@ and can reach the network is one persuasive message away from sending that
 token somewhere. Do not add Bash "just for the date".
 
 **Every draft goes past a second reader, and it fails open.** `draft_reply`
-runs `checkDraft` (`src/server/assistant-check.ts`) before it saves: a code
+runs `checkDraft` (`workflows/personal-assistant/_check.ts`) before it saves: a code
 check for a Malay pronoun he never uses with that person, then a fresh
 Claude with no tools holding the draft against `checkContext` — who it is
 for, the lessons, the conversation, his own words (`voiceOf`) and the
 chat's earlier drafts. A first try it fails is refused with the issues
-(a `Refusal`, so the log line holds no words) and saved nowhere but
+(a `ToolRefusal`, so the log line holds no words) and saved nowhere but
 `draft_checks`; the next draft to that chat within `RECHECK_MS` is the
 rewrite, checked again and saved whatever the verdict. No token, a practice
 run, a cap (`ASSISTANT_CHECK_MAX_PER_DAY`), a slow or unreadable answer:
@@ -368,7 +372,7 @@ the model's half is skipped and the draft saved. Never make the check able
 to stop a draft for good — a check that blocks is worse than none. All of
 Claude Code — `runClaude`, `askClaude`, the locked-down environment — is
 `src/core/claude-code.ts`, shared by live Maria, learn-style and the
-check; the endpoint reads the token with `secretValue`.
+check; `_check.ts` declares the two optional token secrets itself.
 
 **`thread` shows his words, not a description of them.** `voiceOf` adds his
 earlier messages to the chat (the log keeps his 90 days), his messages to
@@ -381,9 +385,9 @@ cut takes the end, which is his words and his comments.
 
 **The chat pass decides one chat per call, and applies it through the
 tools.** `personal-assistant-chat-pass` is the loop in code; the model in
-`src/server/assistant-writer.ts` sees one chat (`passContext`) and answers
+`workflows/personal-assistant/_writer.ts` sees one chat (`passContext`) and answers
 with one JSON decision, and the workflow carries it out with
-`assistantTools` — `update_person`, `draft_reply`, `create_task`,
+`agentTools("assistant")` — `update_person`, `draft_reply`, `create_task`,
 `open_loop` — never by writing rows itself, so every refusal, the second
 reader and his-priority-wins hold for it exactly as for the routine. Keep
 it that way: a shortcut that inserts a draft directly skips the check and
@@ -403,7 +407,7 @@ corrected drafts, the lessons and the brain as they stood at `asOf`
 (`chatThread`/`hisMessages` take `before`; `voiceOf`, `draftHistory` and
 `lessonsFor` take `asOf`). `personal-assistant-eval` replays past moments
 through it and grades the drafts against what he really sent
-(`src/server/assistant-eval.ts`), so anything new added to the context must
+(`workflows/personal-assistant/_eval.ts`), so anything new added to the context must
 either honour `asOf` or be left out when it is set — open loops, his tasks
 and people notes on a sorting case already are — or the test shows the
 model the answer and scores it for reading it. Variants are code
@@ -1345,8 +1349,8 @@ connectors.
    byte ceiling. A failed connection tool logs only its name and the token's
    label, because the arguments can carry a chat name or a search phrase.
 6. A `write` tool is only listed for a `full` grant. Adding one that sends as
-   somebody's account is a decision of its own. `/mcp/assistant` deliberately
-   cannot send at all.
+   somebody's account is a decision of its own. The personal assistant's
+   agent deliberately cannot send at all.
 
 Credentials are read on every call (`credentialValues`), so a re-login on the
 Credentials tab takes effect without a restart. A grant whose limits no longer
@@ -1361,15 +1365,44 @@ in a URL: URLs end up in proxy logs, the debug request log and claude.ai's
 organization connector list. The shared paths stay for existing clients and
 for `MCP_TOKEN`, which has no id.
 
-**Planned: the personal assistant.** `/mcp/assistant` is the one thing left
-outside grants, and it is in the wrong place. About 3,000 lines of tools
-specific to one person's assistant live in `src/server/mcp-assistant.ts`,
-in the core. They belong beside their workflows and tables in
-`workflows/personal-assistant/`, declared there as a project's own toolset
-through a public helper re-exported from `define.ts`, and served as one more
-grant. Keep `/mcp/assistant` as an alias, and keep live Maria's in-process
-token (`mintProcessToken`, `McpIdentity.tools`) working. Until then an
-assistant token has no grants, and its page only changes its access.
+## Adding an agent
+
+An agent is a project's own AI agent: a set of tools with its rules inside
+them, and the instructions a client is handed with them. It is not a
+connector. A connector is something the runner *offers* and a token picks
+among; an agent is something a project *builds*, usually on top of its
+tables, workflows and the chat log. So it lives in the project's folder, not
+in `src/`, and a token is *for* an agent rather than given it beside other
+things.
+
+1. A file under `workflows/<project>/` whose default export is
+   `defineAgent({ name, label, description, instructions, tools, profiles })`
+   (`src/core/agents.ts`). The loader collects it with the workflows and
+   swaps it on a reload; the Agents tab and the MCP tab's token form list it.
+   Put the tools in a `_` file beside it. Like every workflow file, both import
+   only from `define.ts`.
+2. A tool is `{ name, description, access, inputSchema, run(args, caller) }`.
+   Names are bare and must stay stable — a client's prompt names them.
+   `caller.label` is who wrote a row; `caller.log` is the agent's logger.
+   With no `ctx`, a tool uses `table(name)`, `startWorkflow(name, input)`,
+   `workflowLoaded`, `workflowRuns` and `workflowIsLive` from `define.ts`.
+3. **The rules go in the tool.** Refuse a recipient that is not already
+   known, an id that did not come from your own tables, a write the agent
+   should never make. A prompt asking the model to behave is not a rule.
+4. **Logs name the tool, never its arguments.** A tool error is logged as
+   `MCP tool <name> failed (token "<label>")`; throw a `ToolRefusal` to add a
+   `logAs` that holds no words.
+5. `profiles` names subsets for the things that drive it — `{ exclude: [...] }`
+   or a list. `agentConnection(name, { label, profile })` hands a CLI a URL on
+   127.0.0.1 and an in-memory token limited to that profile, enforced by the
+   server; `agentTools(name, { label, profile })` is the same in-process.
+
+Served at a token's own `/mcp/<id>` and at `/mcp/<name>`. A token for an
+agent holds exactly one grant, the agent's (`validateGrants` refuses mixing
+it with anything), and is refused at `/mcp` and `/mcp/tables`. `MCP_TOKEN`
+does not reach an agent. A token minted with `audience: "assistant"` before
+agents existed is read as a grant on the agent named `assistant`
+(`tokenGrants`), so do not rename that one.
 
 ## Adding a platform to the Credentials tab
 
@@ -1536,6 +1569,16 @@ These were decided deliberately. Raise a trade-off before changing any of them:
   this credential, this access, these limits. It never describes a call the
   server should make. Folder names and chat ids live in the token row, never
   in the repo.
+
+- **An agent is the project's, and a token for one is for it alone.** The
+  core knows "a project can define an agent" and nothing about any one of
+  them: an agent's tools live in its project's folder, and nothing under
+  `src/` names one (the one exception is `tokenGrants` reading old
+  `assistant` rows). Mixing an agent with operations or an account in one
+  token is refused, because an agent is an application with its own rules,
+  not a capability — and its bare tool names would collide. The loop that
+  drives an agent is never the runner's: there is no agent runtime here,
+  only tools, and a CLI or a workflow's own code decides what to call.
 
 - **A platform's fields and its test live in code.** `src/core/providers.ts`,
   not a browser form and not a database row. A test request the server executes,

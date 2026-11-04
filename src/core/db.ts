@@ -683,7 +683,7 @@ const stmts = {
   // data-table token whose connections are edited becomes a connections token
   // — its tools are its grants from then on, whatever it was minted as.
   updateMcpTokenGrants: db.prepare(
-    `UPDATE mcp_tokens SET grants = ?, scope = ?, audience = 'connections' WHERE id = ?`,
+    `UPDATE mcp_tokens SET grants = ?, scope = ?, audience = ? WHERE id = ?`,
   ),
   insertMcpToken: db.prepare(
     `INSERT INTO mcp_tokens (id, name, scope, hash, prefix, created_at, tables, audience, grants)
@@ -1208,7 +1208,7 @@ export const store = {
     prefix: string;
     /** Data tables this token may reach, or null for every one of them. */
     tables?: string[] | null;
-    /** Which MCP endpoint it is for: "ops", "tables", "assistant" or "connections". */
+    /** What it is for: "connections" or "agent" now; "ops", "tables" or "assistant" on older rows. */
     audience?: string | null;
     /** The connections a "connections" token may use, already validated. */
     grants?: unknown[] | null;
@@ -1234,8 +1234,8 @@ export const store = {
       .changes > 0,
 
   /** Replaces a connections token's grants, already validated by the caller. */
-  updateMcpTokenGrants: (id: string, grants: unknown[], scope: string): boolean =>
-    stmts.updateMcpTokenGrants.run(JSON.stringify(grants), scope, id).changes > 0,
+  updateMcpTokenGrants: (id: string, grants: unknown[], scope: string, audience: string): boolean =>
+    stmts.updateMcpTokenGrants.run(JSON.stringify(grants), scope, audience, id).changes > 0,
 
   /**
    * Records that a token was just used. The client name is only known on the

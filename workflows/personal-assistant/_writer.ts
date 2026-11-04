@@ -1,10 +1,16 @@
 import { z } from "zod";
-import { askClaude, type ClaudeCaller } from "../core/claude-code.ts";
-import { chatMessage, chatThread, waitingChats, type ChatChannel, type StoredMessage } from "../core/chat-log.ts";
-import { isEnabled } from "../core/pause.ts";
-import { currentRegistry } from "../core/runner.ts";
-import { schedulesOn } from "../core/scheduler.ts";
-import { table, type Row } from "../core/tables.ts";
+import {
+  askClaude,
+  chatMessage,
+  chatThread,
+  table,
+  waitingChats,
+  workflowIsLive,
+  type ChatChannel,
+  type ClaudeCaller,
+  type Row,
+  type StoredMessage,
+} from "../../src/core/define.ts";
 import {
   activeFacts,
   appOf,
@@ -23,7 +29,7 @@ import {
   threadLines,
   voiceOf,
   voiceText,
-} from "./mcp-assistant.ts";
+} from "./_tools.ts";
 
 /**
  * The writer — one chat, one decision, one call.
@@ -38,7 +44,7 @@ import {
  * answers with one decision as JSON. Code applies it through the same tools
  * the routine uses, so every refusal and the second reader still stand.
  *
- * The same call is what the replay test (src/server/assistant-eval.ts)
+ * The same call is what the replay test (_eval.ts)
  * grades, with `asOf` set to a moment in the past: the context is built from
  * what existed then, so the reply being graded is never in front of it.
  *
@@ -299,8 +305,7 @@ export const CHAT_PASS_WORKFLOW = "personal-assistant-chat-pass";
  * (paused, or a laptop with SCHEDULE=off), the routine does them as before.
  */
 export function chatPassOn(): boolean {
-  const wf = currentRegistry()?.get(CHAT_PASS_WORKFLOW);
-  return Boolean(wf && isEnabled(wf) && schedulesOn());
+  return workflowIsLive(CHAT_PASS_WORKFLOW);
 }
 
 /** How far back a chat counts as waiting. */

@@ -42,7 +42,7 @@ export function setRegistry(r: Registry): void {
   registry = r;
 }
 
-/** The registry `setRegistry` was given — for in-process callers outside a run, like live Maria's tools. */
+/** The registry `setRegistry` was given — for in-process callers outside a run, like an agent's tools. */
 export function currentRegistry(): Registry | undefined {
   return registry;
 }

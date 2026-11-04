@@ -1,12 +1,13 @@
 /**
- * The personal assistant's MCP endpoint — what a scheduled Claude sees of your
- * WhatsApp and Telegram, and the only things it can do about them.
+ * The personal assistant's tools — what Maria sees of your Telegram (and the
+ * WhatsApp history), and the only things she can do about it.
  *
- * Mounted at POST /mcp/assistant, same transport as its siblings: JSON-RPC in
- * a POST body, no SDK, no session. A token has to be minted for it (audience
- * `assistant`); an operations or data-table token is refused, and an
- * assistant token is refused by both of those — this one reads private
- * messages, and nothing else should hand that out by accident.
+ * Declared as the `assistant` agent in `agent.ts` (defineAgent,
+ * src/core/agents.ts), so the runner serves them over MCP to a token minted
+ * for the agent — at the token's own /mcp/<id> and at /mcp/assistant — and
+ * a workflow can call them in-process (`agentTools`). A token for the agent
+ * is for it alone: it never carries operations or other tools beside these,
+ * and nothing else is handed private messages by accident.
  *
  * ## What it can and cannot do
  *
@@ -80,29 +81,29 @@
  * endpoints: every byte is context, paid for on every later turn.
  */
 
-import { Hono } from "hono";
-import type { ToolSummary } from "./mcp.ts";
-import { log } from "../core/logger.ts";
-import { chatMessage, chatThread, hisMessages, lastWordMine, waitingChats, type ChatChannel, type StoredMessage } from "../core/chat-log.ts";
-import { table, type Row } from "../core/tables.ts";
-import { canonicalKey, linkChats } from "../core/chat-link.ts";
-import { scorecard, scorecardText } from "../core/scorecard.ts";
-import { checkDraft } from "./assistant-check.ts";
-import { chatPassOn } from "./assistant-writer.ts";
-import { currentRegistry, runWorkflow } from "../core/runner.ts";
-import { store } from "../core/db.ts";
 import {
-  identify,
-  mayUseEndpoint,
-  mcpEnabled,
-  mintProcessToken,
-  noteUse,
-  wrongEndpoint,
-  type McpIdentity,
-} from "../core/mcp-tokens.ts";
-import type { Registry } from "../core/loader.ts";
+  chatMessage,
+  chatThread,
+  hisMessages,
+  lastWordMine,
+  waitingChats,
+  table,
+  canonicalKey,
+  linkChats,
+  scorecard,
+  scorecardText,
+  startWorkflow,
+  workflowLoaded,
+  workflowRuns,
+  ToolRefusal,
+  type AgentTool,
+  type ChatChannel,
+  type Row,
+  type StoredMessage,
+} from "../../src/core/define.ts";
+import { checkDraft } from "./_check.ts";
+import { chatPassOn } from "./_writer.ts";
 
-const PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const MAX_BYTES = Number(process.env.MCP_MAX_BYTES ?? 24_000);
 /** Times are shown in this zone — the assistant talks to a person, not a log. */
 const TZ = process.env.ASSISTANT_TZ ?? "Asia/Kuala_Lumpur";
@@ -861,19 +862,6 @@ export function tasksNaming(person: Row | undefined): string[] {
     .map((t) => String(t.title));
 }
 
-/**
- * A refusal whose text holds somebody's words — the draft check's issues.
- * The model gets the whole text; the log gets `logAs`, which holds none.
- */
-class Refusal extends Error {
-  constructor(
-    message: string,
-    readonly logAs: string,
-  ) {
-    super(message);
-  }
-}
-
 /** A draft the check sent back this recently makes the next one for that chat its rewrite. */
 const RECHECK_MS = 20 * 60_000;
 /** Lessons about sorting chats, To Do tasks and follow-ups say nothing about how a draft reads. */
@@ -903,23 +891,15 @@ function checkContext(key: string, channel: ChatChannel, chat: string, person: R
 
 /* ----------------------------------------------------------------- tools */
 
-interface Tool {
-  name: string;
-  description: string;
-  scope: "read" | "write";
-  inputSchema: object;
-  run(args: Record<string, unknown>, identity: McpIdentity): string | Promise<string>;
-}
-
 const CHAT_ARG = {
   chat: { type: "string", description: "Chat key, e.g. whatsapp:6012…@s.whatsapp.net or telegram:-100…" },
 };
 
-function tools(registry: Registry): Tool[] {
-  return [
+/** Every tool the assistant has, in the order a client lists them. */
+export const TOOLS: AgentTool[] = [
     {
       name: "now",
-      scope: "read",
+      access: "read",
       description: "The user's local date and time, and whether a digest is due this run.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       run() {
@@ -946,7 +926,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "waiting",
-      scope: "read",
+      access: "read",
       description:
         "Chats where they spoke last and you have not replied, priority first then longest wait. " +
         "Excludes chats set to ignore. `replies to` says whose message the newest one answers — " +
@@ -1028,7 +1008,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "thread",
-      scope: "read",
+      access: "read",
       description: "One chat's recent messages, oldest first, with what people knows about it.",
       inputSchema: {
         type: "object",
@@ -1066,7 +1046,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "people",
-      scope: "read",
+      access: "read",
       description:
         "Known chats with priority, who set it (him, or you with your reason) and notes. " +
         "filter: unsorted | always | normal | ignore | all.",
@@ -1106,7 +1086,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "update_person",
-      scope: "write",
+      access: "write",
       description:
         "Sets a chat's priority, replaces its notes, or names it when the user told you who it is. " +
         "A priority is either YOUR call — pass `reason`, one line on why; he sees it on your " +
@@ -1145,7 +1125,7 @@ function tools(registry: Registry): Tool[] {
         required: ["chat"],
         additionalProperties: false,
       },
-      run(args, identity) {
+      run(args, caller) {
         let { key } = chatArg(args);
         let person = peopleByKey().get(key);
         if (!person) throw new Error(`${key} is not in people`);
@@ -1156,7 +1136,7 @@ function tools(registry: Registry): Tool[] {
           const other = chatArg(args, "same_as");
           const them = peopleByKey().get(other.key);
           if (!them) throw new Error(`${other.key} is not in people — only two chats he has can be one person`);
-          const done = linkChats(key, other.key, identity.label);
+          const done = linkChats(key, other.key, caller.label);
           key = done.canonical;
           person = peopleByKey().get(key)!;
           linked = done.linked
@@ -1220,7 +1200,7 @@ function tools(registry: Registry): Tool[] {
           if (linked) return linked.trim();
           throw new Error("Nothing to change — pass priority, notes, name or same_as");
         }
-        table("people").update(String(person.id), patch, { writtenBy: identity.label });
+        table("people").update(String(person.id), patch, { writtenBy: caller.label });
         let sorted = "";
         if (call) {
           // One row per call that is still to go on a card: sorting the same
@@ -1230,11 +1210,11 @@ function tools(registry: Registry): Tool[] {
             .find((r) => !r.card_id && !r.answer);
           const where = chatArg({ chat: key });
           const quote = isOneToOne(key, person) && !person.notes ? quoteFor(where.channel, where.chat) : null;
-          if (unsent) table("sorting").update(String(unsent.id), { ...call, quote }, { writtenBy: identity.label });
-          else table("sorting").insert({ chat_key: key, ...call, quote }, { writtenBy: identity.label });
+          if (unsent) table("sorting").update(String(unsent.id), { ...call, quote }, { writtenBy: caller.label });
+          else table("sorting").insert({ chat_key: key, ...call, quote }, { writtenBy: caller.label });
           sorted = " It goes on your “I sorted these” card when this run ends; he can change it there.";
         } else if (patch.priority_by === "him") {
-          overrule(key, String(patch.priority), identity.label);
+          overrule(key, String(patch.priority), caller.label);
         }
         return `Updated ${person.name}: ${Object.keys(patch).join(", ")}.${linked}${sorted}`;
 
@@ -1243,7 +1223,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "drafts",
-      scope: "read",
+      access: "read",
       description:
         "Drafts and their status. Default shows open ones: pending (waiting for the user) and " +
         "revise (the user commented — redo it with draft_reply and replaces).",
@@ -1284,7 +1264,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "draft_reply",
-      scope: "write",
+      access: "write",
       description:
         "Saves a reply for the user to approve. Sends NOTHING — the user approves, edits or skips " +
         "it. Write it the way they write to this person (thread shows his own words). One open draft per chat: to redo one, " +
@@ -1302,7 +1282,7 @@ function tools(registry: Registry): Tool[] {
         required: ["chat", "text", "why"],
         additionalProperties: false,
       },
-      async run(args, identity) {
+      async run(args, caller) {
         const { key, channel, chat } = chatArg(args);
         const person = peopleByKey().get(key);
         // Only somebody who is already a chat — see the header.
@@ -1330,7 +1310,7 @@ function tools(registry: Registry): Tool[] {
           );
         }
 
-        // The second reader (src/server/assistant-check.ts). A first try it
+        // The second reader (_check.ts). A first try it
         // fails goes back with what to fix; the rewrite is checked again and
         // saved either way, so a check never stops a draft reaching him.
         const checks = table("draft_checks");
@@ -1346,6 +1326,7 @@ function tools(registry: Registry): Tool[] {
           his,
           to: String(person.name),
           checksToday: checks.query({ where: [{ column: "created_at", op: ">=", value: Date.now() - 86_400_000 }], limit: 1000 }).length,
+          log: caller.log,
         });
         const { row: checked } = checks.insert(
           {
@@ -1358,14 +1339,14 @@ function tools(registry: Registry): Tool[] {
             skipped: verdict.skipped ?? null,
             ms: verdict.ms,
           },
-          { writtenBy: identity.label },
+          { writtenBy: caller.label },
         );
-        log.info(
+        caller.log.info(
           `Draft check for ${key}: ${verdict.verdict}${verdict.skipped ? ` (${verdict.skipped})` : ""}, ` +
             `${verdict.issues.length} issue(s), attempt ${attempt}, ${verdict.ms}ms`,
         );
         if (verdict.verdict === "fail" && attempt === 1) {
-          throw new Refusal(
+          throw new ToolRefusal(
             `Not saved — a second reader checked it against his messages to ${person.name}, the lessons and what he ` +
               `said about earlier drafts, and found:\n${verdict.issues.map((i) => `- ${i}`).join("\n")}\n\n` +
               "Rewrite it to fix exactly these — keep everything else, and every change he asked for — and call " +
@@ -1385,12 +1366,12 @@ function tools(registry: Registry): Tool[] {
             chat_url: chatUrl(channel, chat),
             revision_of: previous ? String(previous.id) : null,
           },
-          { writtenBy: identity.label },
+          { writtenBy: caller.label },
         );
         if (previous) {
-          table("drafts").update(String(previous.id), { status: "replaced" }, { writtenBy: identity.label });
+          table("drafts").update(String(previous.id), { status: "replaced" }, { writtenBy: caller.label });
         }
-        checks.update(String(checked.id), { draft_id: String(row.id) }, { writtenBy: identity.label });
+        checks.update(String(checked.id), { draft_id: String(row.id) }, { writtenBy: caller.label });
         const still =
           verdict.verdict === "fail"
             ? ` The check still saw:\n${verdict.issues.map((i) => `- ${i}`).join("\n")}\nHe will judge it.`
@@ -1401,7 +1382,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "withdraw_draft",
-      scope: "write",
+      access: "write",
       description:
         "Takes back one of your open drafts (pending or revise) that should not be sent at all — " +
         "he said it was not his to answer, it is no longer needed, or he already replied himself. " +
@@ -1416,7 +1397,7 @@ function tools(registry: Registry): Tool[] {
         required: ["id", "reason"],
         additionalProperties: false,
       },
-      run(args, identity) {
+      run(args, caller) {
         const d = rowId("drafts", str(args, "id"));
         if (!OPEN_DRAFT.has(String(d.status))) return `Draft ${d.id} is already ${d.status}; nothing to withdraw.`;
         const reason = str(args, "reason");
@@ -1427,7 +1408,7 @@ function tools(registry: Registry): Tool[] {
           // His comment is still to be learned from; a draft he never
           // commented on has nothing to teach.
           { status: "withdrawn", reason, card_outdated: Boolean(d.card_id), learned: !d.feedback },
-          { writtenBy: identity.label },
+          { writtenBy: caller.label },
         );
         return `Withdrew draft ${d.id} for ${d.chat_name}.${d.feedback ? " His comment on it is in outcomes — learn from it." : ""}`;
       },
@@ -1435,7 +1416,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "awaiting",
-      scope: "read",
+      access: "read",
       description:
         "The other side of `waiting`: chats where HE wrote last and nobody has answered for over an " +
         "hour — the messages a follow-up may be worth offering on. Leaves out chats set to ignore, " +
@@ -1480,7 +1461,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "offer_followup",
-      scope: "write",
+      access: "write",
       description:
         "Offers him a follow-up on a message he sent that nobody has answered (from `awaiting`). He " +
         "gets a card — follow up in 2 days, 1 week, 2 weeks, or no need — and a tap opens a loop " +
@@ -1497,7 +1478,7 @@ function tools(registry: Registry): Tool[] {
         required: ["chat", "what", "title", "category"],
         additionalProperties: false,
       },
-      run(args, identity) {
+      run(args, caller) {
         const { key, channel, chat } = chatArg(args);
         const person = peopleByKey().get(key);
         if (!person) throw new Error(`${key} is not in people`);
@@ -1525,7 +1506,7 @@ function tools(registry: Registry): Tool[] {
             category,
             quote: mine.map((m) => line(body(m), 200)).join("\n"),
           },
-          { writtenBy: identity.label },
+          { writtenBy: caller.label },
         );
         return `Follow-up ${row.id} offered: he gets a card within a minute. Nothing more to do — his choice comes back in outcomes.`;
       },
@@ -1533,7 +1514,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "questions",
-      scope: "read",
+      access: "read",
       description:
         "Your questions with the user's answers, and notes the user sent you (kind note). Default " +
         "shows answered ones not yet acted on — act on each, then close_question. A note with `re` " +
@@ -1572,7 +1553,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "ask",
-      scope: "write",
+      access: "write",
       description:
         "Asks the user something only he can answer. Never how important a chat is — decide that " +
         "yourself with update_person (priority + reason). Answers arrive later; read them with " +
@@ -1598,7 +1579,7 @@ function tools(registry: Registry): Tool[] {
         required: ["question"],
         additionalProperties: false,
       },
-      run(args, identity) {
+      run(args, caller) {
         const question = str(args, "question");
         if (!question) throw new Error("question is empty");
         if (question.length > 500) throw new Error("question is over 500 characters");
@@ -1690,7 +1671,7 @@ function tools(registry: Registry): Tool[] {
             // The card shows it under the question, so he can tell who it is.
             quote: chatRef ? quoteFor(chatRef.channel, chatRef.chat) : null,
           },
-          { writtenBy: identity.label },
+          { writtenBy: caller.label },
         );
         return `Question ${row.id} saved; the user will be asked.`;
       },
@@ -1698,7 +1679,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "answer_question",
-      scope: "write",
+      access: "write",
       description:
         "Records the user's answer to one of your open questions, when they gave it in words in " +
         "a note (its `re` is the question). Put the answer as you understood it. The card on " +
@@ -1712,7 +1693,7 @@ function tools(registry: Registry): Tool[] {
         required: ["id", "answer"],
         additionalProperties: false,
       },
-      run(args, identity) {
+      run(args, caller) {
         const q = rowId("questions", str(args, "id"));
         if (kindOf(q) !== "question") throw new Error(`${q.id} is a ${kindOf(q)}, not a question`);
         if (q.status !== "open") return `${q.id} is already ${q.status} (answer: ${q.answer ?? "-"}).`;
@@ -1722,7 +1703,7 @@ function tools(registry: Registry): Tool[] {
         table("questions").update(
           String(q.id),
           { answer, status: "answered", answered_at: Date.now(), card_outdated: true },
-          { writtenBy: identity.label },
+          { writtenBy: caller.label },
         );
         return `Recorded on ${q.id}; their card will show it. Now act on it and close_question.`;
       },
@@ -1730,7 +1711,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "close_question",
-      scope: "write",
+      access: "write",
       description:
         "Marks an answered question or note done once you have acted on it. Closing a question " +
         "that is still open drops it: its card says it is no longer needed and loses its buttons.",
@@ -1740,14 +1721,14 @@ function tools(registry: Registry): Tool[] {
         required: ["id"],
         additionalProperties: false,
       },
-      run(args, identity) {
+      run(args, caller) {
         const q = rowId("questions", str(args, "id"));
         if (q.status === "done") return `${q.id} was already done.`;
         const dropped = q.status === "open" && kindOf(q) === "question";
         table("questions").update(
           String(q.id),
           { status: "done", ...(dropped && q.card_id ? { card_outdated: true } : {}) },
-          { writtenBy: identity.label },
+          { writtenBy: caller.label },
         );
         return dropped ? `Dropped ${q.id}; its card will say it is no longer needed.` : `Closed ${q.id}.`;
       },
@@ -1755,7 +1736,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "lessons",
-      scope: "read",
+      access: "read",
       description:
         "What the user has taught you about how to act. Read at the start of every run and " +
         "follow them. With chat: the general lessons plus that chat's.",
@@ -1785,7 +1766,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "outcomes",
-      scope: "read",
+      access: "read",
       description:
         "Drafts that ended — sent as written, skipped, replaced or withdrawn after a comment — notes on " +
         "To Do tasks the user reacted to (edited, deleted, finished the task, undid a status you set), chats you sorted " +
@@ -1890,7 +1871,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "scorecard",
-      scope: "read",
+      access: "read",
       description:
         "Your numbers for the last half-week (Sun→Wed or Wed→Sun, ending 20:00), against the same days " +
         "a week earlier: drafts sent as written, questions per day, tasks kept as made, minutes to answer " +
@@ -1917,7 +1898,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "learn",
-      scope: "write",
+      access: "write",
       description:
         "Records a lesson — one instruction you will follow from now on — and marks the drafts it " +
         "came from as learned. Omit lesson to mark drafts learned with nothing new to take from them. " +
@@ -1952,7 +1933,7 @@ function tools(registry: Registry): Tool[] {
         },
         additionalProperties: false,
       },
-      run(args, identity) {
+      run(args, caller) {
         const lesson = str(args, "lesson");
         const drafts = Array.isArray(args["from_drafts"]) ? args["from_drafts"].map(String) : [];
         const notes = Array.isArray(args["from_tasks"]) ? args["from_tasks"].map(String) : [];
@@ -1983,36 +1964,36 @@ function tools(registry: Registry): Tool[] {
                     ? [...drafts, ...notes, ...sorts, ...follows].join(" ")
                     : (str(args, "evidence") ?? null),
               },
-              { writtenBy: identity.label },
+              { writtenBy: caller.label },
             );
             out.push(`Learned (${row.id}).`);
           }
           const retire = str(args, "retire");
           if (retire) {
             const old = rowId("lessons", retire);
-            table("lessons").update(String(old.id), { retired: true }, { writtenBy: identity.label });
+            table("lessons").update(String(old.id), { retired: true }, { writtenBy: caller.label });
             out.push(`Retired ${old.id}.`);
           }
         }
 
         for (const id of drafts) {
           const d = rowId("drafts", id);
-          table("drafts").update(String(d.id), { learned: true }, { writtenBy: identity.label });
+          table("drafts").update(String(d.id), { learned: true }, { writtenBy: caller.label });
         }
         if (drafts.length) out.push(`${drafts.length} draft(s) marked learned.`);
         for (const id of notes) {
           const w = rowId("task_work", id);
-          table("task_work").update(String(w.id), { learned: true }, { writtenBy: identity.label });
+          table("task_work").update(String(w.id), { learned: true }, { writtenBy: caller.label });
         }
         if (notes.length) out.push(`${notes.length} task note(s) marked learned.`);
         for (const id of sorts) {
           const r = rowId("sorting", id);
-          table("sorting").update(String(r.id), { learned: true }, { writtenBy: identity.label });
+          table("sorting").update(String(r.id), { learned: true }, { writtenBy: caller.label });
         }
         if (sorts.length) out.push(`${sorts.length} sorted chat(s) marked learned.`);
         for (const id of follows) {
           const f = rowId("followups", id);
-          table("followups").update(String(f.id), { learned: true }, { writtenBy: identity.label });
+          table("followups").update(String(f.id), { learned: true }, { writtenBy: caller.label });
         }
         if (follows.length) out.push(`${follows.length} follow-up(s) marked learned.`);
         return out.join(" ");
@@ -2021,7 +2002,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "brain",
-      scope: "read",
+      access: "read",
       description:
         "What you know is true about him and his world — his roles and companies, projects, who " +
         "people are to him, his preferences — grouped by topic. Read at the start of every run. " +
@@ -2065,7 +2046,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "remember",
-      scope: "write",
+      access: "write",
       description:
         "Adds one lasting fact to the brain — something true about him or his world that he told " +
         "you or a chat made plain: a role, a company, a project, who someone is to him, a " +
@@ -2089,7 +2070,7 @@ function tools(registry: Registry): Tool[] {
         required: ["topic", "fact", "source"],
         additionalProperties: false,
       },
-      run(args, identity) {
+      run(args, caller) {
         const topic = str(args, "topic");
         if (!BRAIN_TOPICS.includes(topic as (typeof BRAIN_TOPICS)[number])) {
           throw new Error(`topic is ${BRAIN_TOPICS.join(", ")}`);
@@ -2117,14 +2098,14 @@ function tools(registry: Registry): Tool[] {
         } else {
           const { row } = table("brain").insert(
             { topic, subject, fact, source, evidence: str(args, "evidence") ?? null },
-            { writtenBy: identity.label },
+            { writtenBy: caller.label },
           );
           id = String(row.id);
           out.push(`Remembered (${id}).`);
         }
         for (const o of old) {
           if (String(o.id) === id || o.retired) continue;
-          table("brain").update(String(o.id), { retired: true, retired_why: `Replaced by ${id}` }, { writtenBy: identity.label });
+          table("brain").update(String(o.id), { retired: true, retired_why: `Replaced by ${id}` }, { writtenBy: caller.label });
           out.push(`Retired ${o.id}.`);
         }
         const size = brainSize(activeFacts());
@@ -2137,7 +2118,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "forget",
-      scope: "write",
+      access: "write",
       description:
         "Retires a fact that is no longer true or was wrong — he corrected it, or it stopped " +
         "being so. When there is a right version, use remember with replaces instead. When he " +
@@ -2151,19 +2132,19 @@ function tools(registry: Registry): Tool[] {
         required: ["id", "reason"],
         additionalProperties: false,
       },
-      run(args, identity) {
+      run(args, caller) {
         const f = rowId("brain", str(args, "id"));
         const reason = oneLine(args, "reason", 200, "reason");
         if (!reason) throw new Error("reason is empty — say why");
         if (f.retired) return `${f.id} was already retired (${f.retired_why ?? "no reason given"}).`;
-        table("brain").update(String(f.id), { retired: true, retired_why: reason }, { writtenBy: identity.label });
+        table("brain").update(String(f.id), { retired: true, retired_why: reason }, { writtenBy: caller.label });
         return `Forgot ${f.id}.`;
       },
     },
 
     {
       name: "loops",
-      scope: "read",
+      access: "read",
       description:
         "Things in flight — what is waiting on him or on somebody else — oldest first. `state` " +
         "marks overdue ones and those waiting on them for over 2 days (offer a nudge draft, then " +
@@ -2230,7 +2211,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "open_loop",
-      scope: "write",
+      access: "write",
       description:
         "Records something now in flight, so it is not lost once the chat scrolls past: somebody " +
         "owes him a reply, a document or a time (waiting_on them), or he owes somebody (him). One " +
@@ -2249,7 +2230,7 @@ function tools(registry: Registry): Tool[] {
         required: ["what", "waiting_on"],
         additionalProperties: false,
       },
-      run(args, identity) {
+      run(args, caller) {
         const what = oneLine(args, "what", 200, "what");
         if (!what) throw new Error("what is empty");
         const waiting = str(args, "waiting_on");
@@ -2276,7 +2257,7 @@ function tools(registry: Registry): Tool[] {
             status: "open",
             note: oneLine(args, "note", 300, "note") ?? null,
           },
-          { writtenBy: identity.label },
+          { writtenBy: caller.label },
         );
         return `Loop ${row.id} open — waiting on ${waiting}${due ? `, due ${due}` : ""}.`;
       },
@@ -2284,7 +2265,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "update_loop",
-      scope: "write",
+      access: "write",
       description:
         "Changes an open loop: nudged true once you drafted a nudge for it (the next is offered two " +
         "days later); a new due date; waiting_on when the next move changed sides; a better what; " +
@@ -2302,7 +2283,7 @@ function tools(registry: Registry): Tool[] {
         required: ["id"],
         additionalProperties: false,
       },
-      run(args, identity) {
+      run(args, caller) {
         const l = rowId("loops", str(args, "id"));
         if (l.status !== "open") throw new Error(`${l.id} is ${l.status} — open a new loop instead`);
         const patch: Record<string, unknown> = {};
@@ -2322,14 +2303,14 @@ function tools(registry: Registry): Tool[] {
         const note = oneLine(args, "note", 300, "note");
         if (note) patch.note = note;
         if (Object.keys(patch).length === 0) throw new Error("Nothing to change — pass nudged, due, waiting_on, what or note");
-        table("loops").update(String(l.id), patch, { writtenBy: identity.label });
+        table("loops").update(String(l.id), patch, { writtenBy: caller.label });
         return `Updated ${l.id}: ${Object.keys(patch).map((k) => (k === "nudged_at" ? "nudged" : k)).join(", ")}.`;
       },
     },
 
     {
       name: "close_loop",
-      scope: "write",
+      access: "write",
       description:
         "Closes a loop: done when it settled (they sent it, he replied, the meeting is booked), " +
         "dropped when it stopped mattering. Say how it ended in note. When it settled into " +
@@ -2344,7 +2325,7 @@ function tools(registry: Registry): Tool[] {
         required: ["id"],
         additionalProperties: false,
       },
-      run(args, identity) {
+      run(args, caller) {
         const l = rowId("loops", str(args, "id"));
         if (l.status !== "open") return `${l.id} is already ${l.status}.`;
         const status = str(args, "status") ?? "done";
@@ -2353,7 +2334,7 @@ function tools(registry: Registry): Tool[] {
         table("loops").update(
           String(l.id),
           { status, closed_at: Date.now(), ...(note ? { note } : {}) },
-          { writtenBy: identity.label },
+          { writtenBy: caller.label },
         );
         return `Closed ${l.id} as ${status}.`;
       },
@@ -2361,7 +2342,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "brief",
-      scope: "write",
+      access: "write",
       description:
         "Sends the user an update in their own Telegram chat with you — something they should " +
         "know now, or your answer to a note of theirs (pass reply_to with the note's id, and it is " +
@@ -2379,7 +2360,7 @@ function tools(registry: Registry): Tool[] {
         required: ["text"],
         additionalProperties: false,
       },
-      run(args, identity) {
+      run(args, caller) {
         const text = str(args, "text");
         if (!text) throw new Error("text is empty");
         if (text.length > 3500) throw new Error("A brief is at most 3500 characters");
@@ -2390,7 +2371,7 @@ function tools(registry: Registry): Tool[] {
         const answers = replyTo ? rowId("questions", replyTo) : null;
         const { row } = table("questions").insert(
           { kind: "update", question: text, reply_to: answers ? String(answers.id) : null },
-          { writtenBy: identity.label },
+          { writtenBy: caller.label },
         );
         return `Update ${row.id} queued; it reaches the user within a minute.`;
       },
@@ -2398,7 +2379,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "digest",
-      scope: "write",
+      access: "write",
       description:
         "Sends the morning or night digest — only when `now` says one is due. You give the items, " +
         "it lays them out the same way every time: a title with the date, then each section that " +
@@ -2422,7 +2403,7 @@ function tools(registry: Registry): Tool[] {
         },
         additionalProperties: false,
       },
-      run(args, identity) {
+      run(args, caller) {
         const now = Date.now();
         const local = localParts(now);
         // The hour after counts too: a run that starts at 22:55 sends at 23:01.
@@ -2499,14 +2480,14 @@ function tools(registry: Registry): Tool[] {
         }
         if (!items && !expired.length) blocks.push("All clear — nothing needs you.");
         const text = blocks.join("\n\n");
-        const { row } = table("questions").insert({ kind: "update", question: text }, { writtenBy: identity.label });
+        const { row } = table("questions").insert({ kind: "update", question: text }, { writtenBy: caller.label });
         return `The ${kind} digest (${items} item(s)) is queued as ${row.id}; it reaches him within a minute.`;
       },
     },
 
     {
       name: "log_run",
-      scope: "write",
+      access: "write",
       description:
         "Call once, last thing every run: one or two lines on what you did and why — especially " +
         "why not (\"no tasks: nothing was promised\"). The counts are measured for you.",
@@ -2520,7 +2501,7 @@ function tools(registry: Registry): Tool[] {
         required: ["summary"],
         additionalProperties: false,
       },
-      run(args, identity) {
+      run(args, caller) {
         const summary = str(args, "summary");
         if (!summary) throw new Error("summary is empty");
         if (summary.length > 500) throw new Error("summary is at most 500 characters");
@@ -2534,9 +2515,8 @@ function tools(registry: Registry): Tool[] {
         const waiting = waitingChats(Date.now() - 48 * 3_600_000).filter(
           (w) => people.get(`${w.last.channel}:${w.last.chat}`)?.priority !== "ignore",
         );
-        const tasks = store
-          .runsForWorkflow(TASK_WORKFLOW, 100)
-          .filter((r) => r.started_at > since && r.status === "success")
+        const tasks = workflowRuns(TASK_WORKFLOW, 100)
+          .filter((r) => r.startedAt > since && r.status === "success")
           .filter((r) => {
             try {
               return (JSON.parse(r.result ?? "null") as { created?: boolean } | null)?.created === true;
@@ -2564,7 +2544,7 @@ function tools(registry: Registry): Tool[] {
         };
         table("run_log").insert(
           { summary, trigger: str(args, "trigger") ?? null, problems: str(args, "problems") ?? null, ...counts },
-          { writtenBy: identity.label },
+          { writtenBy: caller.label },
         );
         return (
           `Logged. Waiting: ${counts.waiting_whatsapp} WhatsApp, ${counts.waiting_telegram} Telegram. ` +
@@ -2577,7 +2557,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "create_task",
-      scope: "write",
+      access: "write",
       description:
         "Adds a task to the user's Notion To Do list. For real follow-ups only — something they " +
         "promised or must do. Always give a due date: the one that was said, or your best guess " +
@@ -2608,25 +2588,22 @@ function tools(registry: Registry): Tool[] {
         additionalProperties: false,
       },
       async run(args) {
-        const wf = registry.get(TASK_WORKFLOW);
-        if (!wf) throw new Error(`${TASK_WORKFLOW} is not loaded on this server`);
+        const wf = TASK_WORKFLOW;
+        if (!workflowLoaded(wf)) throw new Error(`${wf} is not loaded on this server`);
         let source: string | undefined;
         if (args["chat"] !== undefined) {
           const { key, channel } = chatArg(args);
           const person = peopleByKey().get(key);
           source = `${channel === "whatsapp" ? "WhatsApp" : "Telegram"} — ${person?.name ?? key}`;
         }
-        const outcome = await runWorkflow(wf, {
-          trigger: "manual",
-          input: {
+        const outcome = await startWorkflow(wf, {
             title: str(args, "title"),
             due: str(args, "due"),
             due_guess: args["due_is_guess"] === true,
             category: str(args, "category"),
             notes: str(args, "notes"),
             source,
-          },
-        });
+          });
         if (outcome.status !== "success") {
           throw new Error(`Task not created (${outcome.status}): ${outcome.error?.message ?? "unknown error"}`);
         }
@@ -2645,7 +2622,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "update_task",
-      scope: "write",
+      access: "write",
       description:
         "Changes the title, category and/or due date of a task YOU created — once he has told you " +
         "which category, given a date or a time, or said the title is wrong. Works on a task made " +
@@ -2662,17 +2639,14 @@ function tools(registry: Registry): Tool[] {
         additionalProperties: false,
       },
       async run(args) {
-        const wf = registry.get(TASK_UPDATE_WORKFLOW);
-        if (!wf) throw new Error(`${TASK_UPDATE_WORKFLOW} is not loaded on this server`);
+        const wf = TASK_UPDATE_WORKFLOW;
+        if (!workflowLoaded(wf)) throw new Error(`${wf} is not loaded on this server`);
         const t = myTaskArg(str(args, "task"));
         const title = str(args, "title");
         const category = str(args, "category");
         const due = str(args, "due");
         if (!title && !category && !due) throw new Error("Pass title, category, due, or any of them");
-        const outcome = await runWorkflow(wf, {
-          trigger: "manual",
-          input: { page_id: t.page_id, title, category, due },
-        });
+        const outcome = await startWorkflow(wf, { page_id: t.page_id, title, category, due });
         if (outcome.status !== "success") {
           throw new Error(`Task not updated (${outcome.status}): ${outcome.error?.message ?? "unknown error"}`);
         }
@@ -2687,7 +2661,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "trash_task",
-      scope: "write",
+      access: "write",
       description:
         "Moves a task YOU created to Notion's trash (he can restore it for 30 days) — when he says " +
         "it is wrong or not his, or asks you to remove it. Only when he asked: never because you " +
@@ -2703,15 +2677,12 @@ function tools(registry: Registry): Tool[] {
         additionalProperties: false,
       },
       async run(args) {
-        const wf = registry.get(TASK_UPDATE_WORKFLOW);
-        if (!wf) throw new Error(`${TASK_UPDATE_WORKFLOW} is not loaded on this server`);
+        const wf = TASK_UPDATE_WORKFLOW;
+        if (!workflowLoaded(wf)) throw new Error(`${wf} is not loaded on this server`);
         const t = myTaskArg(str(args, "task"));
         const reason = str(args, "reason");
         if (!reason) throw new Error("Say why — what he told you");
-        const outcome = await runWorkflow(wf, {
-          trigger: "manual",
-          input: { page_id: t.page_id, trash: true, reason },
-        });
+        const outcome = await startWorkflow(wf, { page_id: t.page_id, trash: true, reason });
         if (outcome.status !== "success") {
           throw new Error(`Task not trashed (${outcome.status}): ${outcome.error?.message ?? "unknown error"}`);
         }
@@ -2727,7 +2698,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "set_task_status",
-      scope: "write",
+      access: "write",
       description:
         "Sets the status of an open To Do task — his or yours — when HE tells you to: \"that's done\", " +
         "\"put X on KIV\", \"I've started on Y\". Only on his word in a note to you, never because a chat " +
@@ -2745,8 +2716,8 @@ function tools(registry: Registry): Tool[] {
         additionalProperties: false,
       },
       async run(args) {
-        const wf = registry.get(TASK_UPDATE_WORKFLOW);
-        if (!wf) throw new Error(`${TASK_UPDATE_WORKFLOW} is not loaded on this server`);
+        const wf = TASK_UPDATE_WORKFLOW;
+        if (!workflowLoaded(wf)) throw new Error(`${wf} is not loaded on this server`);
         const status = str(args, "status");
         const said = str(args, "said");
         if (!status) throw new Error("Which status?");
@@ -2755,10 +2726,7 @@ function tools(registry: Registry): Tool[] {
         if (String(t.status ?? "").toLowerCase() === status.toLowerCase()) {
           return `“${t.title}” is already ${t.status}. Nothing changed.`;
         }
-        const outcome = await runWorkflow(wf, {
-          trigger: "manual",
-          input: { page_id: t.page_id, status, said },
-        });
+        const outcome = await startWorkflow(wf, { page_id: t.page_id, status, said });
         if (outcome.status !== "success") {
           throw new Error(`Status not set (${outcome.status}): ${outcome.error?.message ?? "unknown error"}`);
         }
@@ -2777,7 +2745,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "todo",
-      scope: "read",
+      access: "read",
       description:
         "The user's open Notion To Do tasks (everything not Done), most urgent first: status, due, " +
         "category, when the page last changed and by whom, your latest note on it and whether a " +
@@ -2842,7 +2810,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "task",
-      scope: "read",
+      access: "read",
       description:
         "One To Do task in full: its properties, the text of its page (your own notes on it are " +
         "labelled [Maria's note <id>]), your notes and what he did about them, and your questions " +
@@ -2900,7 +2868,7 @@ function tools(registry: Registry): Tool[] {
 
     {
       name: "task_note",
-      scope: "write",
+      access: "write",
       description:
         "Writes a note at the end of a To Do task's page in Notion, as a callout signed by you. Use " +
         "it to do the work — a draft (the email, the post, the message, the outline), a plan or " +
@@ -2919,17 +2887,14 @@ function tools(registry: Registry): Tool[] {
         additionalProperties: false,
       },
       async run(args) {
-        const wf = registry.get(TASK_NOTE_WORKFLOW);
-        if (!wf) throw new Error(`${TASK_NOTE_WORKFLOW} is not loaded on this server`);
+        const wf = TASK_NOTE_WORKFLOW;
+        if (!workflowLoaded(wf)) throw new Error(`${wf} is not loaded on this server`);
         const t = taskArg(str(args, "task"));
         const text = str(args, "text");
         if (!text) throw new Error("text is empty");
         if (text.length > 6000) throw new Error("A note is at most 6000 characters — put the essentials first");
         const kind = str(args, "kind");
-        const outcome = await runWorkflow(wf, {
-          trigger: "manual",
-          input: { page_id: String(t.page_id), title: String(t.title), status: t.status ?? null, kind, text },
-        });
+        const outcome = await startWorkflow(wf, { page_id: String(t.page_id), title: String(t.title), status: t.status ?? null, kind, text });
         if (outcome.status !== "success") {
           throw new Error(`Note not written (${outcome.status}): ${outcome.error?.message ?? "unknown error"}`);
         }
@@ -2942,105 +2907,12 @@ function tools(registry: Registry): Tool[] {
         );
       },
     },
-  ];
-}
+];
 
-/* ------------------------------------------------------------- transport */
+/* --------------------------------------------------------- instructions */
 
-interface Rpc {
-  jsonrpc?: "2.0";
-  id?: string | number | null;
-  method?: string;
-  params?: Record<string, unknown>;
-}
-
-/**
- * Runs one tool the way the endpoint does: a write needs a full-scope
- * identity, and a refusal is logged by tool name — never its arguments,
- * which are somebody's messages — and handed back as an error result rather
- * than thrown. The endpoint's `tools/call` and live Maria
- * (workflows/personal-assistant/_live.ts) both come through here, so the two
- * cannot drift into different rules.
- */
-async function callTool(
-  tool: Tool,
-  args: Record<string, unknown>,
-  identity: McpIdentity,
-): Promise<{ text: string; isError: boolean }> {
-  if (tool.scope === "write" && identity.scope !== "full") {
-    return { text: `"${tool.name}" needs a full-scope token. This one ("${identity.label}") is read-only.`, isError: true };
-  }
-  try {
-    return { text: await tool.run(args, identity), isError: false };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    log.warn(`MCP assistant tool ${tool.name} refused: ${err instanceof Refusal ? err.logAs : message.slice(0, 200)}`);
-    return { text: message, isError: true };
-  }
-}
-
-let liveToken: { token: string; tools: string[] } | undefined;
-
-/**
- * How live Maria's Claude Code reaches this endpoint: over 127.0.0.1, with a
- * token minted in memory for this process (`mintProcessToken`) and limited
- * to the assistant's tools minus `exclude` — the limit is enforced here, by
- * `tools/list` and `tools/call`, not only by the CLI's allow-list. Minted
- * once per process; a restart makes a new one.
- */
-export function liveConnection(label: string, exclude: readonly string[]): { url: string; token: string; tools: string[] } {
-  if (!liveToken) {
-    const registry = currentRegistry();
-    if (!registry) throw new Error("No workflow registry yet — live Maria needs a booted server");
-    const names = tools(registry).map((t) => t.name).filter((n) => !exclude.includes(n));
-    liveToken = {
-      tools: names,
-      token: mintProcessToken({ scope: "full", label, tables: null, audiences: ["assistant"], grants: [], tools: names }),
-    };
-  }
-  return { url: `http://127.0.0.1:${process.env.PORT ?? 3000}/mcp/assistant`, ...liveToken };
-}
-
-/** One tool as a model sees it. */
-export interface AssistantToolSpec {
-  name: string;
-  description: string;
-  inputSchema: object;
-}
-
-/**
- * The assistant's tools in-process, for live Maria: the same functions the
- * endpoint runs, with the same checks, minus `exclude`. Built against the
- * runner's registry, the one the endpoint was given at boot — so a task
- * created here starts the same workflow, and no token goes over the wire.
- * `label` is who the rows it writes say wrote them.
- */
-export function assistantTools(opts: { label: string; exclude?: readonly string[] }): {
-  specs: AssistantToolSpec[];
-  call(name: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }>;
-} {
-  const registry = currentRegistry();
-  if (!registry) throw new Error("No workflow registry yet — the assistant's tools need a booted server");
-  const identity: McpIdentity = { scope: "full", label: opts.label, tables: null, audiences: ["assistant"], grants: [] };
-  const all = tools(registry).filter((t) => !opts.exclude?.includes(t.name));
-  const byName = new Map(all.map((t) => [t.name, t]));
-  return {
-    specs: all.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
-    async call(name, args) {
-      const tool = byName.get(name);
-      if (!tool) return { text: `Unknown tool "${name}"`, isError: true };
-      return callTool(tool, args, identity);
-    },
-  };
-}
-
-const rpcError = (id: Rpc["id"], code: number, message: string) => ({
-  jsonrpc: "2.0" as const,
-  id: id ?? null,
-  error: { code, message },
-});
-
-const INSTRUCTIONS =
+/** The MCP server's instructions, sent on every handshake — see agent.ts. */
+export const INSTRUCTIONS =
   "A personal assistant's view of the user's WhatsApp and Telegram, their Notion To Do list, " +
   "and the tables people (who matters, with notes), drafts, questions, lessons, brain, loops, run_log. " +
   "Read `lessons` (how to act), `brain` (what is true about him and his world) and `loops` (what is " +
@@ -3065,115 +2937,3 @@ const INSTRUCTIONS =
   "`todo` and `task` read their Notion To Do list; `task_note` writes your " +
   "work onto a task's page; `set_task_status` marks a task Done (or another status) only when " +
   "they say so. End every run with `log_run`.";
-
-/** The assistant's tools, for the dashboard's token page — the endpoint's own list. */
-export function assistantToolList(registry: Registry): ToolSummary[] {
-  return tools(registry).map((t) => ({ name: t.name, description: t.description, write: t.scope === "write" }));
-}
-
-/** Mounted at /mcp/assistant, with its own bearer check like its siblings. */
-export function createAssistantMcpRouter(registry: Registry): Hono<{ Variables: { mcp: McpIdentity } }> {
-  const app = new Hono<{ Variables: { mcp: McpIdentity } }>();
-  const all = tools(registry);
-  const byName = new Map(all.map((t) => [t.name, t]));
-
-  app.use("*", async (c, next) => {
-    if (!mcpEnabled()) {
-      return c.json(rpcError(null, -32001, "MCP is disabled on this server: no token exists."), 503);
-    }
-    const presented =
-      c.req.header("authorization")?.replace(/^Bearer\s+/i, "") ?? c.req.header("x-mcp-token") ?? "";
-    const identity = identify(presented);
-    if (!identity) {
-      return c.json(rpcError(null, -32001, "Unauthorized"), 401, { "WWW-Authenticate": "Bearer" });
-    }
-    if (!mayUseEndpoint(identity, "assistant")) {
-      return c.json(rpcError(null, -32001, wrongEndpoint(identity, "the personal assistant's MCP")), 403);
-    }
-    c.set("mcp", identity);
-    noteUse(identity, null);
-    return next();
-  });
-
-  const visibleTo = (identity: McpIdentity) =>
-    (identity.scope === "full" ? all : all.filter((t) => t.scope === "read")).filter(
-      (t) => !identity.tools || identity.tools.includes(t.name),
-    );
-
-  async function dispatch(msg: Rpc, identity: McpIdentity): Promise<object | null> {
-    const { id, method, params } = msg;
-    const isNotification = id === undefined || id === null;
-    const result = (text: string, isError = false) => ({
-      jsonrpc: "2.0",
-      id: id ?? null,
-      result: { content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) },
-    });
-
-    switch (method) {
-      case "initialize": {
-        const asked = String(params?.["protocolVersion"] ?? "");
-        const info = params?.["clientInfo"] as { name?: string; version?: string } | undefined;
-        noteUse(identity, info?.name ? `${info.name}${info.version ? ` ${info.version}` : ""}`.slice(0, 80) : null);
-        return {
-          jsonrpc: "2.0",
-          id: id ?? null,
-          result: {
-            protocolVersion: PROTOCOL_VERSIONS.includes(asked) ? asked : PROTOCOL_VERSIONS[0],
-            capabilities: { tools: { listChanged: false } },
-            serverInfo: { name: "automator-assistant", version: "0.1.0" },
-            instructions: INSTRUCTIONS,
-          },
-        };
-      }
-      case "ping":
-        return isNotification ? null : { jsonrpc: "2.0", id, result: {} };
-      case "tools/list":
-        return {
-          jsonrpc: "2.0",
-          id: id ?? null,
-          result: {
-            tools: visibleTo(identity).map((t) => ({
-              name: t.name,
-              description: t.description,
-              inputSchema: t.inputSchema,
-            })),
-          },
-        };
-      case "tools/call": {
-        const name = String(params?.["name"] ?? "");
-        const tool = byName.get(name);
-        if (!tool || (identity.tools && !identity.tools.includes(name))) {
-          return rpcError(id, -32602, `Unknown tool "${name}"`);
-        }
-        const args = (params?.["arguments"] as Record<string, unknown> | undefined) ?? {};
-        const out = await callTool(tool, args, identity);
-        return result(out.text, out.isError);
-      }
-      default:
-        return isNotification ? null : rpcError(id, -32601, `Unknown method "${method}"`);
-    }
-  }
-
-  app.post("/", async (c) => {
-    let body: unknown;
-    try {
-      body = await c.req.json();
-    } catch {
-      return c.json(rpcError(null, -32700, "Parse error"), 400);
-    }
-    const identity = c.get("mcp");
-    if (Array.isArray(body)) {
-      const replies = (await Promise.all(body.map((m) => dispatch(m as Rpc, identity)))).filter(
-        (r): r is object => r !== null,
-      );
-      return replies.length === 0 ? c.body(null, 202) : c.json(replies);
-    }
-    const reply = await dispatch(body as Rpc, identity);
-    return reply === null ? c.body(null, 202) : c.json(reply);
-  });
-
-  app.get("/", (c) => c.json(rpcError(null, -32000, "This endpoint is POST-only"), 405));
-  app.delete("/", (c) => c.json(rpcError(null, -32000, "Stateless: no session to end"), 405));
-
-  return app;
-}

@@ -6,6 +6,42 @@ Entries record the *reasoning*, not just the diff — `git log` already has the
 diff. If a change settled a question, say what was settled and what the losing
 option was, so nobody relitigates it from scratch.
 
+## 2026-11-05
+
+### Agents: a project's own AI agent, out of the core
+
+The personal assistant's MCP tools — about 3,000 lines written for one
+person's assistant — lived in `src/server/mcp-assistant.ts`, with a JSON-RPC
+router of their own at `/mcp/assistant`. That is the shape rejected earlier
+for a `/mcp/reka`: the core encoding one setup. They now live in
+`workflows/personal-assistant/`, declared with `defineAgent` (`agent.ts`,
+tools in `_tools.ts`), and `src/core/agents.ts` knows only that a project
+can define an agent. The writer, the second reader and the replay test moved
+with them, since they import the tools.
+
+- **An agent, not a grant box.** The first plan served the assistant as one
+  more grant, ticked beside Operations, Data tables and Telegram. Those are
+  what the runner *offers*; the assistant is something *built on* things like
+  them, with its own rules in its tools (no send tool, drafts only to known
+  chats). So a token is *for* an agent — one grant, never mixed — and the
+  dashboard has an **Agents** tab listing each one, its tools, profiles,
+  tokens and in-process connections. *Considered:* giving the model the raw
+  tables and Telegram instead of the tools — it deletes every rule that makes
+  the assistant safe.
+- **No agent runtime.** The loop stays whatever connects: Claude Code spawned
+  by a workflow (`agentConnection`, an in-memory token limited to a profile),
+  a workflow's own code (`agentTools`), or an MCP client. *Considered:* an
+  in-process loop on an SDK — it needs an API key and per-token billing where
+  Claude Code runs on the subscription, and adds dependencies.
+- **Nothing for existing clients changes.** One router serves agents at a
+  token's `/mcp/<id>` and at `/mcp/<agent>`, so `/mcp/assistant` is an alias.
+  Tokens stored as `assistant` with no grants are read as a grant on the
+  `assistant` agent; the tool lists, read and full, are byte-identical to
+  before, and live Maria's 27 tools too. *Traded:* `MCP_TOKEN` no longer
+  reaches the assistant — the way back in is the runner's, not an agent's —
+  and a failed assistant tool's log line no longer carries the refusal text,
+  which could hold a chat key, unless the tool throws a `ToolRefusal`.
+
 ## 2026-10-28
 
 ### A compose-only commit stops asking for a deploy that already happened

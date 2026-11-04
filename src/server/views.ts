@@ -529,9 +529,51 @@ border:1px solid var(--border);background:var(--sunk);cursor:pointer}
 .opt b{display:block;color:var(--fg);font-weight:600;font-size:13px;margin-bottom:1px}
 .opt:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}
 /* Hidden when the token is not for the tables, rather than shown-and-ignored.
-   Written as "hide when ops is picked" so a browser without :has() falls back
-   to showing it — the same behaviour this form had before the pick existed. */
-.form:has(#aud-ops:checked) .tablescope{display:none}
+   Written with :has() inside :not() so a browser without :has() drops the
+   whole rule and shows it — the same behaviour this form had before the pick
+   existed. */
+.form:not(:has(#aud-tables:checked)) .tablescope{display:none}
+
+/* ---- table picks ---- */
+/* Which tables a token reaches, as boxes to tick rather than names to type:
+   a typed list only autocompleted its first word, and a typo was a refusal
+   after the submit instead of something you could not do in the first place.
+   The boxes only show once "Only the ones I pick" is chosen; without :has()
+   they are always shown, and "All tables" still wins on the server. */
+.tablepick:not(:has(input[value="pick"]:checked)) .picks{display:none}
+.picks{margin-top:10px;display:grid;gap:10px}
+.picks .grp{font-size:11px;color:var(--muted);margin:0 0 5px;font-family:var(--mono,monospace)}
+.picks .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:6px}
+.tbox{display:flex;gap:8px;align-items:flex-start;padding:8px 10px;border-radius:8px;
+border:1px solid var(--border);background:var(--panel);cursor:pointer;min-width:0}
+.tbox:hover{border-color:var(--accent)}
+.tbox input{margin:2px 0 0;flex:none}
+.tbox span{min-width:0;font-size:11.5px;color:var(--muted);line-height:1.35}
+.tbox b{display:block;color:var(--fg);font-weight:600;font-size:12.5px;
+font-family:var(--mono,monospace);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tbox small{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:11.5px}
+.tbox:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}
+/* ".field label" is a block heading; these two are labels too, and without
+   this they lost their row layout to it — the radio on a line of its own. */
+.field label.opt,.field label.tbox{display:flex;margin:0;font-size:inherit;font-weight:400}
+
+/* ---- one token ---- */
+.toollist{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:6px;padding:12px}
+.toollist .t{padding:8px 10px;border-radius:8px;border:1px solid var(--border-soft);background:var(--sunk);min-width:0}
+.toollist .t b{font-family:var(--mono,monospace);font-size:12.5px;font-weight:600}
+.toollist .t .tag{margin-left:6px}
+.toollist .t small{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+font-size:11.5px;color:var(--muted);margin-top:2px;line-height:1.4}
+.tablelinks{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:6px;padding:12px}
+.tablelinks a{display:block;padding:9px 11px;border-radius:8px;border:1px solid var(--border-soft);
+background:var(--sunk);min-width:0;color:var(--fg)}
+.tablelinks a:hover{border-color:var(--accent);text-decoration:none}
+.tablelinks b{font-family:var(--mono,monospace);font-size:12.5px;font-weight:600}
+.tablelinks small{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+font-size:11.5px;color:var(--muted);margin-top:2px;line-height:1.4}
+.tablelinks .gone{border-style:dashed;color:var(--muted);padding:9px 11px;border-radius:8px;border:1px dashed var(--border)}
+.mr .name a{color:inherit;min-width:0}
+.mr .name a:hover b{color:var(--accent)}
 
 /* ---- tiles ---- */
 /* A tile's job is to be scannable, so the counts come first and the
@@ -3532,6 +3574,89 @@ const AUDIENCE_UI: Record<McpAudience, { tag: string; path: string; client: stri
   assistant: { tag: "assistant", path: "/mcp/assistant", client: "automator-assistant" },
 };
 
+/** A loaded data table, as the token forms offer it. */
+export interface TablePickView {
+  name: string;
+  folder: string | null;
+  description: string | null;
+}
+
+/** What a half-filled token form held, so a refusal does not empty it. */
+export interface McpTokenDraft {
+  name: string;
+  audience: McpAudience;
+  scope: "read" | "full";
+  /** Null for "all tables". */
+  tables: string[] | null;
+}
+
+/** The first sentence of a description, for a card with two lines of room. */
+const firstSentence = (text: string | null | undefined) => {
+  // A write tool's description opens with its warning to the model, which
+  // says nothing on a card that already carries a "changes" tag.
+  const body = (text ?? "").trim().replace(/^SIDE EFFECTS[.:]?\s*/i, "");
+  if (!body) return "";
+  const m = /^(.+?[.!?])(\s|$)/.exec(body);
+  return m ? m[1] : body;
+};
+
+/**
+ * "All tables" or "only these", with a box per loaded table, grouped by its
+ * folder. Shared by the create form and the token page so the two cannot
+ * offer different choices. `chosen` null is all; a name in it that is not
+ * loaded any more is simply not offered, and saving drops it.
+ */
+function tablePicker(tables: TablePickView[], chosen: string[] | null, idPrefix: string) {
+  const picking = chosen !== null;
+  const ticked = new Set(chosen ?? []);
+  const groups = new Map<string, TablePickView[]>();
+  for (const t of tables) {
+    const key = t.folder ?? "";
+    groups.set(key, [...(groups.get(key) ?? []), t]);
+  }
+  if (tables.length === 0) {
+    return html`<div class="help">
+      No data tables are loaded, so there is nothing to pick. A token for all tables picks
+      up the first one as soon as it is added to <code class="mono">tables/</code>.
+    </div>
+    <input type="hidden" name="tables_mode" value="all">`;
+  }
+  return html`<div class="tablepick">
+    <div class="opts">
+      <label class="opt">
+        <input type="radio" id="${idPrefix}-all" name="tables_mode" value="all" ${picking ? "" : raw("checked")}>
+        <span><b>All tables</b>
+          Every table — ${tables.length} now — and any added later.
+        </span>
+      </label>
+      <label class="opt">
+        <input type="radio" id="${idPrefix}-pick" name="tables_mode" value="pick" ${picking ? raw("checked") : ""}>
+        <span><b>Only the ones I tick</b>
+          It never sees the others, not in a result and not in its tool list. A table added
+          later stays hidden until you tick it here.
+        </span>
+      </label>
+    </div>
+    <div class="picks">
+      ${[...groups].map(
+        ([folder, list]) => html`<div>
+          ${groups.size > 1 || folder ? html`<div class="grp">${folder ? `${folder}/` : "top level"}</div>` : ""}
+          <div class="grid">
+            ${list.map(
+              (t) => html`<label class="tbox">
+                <input type="checkbox" name="tables" value="${t.name}" ${ticked.has(t.name) ? raw("checked") : ""}>
+                <span><b>${t.name}</b>${t.description
+                  ? html`<small>${firstSentence(t.description)}</small>`
+                  : ""}</span>
+              </label>`,
+            )}
+          </div>
+        </div>`,
+      )}
+    </div>
+  </div>`;
+}
+
 /**
  * The MCP tab — the tokens an AI agent connects with, and the closest thing
  * this page can honestly give you to "is it connected".
@@ -3557,7 +3682,9 @@ export function mcpTokensPage(args: {
   /** True when DASHBOARD_USER/PASS are set — minting is refused without them. */
   authenticated: boolean;
   /** Loaded data tables, offered as the optional scope on a new token. */
-  dataTables: string[];
+  dataTables: TablePickView[];
+  /** What the form held when it was refused, so it comes back filled in. */
+  draft?: McpTokenDraft | null;
   envToken: boolean;
   publicUrl: string | null;
   failedInWindow: number;
@@ -3566,6 +3693,9 @@ export function mcpTokensPage(args: {
   error?: string | null;
 }) {
   const { tokens, writable, created, authenticated, envToken } = args;
+  const draft = args.draft ?? null;
+  const audienceChecked = (a: McpAudience) =>
+    (draft?.audience ?? "ops") === a ? raw("checked") : "";
   const base = args.publicUrl ?? "https://your-runner";
   const canMint = writable && authenticated;
 
@@ -3669,25 +3799,25 @@ export function mcpTokensPage(args: {
                   <div class="field">
                     <label for="tname">Name <span class="req">— where this one lives</span></label>
                     <input type="text" id="tname" name="name" required maxlength="40"
-                           placeholder="laptop" value="">
+                           placeholder="laptop" value="${draft?.name ?? ""}">
                   </div>
                   <div class="field">
                     <label>What is this token for?</label>
                     <div class="opts">
                       <label class="opt">
-                        <input type="radio" id="aud-ops" name="audience" value="ops" checked>
+                        <input type="radio" id="aud-ops" name="audience" value="ops" ${audienceChecked("ops")}>
                         <span><b>Operations</b>
                           Workflows, runs, failures, triggers — <code class="mono">/mcp</code>.
                         </span>
                       </label>
                       <label class="opt">
-                        <input type="radio" id="aud-tables" name="audience" value="tables">
+                        <input type="radio" id="aud-tables" name="audience" value="tables" ${audienceChecked("tables")}>
                         <span><b>Data tables</b>
                           Reading and writing rows — <code class="mono">/mcp/tables</code>.
                         </span>
                       </label>
                       <label class="opt">
-                        <input type="radio" id="aud-assistant" name="audience" value="assistant">
+                        <input type="radio" id="aud-assistant" name="audience" value="assistant" ${audienceChecked("assistant")}>
                         <span><b>Personal assistant</b>
                           Your chats, drafts and Notion tasks — <code class="mono">/mcp/assistant</code>.
                           Reads private messages; give it only to the assistant.
@@ -3705,7 +3835,7 @@ export function mcpTokensPage(args: {
                     <label for="tscope">Access</label>
                     <select id="tscope" name="scope">
                       <option value="read">Read only — look at everything, change nothing</option>
-                      <option value="full">Full — can also change things</option>
+                      <option value="full" ${draft?.scope === "full" ? raw("selected") : ""}>Full — can also change things</option>
                     </select>
                     <div class="help">
                       Full is what lets a data-table token <b>add and edit rows</b>, and what lets
@@ -3715,18 +3845,10 @@ export function mcpTokensPage(args: {
                     </div>
                   </div>
                   <div class="field tablescope">
-                    <label for="ttables">Which data tables <span class="req">— optional</span></label>
-                    <input class="mono" type="text" id="ttables" name="tables"
-                           placeholder="expenses income"
-                           list="known-tables" autocomplete="off" spellcheck="false">
-                    <datalist id="known-tables">
-                      ${args.dataTables.map((t) => html`<option value="${t}"></option>`)}
-                    </datalist>
+                    <label>Which data tables</label>
+                    ${tablePicker(args.dataTables, draft?.tables ?? null, "new")}
                     <div class="help">
-                      Which tables this token may reach on <code class="mono">/mcp/tables</code>,
-                      separated by spaces. Leave it empty for all of them. A token that names
-                      its tables never sees the others — not in a result, not in its tool list —
-                      and does not pick up tables added later.
+                      You can change this later from the token's own page, without a new token.
                     </div>
                   </div>
                   <div class="bar">
@@ -3778,7 +3900,7 @@ export function mcpTokensPage(args: {
                     <div class="name">
                       <span class="dot ${t.lastUsedAt === null ? "" : "success"}"
                             title="${t.lastUsedAt === null ? "never used" : "has been used"}"></span>
-                      <b class="trunc">${t.name}</b>
+                      <a class="trunc" href="/mcp-tokens/${t.id}" title="See what this token reaches"><b>${t.name}</b></a>
                       <span class="tag" title="Reaches ${AUDIENCE_UI[t.audience].path} only"
                         >${AUDIENCE_UI[t.audience].tag}</span>
                     </div>
@@ -3786,9 +3908,13 @@ export function mcpTokensPage(args: {
                       <span class="pill ${t.scope === "full" ? "skipped" : "muted"}">
                         ${t.scope === "full" ? "full" : "read only"}
                       </span>
-                      ${t.tables
-                        ? html`<div class="detail mono" title="Data tables this token can reach">${t.tables.join(" ")}</div>`
-                        : ""}
+                      ${t.audience !== "tables"
+                        ? ""
+                        : t.tables
+                          ? html`<div class="detail mono" title="${t.tables.join(", ")}">${
+                              t.tables.join(", ").length <= 24 ? t.tables.join(", ") : `${t.tables.length} tables`
+                            }</div>`
+                          : html`<div class="detail" title="Every data table, including ones added later">all tables</div>`}
                     </div>
                     <div class="mono muted trunc hide-sm">${t.prefix}…</div>
                     <div class="muted trunc lused"
@@ -3818,6 +3944,256 @@ export function mcpTokensPage(args: {
               Clear the box above to see everything again.
             </div></div>
           `}
+    `,
+  );
+}
+
+/** What each audience is, in a sentence, for the token page. */
+const AUDIENCE_ABOUT: Record<McpAudience, { title: string; about: string }> = {
+  ops: {
+    title: "Operations",
+    about:
+      "Workflows, runs, failures and triggers. It reaches no data table and no chat — " +
+      "those are other endpoints, and this token is refused by both.",
+  },
+  tables: {
+    title: "Data tables",
+    about:
+      "Reading and writing rows in the data tables below. It is refused by the operations " +
+      "and assistant endpoints, so it cannot trigger a workflow or read a chat.",
+  },
+  assistant: {
+    title: "Personal assistant",
+    about:
+      "Your WhatsApp and Telegram chats, drafts, people and Notion tasks. It reads private " +
+      "messages — give it only to the assistant.",
+  },
+};
+
+/**
+ * One MCP token: what it reaches, what it can do there, how to connect it,
+ * and the one form that changes it.
+ *
+ * Everything here is read from the token's row and from the endpoint's own
+ * tool list, never restated — so "can it see the income table" is answered
+ * by the same rule `/mcp/tables` applies, not by a description of it. The
+ * plaintext is not here and cannot be: only its digest is stored.
+ */
+export function mcpTokenPage(args: {
+  token: McpTokenView;
+  /** Every loaded data table — what "all" means today, and what can be ticked. */
+  dataTables: TablePickView[];
+  /** The endpoint's tools, read-only and write alike. */
+  tools: { name: string; description: string; write: boolean }[];
+  writable: boolean;
+  authenticated: boolean;
+  publicUrl: string | null;
+  saved: boolean;
+  error?: string | null;
+  failedInWindow: number;
+  workflowCount: number;
+  unconnected: number;
+  agents: number;
+}) {
+  const t = args.token;
+  const ui = AUDIENCE_UI[t.audience];
+  const about = AUDIENCE_ABOUT[t.audience];
+  const base = args.publicUrl ?? "https://your-runner";
+  const endpoint = `${base}${ui.path}`;
+  const canEdit = args.writable && args.authenticated;
+
+  const loaded = new Map(args.dataTables.map((d) => [d.name, d]));
+  const reach = t.tables === null ? args.dataTables : t.tables.flatMap((n) => loaded.get(n) ?? []);
+  const missing = t.tables === null ? [] : t.tables.filter((n) => !loaded.has(n));
+
+  const visible = t.scope === "full" ? args.tools : args.tools.filter((x) => !x.write);
+  const hidden = t.scope === "full" ? [] : args.tools.filter((x) => x.write);
+
+  return layout(
+    {
+      title: t.name,
+      tab: "mcp",
+      refresh: null,
+      crumb: html`<span class="crumb"><a href="/mcp-tokens">MCP</a> / <b>${t.name}</b></span>`,
+      badges: {
+        workflows: args.workflowCount,
+        failed: args.failedInWindow,
+        unconnected: args.unconnected || null,
+        agents: args.agents || null,
+      },
+    },
+    html`
+      ${args.error ? html`<div class="flash">${args.error}</div>` : ""}
+      ${args.saved
+        ? html`<div class="flash quiet">
+            <b>Saved.</b> The client using this token gets the new access on its next call —
+            nothing to paste again. Reconnect it if it still lists the old tools.
+          </div>`
+        : ""}
+
+      <div class="stats">
+        <div class="stat"><b>${about.title}</b><span>endpoint ${ui.path}</span></div>
+        <div class="stat">
+          <b class="${t.scope === "full" ? "skipped" : ""}">${t.scope === "full" ? "Full" : "Read only"}</b>
+          <span>${t.scope === "full" ? "can change things" : "changes nothing"}</span>
+        </div>
+        ${t.audience === "tables"
+          ? html`<div class="stat">
+              <b>${t.tables === null ? "All" : reach.length}</b>
+              <span>${t.tables === null ? `tables (${args.dataTables.length} now)` : reach.length === 1 ? "table" : "tables"}</span>
+            </div>`
+          : html`<div class="stat"><b>${visible.length}</b><span>tools</span></div>`}
+        <div class="stat" title="${t.lastUsedAt === null ? "never used" : fmt(t.lastUsedAt)}">
+          <b class="${t.lastUsedAt === null ? "skipped" : "success"}">${t.lastUsedAt === null ? "Never" : relative(t.lastUsedAt)}</b>
+          <span>last used · ${t.calls} ${t.calls === 1 ? "call" : "calls"}</span>
+        </div>
+      </div>
+
+      ${t.lastUsedAt === null
+        ? html`<div class="note">
+            <b>Never used.</b> Nothing has called the endpoint with this token yet. If a client
+            is set up with it, check it points at <code class="mono">${ui.path}</code> — a token
+            sent to another endpoint is refused there — and that it sends the
+            <code class="mono">Authorization: Bearer</code> header.
+          </div>`
+        : ""}
+
+      <h2>Token</h2>
+      <div class="card"><table class="kv"><tbody>
+        <tr><td>For</td><td><b>${about.title}</b> <span class="muted">— ${about.about}</span></td></tr>
+        <tr><td>Endpoint</td><td class="mono" style="word-break:break-all">${endpoint}</td></tr>
+        <tr><td>Access</td><td>${t.scope === "full"
+          ? html`<span class="pill skipped">full</span>
+              <span class="muted">every tool, including the ones that change things</span>`
+          : html`<span class="pill muted">read only</span>
+              <span class="muted">the tools that change things are not even listed to it</span>`}</td></tr>
+        ${t.audience === "tables"
+          ? html`<tr><td>Tables</td><td>${t.tables === null
+              ? html`<b>All of them</b> <span class="muted">— including any added later</span>`
+              : html`<span class="mono">${t.tables.join(", ")}</span>
+                  <span class="muted">— only these; others stay hidden</span>`}</td></tr>`
+          : ""}
+        <tr><td>Starts with</td><td class="mono">${t.prefix}… <span class="muted">— the rest is not stored</span></td></tr>
+        <tr><td>Created</td><td class="mono">${fmt(t.createdAt)}</td></tr>
+        <tr><td>Last used</td><td class="mono">${t.lastUsedAt === null
+          ? html`<span class="muted">never</span>`
+          : html`${fmt(t.lastUsedAt)} <span class="muted">(${relative(t.lastUsedAt)})</span>`}</td></tr>
+        <tr><td>Client</td><td class="mono">${t.lastClient ?? html`<span class="muted">not known yet — named on its first handshake</span>`}</td></tr>
+        <tr><td>Calls</td><td class="mono">${t.calls}</td></tr>
+        <tr><td>Id</td><td class="mono muted">${t.id}</td></tr>
+      </tbody></table></div>
+
+      ${t.audience === "tables"
+        ? html`
+            <h2>Tables it can reach</h2>
+            ${missing.length
+              ? html`<div class="flash">
+                  This token names ${missing.length === 1 ? "a table" : "tables"} that ${missing.length === 1 ? "is" : "are"}
+                  not loaded: <b class="mono">${missing.join(", ")}</b>. It reaches nothing there.
+                  Saving the form below drops ${missing.length === 1 ? "it" : "them"}.
+                </div>`
+              : ""}
+            <div class="card">
+              ${reach.length
+                ? html`<div class="tablelinks">
+                    ${reach.map(
+                      (d) => html`<a href="/tables/${d.name}">
+                        <b>${d.name}</b>${d.folder ? html` <span class="muted mono" style="font-size:11px">${d.folder}/</span>` : ""}
+                        ${d.description ? html`<small>${firstSentence(d.description)}</small>` : ""}
+                      </a>`,
+                    )}
+                  </div>`
+                : html`<div class="empty"><b>No tables</b>
+                    ${t.tables === null
+                      ? "None are loaded yet. It will reach the first one added."
+                      : "None of the tables it names is loaded, so it reaches nothing."}
+                  </div>`}
+            </div>
+          `
+        : ""}
+
+      <h2>What it can do</h2>
+      <p class="muted" style="margin:0 0 8px;font-size:12.5px">
+        The tools a client sees with this token, from the endpoint's own list.
+        ${hidden.length
+          ? html`${hidden.length} more that change things — <span class="mono">${hidden.map((x) => x.name).join(", ")}</span> —
+              need <b>Full</b> access.`
+          : ""}
+      </p>
+      <div class="card">
+        <div class="toollist">
+          ${visible.map(
+            (x) => html`<div class="t" title="${x.description}">
+              <b>${x.name}</b>${x.write ? html`<span class="tag" title="Changes something">changes</span>` : ""}
+              <small>${firstSentence(x.description)}</small>
+            </div>`,
+          )}
+        </div>
+      </div>
+
+      <h2>Connect a client</h2>
+      <div class="card" style="padding:12px 14px">
+        <div class="mono" style="word-break:break-all;font-size:12px">
+          claude mcp add --transport http ${ui.client} ${endpoint} --header
+          "Authorization: Bearer &lt;your token&gt;"
+        </div>
+        <div class="muted" style="font-size:12px;margin-top:8px">
+          Put the token in place of <span class="mono">&lt;your token&gt;</span>. It was shown once,
+          when it was created, and is not stored — if it is lost, create a new one and delete
+          this.
+        </div>
+      </div>
+
+      ${canEdit
+        ? html`
+            <h2>Change access</h2>
+            <form class="card" method="post" action="/mcp-tokens/${t.id}" style="padding:14px">
+              <div class="form">
+                <div class="field">
+                  <label for="escope">Access</label>
+                  <select id="escope" name="scope">
+                    <option value="read">Read only — look at everything, change nothing</option>
+                    <option value="full" ${t.scope === "full" ? raw("selected") : ""}>Full — can also change things</option>
+                  </select>
+                </div>
+                ${t.audience === "tables"
+                  ? html`<div class="field">
+                      <label>Which data tables</label>
+                      ${tablePicker(args.dataTables, t.tables === null ? null : t.tables.filter((n) => loaded.has(n)), "edit")}
+                    </div>`
+                  : ""}
+                <div class="field">
+                  <div class="help">
+                    The same token keeps working — nothing to paste again. What it is for
+                    (${about.title.toLowerCase()}) cannot change; that is a new token.
+                  </div>
+                </div>
+                <div class="bar">
+                  <button class="btn primary" type="submit">Save</button>
+                  <a class="btn" href="/mcp-tokens">Back</a>
+                </div>
+              </div>
+            </form>
+          `
+        : html`<div class="note">
+            ${args.authenticated
+              ? html`The dashboard is read-only. Set <code class="mono">DASHBOARD_WRITE=1</code> to change this token here.`
+              : html`Set <code class="mono">DASHBOARD_USER</code> and <code class="mono">DASHBOARD_PASS</code> to change this token here.`}
+          </div>`}
+
+      ${args.writable
+        ? html`<h2>Delete</h2>
+            <div class="card" style="padding:12px 14px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+              <span class="muted" style="flex:1 1 240px;font-size:12.5px">
+                Anything using this token is refused from its next call. There is no undo — a
+                replacement is a new token.
+              </span>
+              <form method="post" action="/mcp-tokens/${t.id}/delete"
+                    data-confirm="Delete ${t.name}? Anything using it stops working immediately.">
+                <button class="btn danger" type="submit">Delete token</button>
+              </form>
+            </div>`
+        : ""}
     `,
   );
 }

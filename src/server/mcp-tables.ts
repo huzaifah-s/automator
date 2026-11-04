@@ -41,6 +41,7 @@
  */
 
 import { Hono } from "hono";
+import type { ToolSummary } from "./mcp.ts";
 import { log } from "../core/logger.ts";
 import {
   allTables,
@@ -511,6 +512,11 @@ const rpcError = (id: Rpc["id"], code: number, message: string) => ({
   id: id ?? null,
   error: { code, message },
 });
+
+/** The data-table tools, for the dashboard's token page — the endpoint's own list. */
+export function tableToolList(): ToolSummary[] {
+  return TOOLS.map((t) => ({ name: t.name, description: t.description, write: t.scope === "write" }));
+}
 
 /** Mounted at /mcp/tables, with its own bearer check like its sibling. */
 export function createTableMcpRouter(): Hono<{ Variables: { mcp: McpIdentity } }> {

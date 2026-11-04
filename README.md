@@ -1360,10 +1360,10 @@ Two endpoints rather than one list of sixteen tools, because a tool is a cost
 paid on every turn of every conversation whether or not anything calls it — a
 "what is failing" chat should not be carrying ledger tools.
 
-A token can be **scoped to named tables** (the Data tables field on the MCP
-tab, or `tables` in the API body). It then sees only those: not in a result,
-not in its tool list, and not tables added later. Leave it empty for all of
-them.
+A token can be **scoped to named tables** (on the MCP tab, **Which data
+tables → Only the ones I tick**, or `tables` in the API body). It then sees
+only those: not in a result, not in its tool list, and not tables added later.
+**All tables** (or an empty `tables`) is every one of them.
 
 `totals` adds `currency` to the grouping whenever it is summing a `money()`
 column and you did not ask for it, because a total across currencies is a
@@ -2840,7 +2840,10 @@ cross-poster failing?", "show me what that webhook actually sent."
 
 **Tokens are made on the MCP tab**, one per place you connect from — a
 `laptop`, a `phone`, whatever. Each is read-only or full, each is deleted on
-its own, and the token is shown exactly once when it is created:
+its own, and the token is shown exactly once when it is created. Click a
+token's name for its own page: the endpoint, the tables it reaches, the tools
+its client sees, when it was last used and by what — and a form that changes
+its access or its tables in place, without a new token to paste:
 
 ```bash
 claude mcp add --transport http automator https://<PUBLIC_URL>/mcp --header "Authorization: Bearer <token>"

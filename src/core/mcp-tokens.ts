@@ -143,6 +143,31 @@ export function deleteMcpToken(id: string): boolean {
   return gone;
 }
 
+/**
+ * Changes a token's access — read or full, and which tables — in place, so
+ * the client using it keeps working with the new limits from its next call.
+ * The audience is not changeable: a token for another endpoint is a new
+ * token, pasted into a different config.
+ */
+export function updateMcpTokenAccess(
+  id: string,
+  scope: McpScope,
+  tables: string[] | null,
+): boolean {
+  const done = store.updateMcpTokenAccess(id, scope, tables);
+  if (done) {
+    log.info(
+      `MCP token ${id} changed to ${scope} scope` +
+        `${tables && tables.length ? `, tables: ${tables.join(", ")}` : ""}`,
+    );
+  }
+  return done;
+}
+
+export function mcpTokenById(id: string): McpTokenRecord | null {
+  return store.mcpTokenById(id);
+}
+
 export function listMcpTokens(): McpTokenRecord[] {
   return store.mcpTokens();
 }

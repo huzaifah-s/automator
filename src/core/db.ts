@@ -671,6 +671,8 @@ const stmts = {
 
   allMcpTokens: db.prepare(`SELECT * FROM mcp_tokens ORDER BY created_at DESC`),
   mcpTokenByHash: db.prepare(`SELECT * FROM mcp_tokens WHERE hash = ?`),
+  mcpTokenById: db.prepare(`SELECT * FROM mcp_tokens WHERE id = ?`),
+  updateMcpTokenAccess: db.prepare(`UPDATE mcp_tokens SET scope = ?, tables = ? WHERE id = ?`),
   insertMcpToken: db.prepare(
     `INSERT INTO mcp_tokens (id, name, scope, hash, prefix, created_at, tables, audience)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1209,6 +1211,12 @@ export const store = {
     );
   },
   deleteMcpToken: (id: string): boolean => stmts.deleteMcpToken.run(id).changes > 0,
+  mcpTokenById: (id: string) =>
+    (stmts.mcpTokenById.get(id) as McpTokenRecord | null) ?? null,
+  /** Changes what a token may do without changing the token itself. */
+  updateMcpTokenAccess: (id: string, scope: string, tables: string[] | null): boolean =>
+    stmts.updateMcpTokenAccess.run(scope, tables && tables.length ? JSON.stringify(tables) : null, id)
+      .changes > 0,
 
   /**
    * Records that a token was just used. The client name is only known on the

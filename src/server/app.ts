@@ -62,15 +62,17 @@ import {
 } from "../core/view-links.ts";
 import type { Registry } from "../core/loader.ts";
 import { planReplay, workflowsBlockedBy } from "./inspect.ts";
-import { createMcpRouter } from "./mcp.ts";
-import { createTableMcpRouter } from "./mcp-tables.ts";
-import { createAssistantMcpRouter } from "./mcp-assistant.ts";
+import { createMcpRouter, opsToolList } from "./mcp.ts";
+import { createTableMcpRouter, tableToolList } from "./mcp-tables.ts";
+import { assistantToolList, createAssistantMcpRouter } from "./mcp-assistant.ts";
 import {
   createMcpToken,
   deleteMcpToken,
   isAudience,
   isScope,
   listMcpTokens,
+  mcpTokenById,
+  updateMcpTokenAccess,
   type McpAudience,
 } from "../core/mcp-tokens.ts";
 import type { LoadedWorkflow, RunRecord, WebhookDecision } from "../core/types.ts";
@@ -82,6 +84,7 @@ import {
   type TableSummary,
   variablesPage,
   mcpTokensPage,
+  mcpTokenPage,
   DEFAULT_RANGE,
   DEFAULT_RANGE_MS,
   executionsPage,
@@ -97,6 +100,7 @@ import {
   workflowsPage,
   type CredentialView,
   type McpTokenView,
+  type McpTokenDraft,
   type ProviderView,
   type RunRange,
   type SecretView,
@@ -1030,19 +1034,23 @@ export function createApp(registry: Registry): Hono {
     }
   };
 
-  const tokenViews = (): McpTokenView[] =>
-    listMcpTokens().map((t) => ({
-      id: t.id,
-      name: t.name,
-      scope: isScope(t.scope) ? t.scope : "full",
-      prefix: t.prefix,
-      createdAt: t.created_at,
-      lastUsedAt: t.last_used_at,
-      lastClient: t.last_client,
-      calls: t.calls,
-      tables: parseTokenTables(t.tables),
-      audience: isAudience(t.audience) ? t.audience : "ops",
-    }));
+  const tokenView = (t: ReturnType<typeof listMcpTokens>[number]): McpTokenView => ({
+    id: t.id,
+    name: t.name,
+    scope: isScope(t.scope) ? t.scope : "full",
+    prefix: t.prefix,
+    createdAt: t.created_at,
+    lastUsedAt: t.last_used_at,
+    lastClient: t.last_client,
+    calls: t.calls,
+    tables: parseTokenTables(t.tables),
+    audience: isAudience(t.audience) ? t.audience : "ops",
+  });
+  const tokenViews = (): McpTokenView[] => listMcpTokens().map(tokenView);
+
+  /** The loaded tables as the token forms offer them. */
+  const tablePicks = () =>
+    allTables().map((t) => ({ name: t.name, folder: t.folder, description: t.description ?? null }));
 
   const renderMcp = (
     c: any,
@@ -1050,6 +1058,7 @@ export function createApp(registry: Registry): Hono {
       created?: { name: string; token: string; audience: McpAudience } | null;
       error?: string;
       status?: 200 | 400;
+      draft?: McpTokenDraft;
     } = {},
   ) =>
     c.html(
@@ -1057,7 +1066,8 @@ export function createApp(registry: Registry): Hono {
         tokens: tokenViews(),
         writable,
         authenticated: dashboardAuthenticated,
-        dataTables: allTables().map((t) => t.name),
+        dataTables: tablePicks(),
+        draft: opts.draft ?? null,
         envToken: Boolean(process.env.MCP_TOKEN),
         publicUrl,
         created: opts.created ?? null,
@@ -1098,6 +1108,33 @@ export function createApp(registry: Registry): Hono {
     return names;
   };
 
+  /**
+   * The table boxes as the form sent them: null for "All tables", otherwise
+   * the ticked names. A form with no `tables_mode` (the API, or an older
+   * page) is read the old way, from `tables` alone.
+   */
+  const tablePickFrom = (form: Record<string, unknown>): string[] | null => {
+    const mode = String((Array.isArray(form.tables_mode) ? form.tables_mode[0] : form.tables_mode) ?? "");
+    if (mode === "all") return null;
+    const raw = form.tables;
+    const names = (Array.isArray(raw) ? raw.map(String) : String(raw ?? "").split(/[\s,]+/))
+      .map((n) => n.trim())
+      .filter(Boolean);
+    return mode === "pick" || names.length ? names : null;
+  };
+
+  /** The table scope a form asks for, refused when "only these" ticks none. */
+  const tableScopeFromForm = (form: Record<string, unknown>): string[] | undefined => {
+    const picked = tablePickFrom(form);
+    if (picked === null) return undefined;
+    if (picked.length === 0) {
+      throw new Error(
+        "Tick at least one table, or choose All tables — a token for no tables reaches nothing.",
+      );
+    }
+    return tableScopeFrom(picked);
+  };
+
   app.post("/mcp-tokens", async (c) => {
     const denied = requireWrite(c);
     if (denied) return denied;
@@ -1110,24 +1147,31 @@ export function createApp(registry: Registry): Hono {
       );
     }
 
-    const form = await c.req.parseBody();
-    const name = String(form.name ?? "").trim();
-    const scope = String(form.scope ?? "read");
-    if (!name) return renderMcp(c, { error: "A token needs a name.", status: 400 });
-    if (!isScope(scope)) return renderMcp(c, { error: "Scope must be read or full.", status: 400 });
+    // `all: true` so several ticked tables arrive as an array, not the last one.
+    const form = await c.req.parseBody({ all: true });
+    const one = (v: unknown) => String((Array.isArray(v) ? v[0] : v) ?? "");
+    const name = one(form.name).trim();
+    const scope = one(form.scope) || "read";
+    const audience = one(form.audience) || "ops";
+    const draft: McpTokenDraft = {
+      name,
+      audience: isAudience(audience) ? audience : "ops",
+      scope: scope === "full" ? "full" : "read",
+      tables: tablePickFrom(form),
+    };
+    const refuse = (error: string) => renderMcp(c, { error, status: 400, draft });
 
-    const audience = String(form.audience ?? "ops");
-    if (!isAudience(audience)) {
-      return renderMcp(c, { error: "Pick what the token is for.", status: 400 });
-    }
+    if (!name) return refuse("A token needs a name.");
+    if (!isScope(scope)) return refuse("Scope must be read or full.");
+    if (!isAudience(audience)) return refuse("Pick what the token is for.");
 
     let tables: string[] | undefined;
     try {
       // Only meaningful for a table token; an operations token that carried a
       // table list would be stating a scope it never gets to use.
-      tables = audience === "tables" ? tableScopeFrom(form.tables) : undefined;
+      tables = audience === "tables" ? tableScopeFromForm(form) : undefined;
     } catch (err) {
-      return renderMcp(c, { error: err instanceof Error ? err.message : String(err), status: 400 });
+      return refuse(err instanceof Error ? err.message : String(err));
     }
 
     const { token } = createMcpToken(name, scope, { audience, tables });
@@ -1136,6 +1180,82 @@ export function createApp(registry: Registry): Hono {
     // the database and cannot go in a query string — so a redirect would throw
     // away the only copy.
     return renderMcp(c, { created: { name, token, audience } });
+  });
+
+  /**
+   * One token's page: what it reaches, its tools, how to connect it, and the
+   * form that changes its access.
+   */
+  const renderToken = (
+    c: any,
+    row: NonNullable<ReturnType<typeof mcpTokenById>>,
+    opts: { error?: string; status?: 200 | 400; saved?: boolean } = {},
+  ) => {
+    const view = tokenView(row);
+    const tools =
+      view.audience === "tables"
+        ? tableToolList()
+        : view.audience === "assistant"
+          ? assistantToolList(registry)
+          : opsToolList(registry);
+    return c.html(
+      mcpTokenPage({
+        token: view,
+        dataTables: tablePicks(),
+        tools,
+        writable,
+        authenticated: dashboardAuthenticated,
+        publicUrl,
+        saved: opts.saved ?? false,
+        error: opts.error ?? null,
+        failedInWindow: store.statusCountsSince(Date.now() - DEFAULT_RANGE_MS).failed ?? 0,
+        workflowCount: registry.all().length,
+        unconnected: wantedCredentials().length,
+        agents: listMcpTokens().filter((t) => t.last_used_at !== null).length,
+      }) as any,
+      opts.status ?? 200,
+    );
+  };
+
+  app.get("/mcp-tokens/:id", (c) => {
+    const row = mcpTokenById(c.req.param("id"));
+    if (!row) return c.notFound();
+    return renderToken(c, row, { saved: c.req.query("saved") === "1" });
+  });
+
+  app.post("/mcp-tokens/:id", async (c) => {
+    const denied = requireWrite(c);
+    if (denied) return denied;
+    // Raising a token to full scope is as good as minting one, so it needs
+    // the same thing minting does.
+    if (!dashboardAuthenticated) {
+      return c.text("Set DASHBOARD_USER and DASHBOARD_PASS before changing an MCP token.", 403);
+    }
+    const row = mcpTokenById(c.req.param("id"));
+    if (!row) return c.notFound();
+
+    const form = await c.req.parseBody({ all: true });
+    const scope = String((Array.isArray(form.scope) ? form.scope[0] : form.scope) ?? "");
+    if (!isScope(scope)) {
+      return renderToken(c, row, { error: "Scope must be read or full.", status: 400 });
+    }
+    let tables: string[] | null = null;
+    if (row.audience === "tables") {
+      try {
+        tables = tableScopeFromForm(form) ?? null;
+      } catch (err) {
+        return renderToken(c, row, {
+          error: err instanceof Error ? err.message : String(err),
+          status: 400,
+        });
+      }
+    } else {
+      // Kept as it was: a non-table token's list is never read, and this form
+      // does not show one to change.
+      tables = parseTokenTables(row.tables);
+    }
+    updateMcpTokenAccess(row.id, scope, tables);
+    return c.redirect(`/mcp-tokens/${row.id}?saved=1`, 303);
   });
 
   app.post("/mcp-tokens/:id/delete", (c) => {

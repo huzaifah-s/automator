@@ -81,6 +81,7 @@
  */
 
 import { Hono } from "hono";
+import type { ToolSummary } from "./mcp.ts";
 import { log } from "../core/logger.ts";
 import { chatMessage, chatThread, hisMessages, lastWordMine, waitingChats, type ChatChannel, type StoredMessage } from "../core/chat-log.ts";
 import { table, type Row } from "../core/tables.ts";
@@ -3064,6 +3065,11 @@ const INSTRUCTIONS =
   "`todo` and `task` read their Notion To Do list; `task_note` writes your " +
   "work onto a task's page; `set_task_status` marks a task Done (or another status) only when " +
   "they say so. End every run with `log_run`.";
+
+/** The assistant's tools, for the dashboard's token page — the endpoint's own list. */
+export function assistantToolList(registry: Registry): ToolSummary[] {
+  return tools(registry).map((t) => ({ name: t.name, description: t.description, write: t.scope === "write" }));
+}
 
 /** Mounted at /mcp/assistant, with its own bearer check like its siblings. */
 export function createAssistantMcpRouter(registry: Registry): Hono<{ Variables: { mcp: McpIdentity } }> {

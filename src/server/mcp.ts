@@ -1331,6 +1331,27 @@ const rpcError = (id: Rpc["id"], code: number, message: string) => ({
   error: { code, message },
 });
 
+/** One tool as the dashboard lists it on a token's page. */
+export interface ToolSummary {
+  name: string;
+  description: string;
+  /** Hidden from a read-only token. */
+  write: boolean;
+}
+
+/**
+ * The operations tools, for the dashboard's token page. Built from the same
+ * list the endpoint serves, so the page cannot claim a tool the endpoint
+ * does not have.
+ */
+export function opsToolList(registry: Registry): ToolSummary[] {
+  return buildTools(registry).map((t) => ({
+    name: t.name,
+    description: t.description,
+    write: t.scope === "write",
+  }));
+}
+
 /**
  * The MCP router, mounted at /mcp. Registered before the dashboard's basic
  * auth and carrying its own bearer check, the same way /hooks does — an agent

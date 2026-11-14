@@ -1681,7 +1681,7 @@ Same rules as reading, plus one:
   mistake made from a phone is restorable from the dashboard.
 
 `views/baby/baby.ts` with `tables/baby/` is the worked example: milk (ml,
-breast milk or formula, a Vitamin D tick), nappies, sleep, vaccine
+breast milk, Nestlé NAN or Dutch Baby, a Vitamin D tick), nappies, sleep, vaccine
 appointments, growth readings and spending by which parent paid (Huzaifah or Zahidah).
 
 ### The personal-finance view

@@ -10,8 +10,12 @@
  * spaces), so they are words rather than codes.
  */
 
-/** What was in the bottle. Direct breastfeeding is not on the list: it has no ml. */
-export const MILKS = ["breast_milk", "formula"] as const;
+/**
+ * What was in the bottle: expressed breast milk, or one of the formulas by
+ * brand. Direct breastfeeding is not on the list: it has no ml. A new formula
+ * is a new value here, and a matching label and series in views/baby/baby.ts.
+ */
+export const MILKS = ["breast_milk", "nestle_nan", "dutch_baby"] as const;
 
 export const NAPPY_KINDS = ["poop", "wee", "both"] as const;
 

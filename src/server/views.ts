@@ -4955,7 +4955,7 @@ function localWhen(ms: number): string {
  *
  * `plain` is the share-link page's version: no column name under the field
  * (that is for whoever writes queries, and this reader is not them), enum
- * values read with spaces, and an empty date or time starting at *now* — the
+ * values read as words, and an empty date or time starting at *now* — the
  * moment being logged is almost always the one the form was opened in.
  */
 function fieldFor(name: string, col: ColumnDef, current: unknown, opts: { plain?: boolean } = {}) {
@@ -4970,7 +4970,7 @@ function fieldFor(name: string, col: ColumnDef, current: unknown, opts: { plain?
     if (col.kind === "datetime") value = Date.now();
     if (col.kind === "date") value = localInput(Date.now()).slice(0, 10);
   }
-  const shown = (v: string) => (opts.plain ? v.replace(/_/g, " ") : v);
+  const shown = (v: string) => (opts.plain ? spoken(v) : v);
 
   const control = (() => {
     switch (col.kind) {
@@ -5486,6 +5486,11 @@ export interface PublicEntry {
   error: string | null;
 }
 
+/** An enum value as a person reads it on the share-link page: `dutch_baby` → "Dutch Baby". */
+function spoken(value: string): string {
+  return value.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 /** A unit written at the end of a column label — "Amount (ml)" → "ml". */
 function labelUnit(name: string, col: ColumnDef): string | null {
   return /\(([^)]+)\)\s*$/.exec(columnLabel(name, col))?.[1] ?? null;
@@ -5527,7 +5532,7 @@ function entryParts(table: LoadedTable, row: Row): string[] {
         parts.push(unit ? `${v} ${unit}` : String(v));
         break;
       case "enum":
-        parts.push(String(v).replace(/_/g, " "));
+        parts.push(spoken(String(v)));
         break;
       case "json":
         break;

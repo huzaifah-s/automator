@@ -64,7 +64,13 @@ const span = (ms: number) => {
   return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${pad(m % 60)}m`;
 };
 
-const MILK: Record<string, string> = { breast_milk: "breast milk", formula: "formula" };
+/** Display names, and the order the milk chart's series are drawn in. */
+const MILK: Record<string, string> = {
+  breast_milk: "Breast milk",
+  nestle_nan: "Nestlé NAN",
+  dutch_baby: "Dutch Baby",
+};
+const MILK_KEYS = Object.keys(MILK);
 const PAYER: Record<string, string> = { huzaifah: "Huzaifah", zahidah: "Zahidah" };
 
 export default defineView({
@@ -148,7 +154,7 @@ export default defineView({
         label: "Last feed",
         value: lastFeed ? `${span(now - lastFeed.fed_at)} ago` : "—",
         sub: lastFeed
-          ? `${when(lastFeed.fed_at, now)} · ${lastFeed.ml} ml ${MILK[lastFeed.milk] ?? lastFeed.milk}`
+          ? `${when(lastFeed.fed_at, now)} · ${lastFeed.ml} ml ${MILK[lastFeed.milk] ?? lastFeed.milk.replace(/_/g, " ")}`
           : "nothing logged yet",
       },
       {
@@ -176,24 +182,26 @@ export default defineView({
 
     /* ----------------------------------------------------- milk by day */
 
-    const byDay = new Map<number, { breast: number; formula: number }>();
-    for (let d = fortnight; d <= today; d = midnight(d + DAY + 3_600_000)) byDay.set(d, { breast: 0, formula: 0 });
+    // One series per milk, in MILK's order. A value MILK does not know (a
+    // retired one, like the old plain "formula") still counts in "Milk today"
+    // but has no column here.
+    const byDay = new Map<number, number[]>();
+    for (let d = fortnight; d <= today; d = midnight(d + DAY + 3_600_000)) byDay.set(d, MILK_KEYS.map(() => 0));
     for (const f of recentFeeds) {
       const bucket = byDay.get(midnight(f.fed_at));
-      if (!bucket) continue;
-      if (f.milk === "formula") bucket.formula += f.ml;
-      else bucket.breast += f.ml;
+      const i = MILK_KEYS.indexOf(f.milk);
+      if (bucket && i !== -1) bucket[i]! += f.ml;
     }
     const milkPanel = series({
       title: "Milk per day",
       note: "The last 14 days, in ml.",
-      legend: ["Breast milk", "Formula"],
+      legend: MILK_KEYS.map((k) => MILK[k]!),
       // No points at all when nothing was logged, so the panel says so
       // instead of drawing fourteen empty columns on a 0–1 axis.
       points: recentFeeds.length === 0 ? [] : [...byDay.entries()].map(([d, v]) => ({
         label: new Date(d).toLocaleString("en-GB", { day: "numeric", month: "short" }),
-        values: [v.breast, v.formula],
-        displays: [`${v.breast} ml`, `${v.formula} ml`],
+        values: v,
+        displays: v.map((ml) => `${ml} ml`),
       })),
       empty: "No feeds logged in the last 14 days.",
     });

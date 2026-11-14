@@ -400,12 +400,43 @@ export interface ViewDef {
    * link that was ever minted stops resolving immediately.
    */
   shareable?: boolean;
+  /**
+   * Data tables a share link of this view may add rows to, edit and delete
+   * from — the one way a person without the dashboard's credentials writes.
+   *
+   * Needs `shareable: true`. Each link page then carries a form per table
+   * named here, and the rows it writes are stamped `link:<label>`. This list
+   * is re-read on every request, exactly like `shareable`: take a table out
+   * and every link stops writing to it at once, while the page still reads.
+   * `load()` itself still never writes; the server does, with the same
+   * validation the Tables tab uses.
+   *
+   * A bare name gets a tab labelled from the table name; `{ table, label }`
+   * names the tab ("Milk" for `baby_feeds`).
+   */
+  entry?: readonly (string | EntryTable)[];
   /** Seconds between background refreshes of the page. Null leaves it alone. */
   refresh?: number | null;
   /** Filters rendered above the panels and resolved from the querystring. */
   controls?: Record<string, ControlDef>;
   /** Builds the page. Called per request; must not write anything. */
   load(ctx: ViewCtx): Panel[] | Promise<Panel[]>;
+}
+
+/** One table a view's share links may write to, with the tab label it shows under. */
+export interface EntryTable {
+  table: string;
+  label?: string;
+}
+
+/** A view's `entry` list in one shape, with every tab labelled. */
+export function entryList(def: Pick<ViewDef, "entry">): { table: string; label: string }[] {
+  return (def.entry ?? []).map((e) => {
+    const table = typeof e === "string" ? e : e.table;
+    const label = typeof e === "string" ? undefined : e.label;
+    const fallback = table.replace(/_/g, " ");
+    return { table, label: label ?? fallback.charAt(0).toUpperCase() + fallback.slice(1) };
+  });
 }
 
 export interface LoadedView extends ViewDef {
@@ -495,6 +526,12 @@ export function defineView(def: ViewDef): ViewDef {
   }
   if (!def.title?.trim()) throw new Error(`View "${def.name}" is missing a title`);
   if (typeof def.load !== "function") throw new Error(`View "${def.name}" has no load()`);
+  if (def.entry?.length && !def.shareable) {
+    throw new Error(
+      `View "${def.name}" lists entry tables but is not shareable — entry is written through ` +
+        `share links, so it needs shareable: true`,
+    );
+  }
 
   for (const [key, control] of Object.entries(def.controls ?? {})) {
     if (!/^[a-z][a-z0-9_]*$/.test(key)) {
@@ -793,6 +830,16 @@ export async function loadViews(dir = "./views", version?: string): Promise<Load
       continue;
     }
     seen.set(def.name, rel);
+
+    // Warned rather than refused: tables load once at boot and views reload,
+    // so a view naming a table that is still to come should not fail the
+    // whole set. The link page leaves an unknown table out, and a write to it
+    // answers 404 like any other table the view does not name.
+    for (const { table: name } of entryList(def)) {
+      if (!getTable(name)) {
+        log.warn(`${rel}: entry names table "${name}", which is not loaded — links will not offer it`);
+      }
+    }
 
     const slash = rel.lastIndexOf("/");
     loaded.push({

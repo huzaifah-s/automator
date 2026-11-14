@@ -1,7 +1,7 @@
 import { html, raw } from "hono/html";
 import type { HtmlEscapedString } from "hono/utils/html";
 import type { ColumnDef, LoadedTable, Row } from "../core/tables.ts";
-import { formatDuration } from "../core/views.ts";
+import { entryList, formatDuration } from "../core/views.ts";
 import type { LoadedView, Panel } from "../core/views.ts";
 import type { Flow, FlowNode, FlowUse, RunMark, RunTrace } from "../core/flow.ts";
 import { framed, layoutFlow, placeRun, runPath, type Layout, type Placed, type Wire } from "./flow-layout.ts";
@@ -4924,12 +4924,53 @@ export function tablesPage(args: {
   );
 }
 
-/** One column's input control, pre-filled from `current` when editing. */
-function fieldFor(name: string, col: ColumnDef, current: unknown) {
+/**
+ * Epoch milliseconds as the `YYYY-MM-DDTHH:mm` a datetime-local input takes,
+ * in the server's own zone.
+ *
+ * Local and not UTC because the way back in is `Date.parse` on a wall-clock
+ * string, which reads it as local time. Filled from `toISOString()`, as this
+ * once was, an edit form on a server in Kuala Lumpur showed a 14:00 row as
+ * 06:00, and saving it unchanged moved the row eight hours earlier.
+ */
+function localInput(ms: number): string {
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/** "Today 14:05" / "Yesterday 09:30" / "12 Nov 14:05", in the server's zone. */
+function localWhen(ms: number): string {
+  const d = new Date(ms);
+  const time = localInput(ms).slice(11);
+  const day = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((day(new Date()) - day(d)) / 86_400_000);
+  if (days === 0) return `Today ${time}`;
+  if (days === 1) return `Yesterday ${time}`;
+  return `${d.getDate()} ${d.toLocaleString("en-GB", { month: "short" })} ${time}`;
+}
+
+/**
+ * One column's input control, pre-filled from `current` when editing.
+ *
+ * `plain` is the share-link page's version: no column name under the field
+ * (that is for whoever writes queries, and this reader is not them), enum
+ * values read with spaces, and an empty date or time starting at *now* — the
+ * moment being logged is almost always the one the form was opened in.
+ */
+function fieldFor(name: string, col: ColumnDef, current: unknown, opts: { plain?: boolean } = {}) {
   const id = `f_${name}`;
   const label = columnLabel(name, col);
   const required = !col.nullable && col.default === undefined;
-  const value = current ?? (col.default !== undefined && current === undefined ? col.default : null);
+  const fresh = current === undefined;
+  let value = current ?? (col.default !== undefined && fresh ? col.default : null);
+  // Only a required time starts at now: an optional one ("woke up", "given
+  // on") being empty is the information.
+  if (opts.plain && fresh && value == null && required) {
+    if (col.kind === "datetime") value = Date.now();
+    if (col.kind === "date") value = localInput(Date.now()).slice(0, 10);
+  }
+  const shown = (v: string) => (opts.plain ? v.replace(/_/g, " ") : v);
 
   const control = (() => {
     switch (col.kind) {
@@ -4937,7 +4978,7 @@ function fieldFor(name: string, col: ColumnDef, current: unknown) {
         return html`<select id="${id}" name="${name}" ${required ? raw("required") : ""}>
           ${col.nullable ? html`<option value="">—</option>` : ""}
           ${(col.values ?? []).map(
-            (v) => html`<option value="${v}" ${value === v ? raw("selected") : ""}>${v}</option>`,
+            (v) => html`<option value="${v}" ${value === v ? raw("selected") : ""}>${shown(v)}</option>`,
           )}
         </select>`;
       case "bool":
@@ -4951,7 +4992,8 @@ function fieldFor(name: string, col: ColumnDef, current: unknown) {
                            ${required ? raw("required") : ""}>`;
       case "datetime":
         return html`<input type="datetime-local" id="${id}" name="${name}"
-                           value="${value == null ? "" : new Date(Number(value)).toISOString().slice(0, 16)}"
+                           value="${value == null ? "" : localInput(Number(value))}"
+                           ${opts.plain && fresh && required ? raw("data-now") : ""}
                            ${required ? raw("required") : ""}>`;
       case "money":
         // Typed as a decimal and stored as cents. The form is the one boundary
@@ -4964,6 +5006,7 @@ function fieldFor(name: string, col: ColumnDef, current: unknown) {
       case "int":
       case "real":
         return html`<input type="number" ${col.kind === "int" ? raw('step="1"') : raw('step="any"')}
+                           ${opts.plain ? raw('inputmode="decimal"') : ""}
                            id="${id}" name="${name}" value="${value == null ? "" : String(value)}"
                            ${required ? raw("required") : ""}>`;
       case "json":
@@ -4975,6 +5018,18 @@ function fieldFor(name: string, col: ColumnDef, current: unknown) {
                            ${required ? raw("required") : ""}>`;
     }
   })();
+
+  if (opts.plain) {
+    // A checkbox already carries its help as its own text.
+    const help = col.kind === "bool" ? null : col.help;
+    return html`<div class="field">
+      <label for="${id}">${label}
+        ${col.nullable && col.kind !== "bool" ? html`<span class="req">— optional</span>` : ""}
+      </label>
+      ${control}
+      ${help ? html`<div class="help">${help}</div>` : ""}
+    </div>`;
+  }
 
   return html`<div class="field">
     <label for="${id}">${label}
@@ -5326,6 +5381,17 @@ export function viewPage(args: {
           ${live > 0 ? html`<span class="n">${live}</span>` : ""}
         </summary>
         <div class="vshare">
+          ${view.shareable && view.entry?.length
+            ? html`<p class="vnote">
+                <b>Links to this view can also write.</b> Whoever holds one can add, edit and
+                delete rows in
+                ${entryList(view).map(
+                  (e, i) => html`${i ? ", " : ""}<a href="/tables/${e.table}"><code class="mono">${e.table}</code></a>`,
+                )}
+                — stamped with the link's label, and restorable here. The list is
+                <code class="mono">entry</code> in <code class="mono">views/${view.file}</code>.
+              </p>`
+            : ""}
           ${view.shareable
             ? args.canShare
               ? html`<form method="post" action="/views/${view.name}/links" class="bar" style="margin:0">
@@ -5408,6 +5474,200 @@ export function viewPage(args: {
   );
 }
 
+/** What a share-link page needs to carry entry forms — see `entry` on `ViewDef`. */
+export interface PublicEntry {
+  /** The link's label, which is also who the rows it writes are stamped with. */
+  label: string;
+  tables: { table: LoadedTable; label: string; recent: Row[] }[];
+  /** The table whose tab is open. Always one of `tables`. */
+  active: string;
+  /** A row of the active table being edited, or null for a new one. */
+  editing: Row | null;
+  error: string | null;
+}
+
+/** A unit written at the end of a column label — "Amount (ml)" → "ml". */
+function labelUnit(name: string, col: ColumnDef): string | null {
+  return /\(([^)]+)\)\s*$/.exec(columnLabel(name, col))?.[1] ?? null;
+}
+
+/** "Today" / "Yesterday" / "12 Nov" for a `YYYY-MM-DD` column. */
+function dateWhen(iso: string): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  if (!y || !m || !d) return iso;
+  return localWhen(new Date(y, m - 1, d).getTime()).replace(/ \d\d:\d\d$/, "");
+}
+
+/**
+ * One logged row as a single readable line, for the "latest" list under a
+ * share-link form: every filled-in column in the file's order, a ticked box
+ * as its own label, and a unit taken from the column's label.
+ */
+function entryParts(table: LoadedTable, row: Row): string[] {
+  const parts: string[] = [];
+  for (const [name, col] of Object.entries(table.columns)) {
+    const v = row[name];
+    if (v === null || v === undefined || v === "") continue;
+    const unit = labelUnit(name, col);
+    switch (col.kind) {
+      case "bool":
+        if (v) parts.push(columnLabel(name, col).replace(/\s*\([^)]*\)\s*$/, ""));
+        break;
+      case "datetime":
+        parts.push(localWhen(Number(v)));
+        break;
+      case "date":
+        parts.push(dateWhen(String(v)));
+        break;
+      case "money":
+        parts.push(`${unit ?? ""} ${(Number(v) / 100).toFixed(2)}`.trim());
+        break;
+      case "int":
+      case "real":
+        parts.push(unit ? `${v} ${unit}` : String(v));
+        break;
+      case "enum":
+        parts.push(String(v).replace(/_/g, " "));
+        break;
+      case "json":
+        break;
+      default: {
+        const text = String(v);
+        parts.push(text.length > 60 ? `${text.slice(0, 59)}…` : text);
+      }
+    }
+  }
+  return parts;
+}
+
+/** Who wrote a row, as the person reading the list would say it. */
+const writer = (row: Row) => (row.written_by ?? "").replace(/^link:/, "") || "—";
+
+function renderEntry(entry: PublicEntry, path: string) {
+  const current = entry.tables.find((t) => t.table.name === entry.active)!;
+  const { table, editing } = { table: current.table, editing: entry.editing };
+  const tab = (name: string) => `${path}?t=${encodeURIComponent(name)}`;
+
+  return html`<section class="entry">
+    <nav class="etabs">
+      ${entry.tables.map(
+        (t) => html`<a href="${tab(t.table.name)}" class="${t.table.name === entry.active ? "on" : ""}"
+                      ${t.table.name === entry.active ? raw('aria-current="page"') : ""}>${t.label}</a>`,
+      )}
+    </nav>
+
+    ${entry.error ? html`<div class="flash">${entry.error}</div>` : ""}
+
+    <form class="card eform" method="post" data-once
+          action="${path}/rows/${table.name}${editing ? `/${editing.id}` : ""}">
+      ${editing
+        ? html`<div class="eedit">Editing the entry from ${entryParts(table, editing)[0] ?? "earlier"}</div>`
+        : ""}
+      <div class="form cols">
+        ${Object.entries(table.columns).map(([name, col]) =>
+          fieldFor(name, col, editing ? editing[name] : undefined, { plain: true }),
+        )}
+        <div class="bar">
+          <button class="btn primary" type="submit">${editing ? "Save changes" : `Add ${current.label.toLowerCase()}`}</button>
+          ${editing ? html`<a class="btn" href="${tab(table.name)}">Cancel</a>` : ""}
+        </div>
+      </div>
+    </form>
+
+    <div class="card erecent">
+      <h3>Latest ${current.label.toLowerCase()}</h3>
+      ${current.recent.length === 0
+        ? html`<p class="eempty">Nothing logged yet.</p>`
+        : html`<ul>
+            ${current.recent.map((row) => {
+              const [first, ...rest] = entryParts(table, row);
+              return html`<li class="${editing?.id === row.id ? "on" : ""}">
+                <div class="eline">
+                  <b>${first ?? "—"}</b>${rest.length ? html` · ${rest.join(" · ")}` : ""}
+                  <span class="eby">${writer(row)}</span>
+                </div>
+                <div class="eacts">
+                  <a class="btn" href="${tab(table.name)}&edit=${encodeURIComponent(String(row.id))}">Edit</a>
+                  <form method="post" action="${path}/rows/${table.name}/${row.id}/delete"
+                        data-confirm="Delete this entry?">
+                    <button class="btn danger" type="submit">Delete</button>
+                  </form>
+                </div>
+              </li>`;
+            })}
+          </ul>`}
+    </div>
+  </section>`;
+}
+
+const ENTRY_CSS = `
+.entry{margin:0 0 22px}
+.etabs{display:flex;gap:6px;overflow-x:auto;padding-bottom:2px;margin-bottom:12px;scrollbar-width:none}
+.etabs::-webkit-scrollbar{display:none}
+.etabs a{flex:none;padding:8px 14px;border-radius:999px;border:1px solid var(--border);
+background:var(--panel);color:var(--fg);font-size:13.5px;text-decoration:none}
+.etabs a.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.eform{margin-bottom:12px}
+.eform .form{padding:14px}
+.eform .bar{margin-top:2px}
+.eform .btn.primary{padding:10px 18px;font-size:14px}
+.eedit{padding:12px 14px 0;font-size:12.5px;color:var(--muted)}
+.entry input,.entry select,.entry textarea{font-size:16px}
+.entry .field textarea{font-family:var(--sans)}
+.erecent{padding:12px 14px}
+.erecent h3{margin:0 0 8px;font-size:13px;font-weight:600}
+.erecent ul{list-style:none;margin:0;padding:0}
+.erecent li{display:flex;gap:10px;align-items:center;justify-content:space-between;
+padding:9px 0;border-top:1px solid var(--border);font-size:13px}
+.erecent li:first-child{border-top:0}
+.erecent li.on .eline{color:var(--accent)}
+.eline{min-width:0;line-height:1.45}
+.eby{display:block;color:var(--faint);font-size:11.5px}
+.eacts{display:flex;gap:6px;flex:none}
+.eacts form{display:contents}
+.eempty{margin:0;color:var(--muted);font-size:12.5px}
+`;
+
+/*
+ * The share-link page's only script, and only when it carries a form: ask
+ * before a delete, send a form once (a double tap on "Add" was two feeds),
+ * and move a "now" time forward when the page comes back from the background
+ * untouched — a phone keeps a tab open for hours, and a feed logged at 03:10
+ * from a page opened at 23:40 should not need its time corrected by hand.
+ */
+const ENTRY_JS = `(function () {
+  var touched = false;
+  document.addEventListener("submit", function (e) {
+    var f = e.target, ask = f.dataset && f.dataset.confirm;
+    if (ask && !confirm(ask)) { e.preventDefault(); return; }
+    if (f.hasAttribute("data-once")) {
+      if (f.dataset.sent) e.preventDefault(); else f.dataset.sent = "1";
+    }
+  });
+  document.addEventListener("input", function (e) {
+    if (e.target && e.target.form && e.target.form.hasAttribute("data-once")) touched = true;
+  });
+  function now() {
+    var d = new Date(), p = function (n) { return String(n).padStart(2, "0"); };
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) +
+      "T" + p(d.getHours()) + ":" + p(d.getMinutes());
+  }
+  function refresh() {
+    if (touched) return;
+    document.querySelectorAll("input[data-now]").forEach(function (i) { i.value = now(); });
+  }
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible") refresh();
+  });
+  // Back to this page from the browser's cache: the form it shows was never
+  // sent from here, so it may be sent again.
+  window.addEventListener("pageshow", function (e) {
+    if (!e.persisted) return;
+    document.querySelectorAll("form[data-once]").forEach(function (f) { delete f.dataset.sent; });
+    refresh();
+  });
+})();`;
+
 /**
  * A view served over a share link.
  *
@@ -5415,28 +5675,39 @@ export function viewPage(args: {
  * links anywhere — no tabs, no breadcrumb, no workflow names, no hint that
  * there is a dashboard behind it — because the person holding this link was
  * given one page and not an account.
+ *
+ * When the view names `entry` tables, the page also carries a form for each
+ * — tabs across the top, the form, and the five newest rows of that table
+ * with Edit and Delete. It sits above the panels, because on a phone logging
+ * is what the page is opened for.
  */
 export function publicViewPage(args: {
   view: LoadedView;
   panels: Panel[];
   controls: Record<string, string>;
   path: string;
+  entry?: PublicEntry | null;
 }) {
-  const { view } = args;
+  const { view, entry } = args;
   return html`<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="dark light">
 <meta name="robots" content="noindex,nofollow">
 <title>${view.title}</title>
-<style>${raw(CSS)}${raw(VIEW_CSS)}</style>
+<style>${raw(CSS)}${raw(VIEW_CSS)}${entry ? raw(ENTRY_CSS) : ""}</style>
 </head><body><div class="pubwrap">
   <div class="vhead">
     <h1>${view.title}</h1>
     ${view.description ? html`<p>${view.description}</p>` : ""}
     ${renderControls(view, args.controls, args.path)}
   </div>
+  ${entry ? renderEntry(entry, args.path) : ""}
   ${renderPanels(args.panels)}
-  <div class="pubfoot">Generated ${fmt(Date.now())} · read-only</div>
-</div></body></html>`;
+  <div class="pubfoot">
+    ${entry
+      ? html`Logging as <b>${entry.label}</b> · updated ${localWhen(Date.now()).toLowerCase()}`
+      : html`Generated ${fmt(Date.now())} · read-only`}
+  </div>
+</div>${entry ? html`<script>${raw(ENTRY_JS)}</script>` : ""}</body></html>`;
 }

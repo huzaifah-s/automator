@@ -1640,6 +1640,50 @@ dashboard with the chrome hidden.
 So: keep the ops view private, share the finance one with the person who asks
 you how the month went.
 
+### Logging through a share link
+
+A shareable view can also name **entry tables** — the tables its links may add
+rows to, edit and delete from. It is the one way somebody without the dashboard
+password writes data, and it exists so a person can log things from their
+phone without being handed the keys to the credentials and the workflows.
+
+```ts
+export default defineView({
+  name: "baby",
+  title: "Baby",
+  shareable: true,                       // entry needs it: writes go through links
+  entry: [
+    { table: "baby_feeds", label: "Milk" },   // the tab label
+    "baby_expenses",                          // or a bare name
+  ],
+  load(ctx) { /* panels, as usual — load() still never writes */ },
+});
+```
+
+The link page then opens with a tab per table, a form built from the table's
+columns (times start at *now*, and update themselves if the page was left open
+in the background), and that table's five newest rows with **Edit** and
+**Delete**. The panels follow below. Every row it writes is stamped with the
+link's label — `written_by: link:Wife` — so mint one link per person. The
+Sharing drawer on the dashboard says plainly which tables a view's links can
+write to.
+
+Same rules as reading, plus one:
+
+- **The file decides which tables, and it is re-read on every request.** Take a
+  table out of `entry` and every link stops writing to it at once; the page
+  still reads. A table name in the URL is only ever *tested against* that list,
+  so a link for the baby view cannot write to `expenses`.
+- **Anything that fails a check is the same bare 404** as a dead link.
+- **Writes go through the same validation as the Tables tab** (`rowFromForm`
+  and the table client — decimals in a money field are converted there, as
+  they are on the dashboard). Delete is the Tables tab's soft delete, so a
+  mistake made from a phone is restorable from the dashboard.
+
+`views/baby/baby.ts` with `tables/baby/` is the worked example: milk (ml,
+breast milk or formula, a Vitamin D tick), nappies, sleep, vaccine
+appointments, growth readings and spending by which parent paid (Huzaifah or Zahidah).
+
 ### The personal-finance view
 
 `views/personal-finance/overview.ts` is the worked example — money in and out

@@ -49,6 +49,7 @@ import {
 } from "../core/variables.ts";
 import {
   buildViewCtx,
+  entryList,
   resolveControls,
   viewRegistry,
   type LoadedView,
@@ -61,6 +62,7 @@ import {
   resolveViewLink,
   viewLinks,
 } from "../core/view-links.ts";
+import type { ViewLinkRecord } from "../core/types.ts";
 import type { Registry } from "../core/loader.ts";
 import { planReplay, workflowsBlockedBy } from "./inspect.ts";
 import { createMcpRouter, opsConnector } from "./mcp.ts";
@@ -640,13 +642,32 @@ export function createApp(registry: Registry): Hono {
    *   - `noindex` on the response as well as in the document, because a link
    *     pasted into a chat gets fetched by things that never parse the HTML.
    */
-  app.get("/v/:token", async (c) => {
-    const link = resolveViewLink(c.req.param("token"));
-    const def = link ? viewRegistry.get(link.view) : undefined;
-    if (!link || !def || !def.shareable) return c.notFound();
+  /** The tables a view's links may write to that are actually loaded, in the file's order. */
+  const entryTables = (def: LoadedView): { table: LoadedTable; label: string }[] =>
+    entryList(def).flatMap(({ table, label }) => {
+      const loaded = getTable(table);
+      return loaded ? [{ table: loaded, label }] : [];
+    });
 
-    noteViewLinkUse(link.id);
+  const renderPublicView = async (
+    c: any,
+    link: ViewLinkRecord,
+    def: LoadedView,
+    extra: { error?: string | null; tab?: string; editId?: string; status?: number } = {},
+  ) => {
+    const token = c.req.param("token");
     const { panels, controls } = await runView(def, c.req.queries(), { isPublic: true });
+
+    // The tab comes from the querystring and is only ever a *choice among*
+    // the view's own entry tables — an unknown one falls back to the first.
+    const tables = entryTables(def);
+    const asked = extra.tab ?? c.req.query("t") ?? "";
+    const active = (tables.find((t) => t.table.name === asked) ?? tables[0])?.table;
+    // An edit only ever opens on the active tab's table, so an id from one
+    // table cannot be read through another's form. A failed write says which
+    // row it was editing itself; a GET carries it in the querystring.
+    const editId = extra.tab !== undefined ? extra.editId : c.req.query("edit");
+    const editing = active && editId ? dataTable(active.name).get(editId) : null;
 
     c.header("X-Robots-Tag", "noindex, nofollow");
     // A shared page is a live read of the database, and a proxy holding a copy
@@ -657,9 +678,112 @@ export function createApp(registry: Registry): Hono {
         view: def,
         panels,
         controls,
-        path: `/v/${c.req.param("token")}`,
+        path: `/v/${token}`,
+        entry: active
+          ? {
+              label: link.label,
+              tables: tables.map(({ table, label }) => ({
+                table,
+                label,
+                recent: dataTable(table.name).query({ limit: 5 }),
+              })),
+              active: active.name,
+              editing: editing && !editing.deleted_at ? editing : null,
+              error: extra.error ?? null,
+            }
+          : null,
       }) as any,
+      extra.status ?? 200,
     );
+  };
+
+  app.get("/v/:token", async (c) => {
+    const link = resolveViewLink(c.req.param("token"));
+    const def = link ? viewRegistry.get(link.view) : undefined;
+    if (!link || !def || !def.shareable) return c.notFound();
+
+    noteViewLinkUse(link.id);
+    return renderPublicView(c, link, def);
+  });
+
+  /*
+   * Writing through a share link — the one way a person without the
+   * dashboard's credentials adds a row.
+   *
+   * Every check the read route makes, plus one: the table must be named in
+   * the view file's `entry`, re-read on every request. The table name in the
+   * path is only ever *tested against* that list; it never widens it. So a
+   * link minted for the baby view cannot write to `expenses` by editing the
+   * URL, and taking a table out of `entry` stops every link writing to it on
+   * the next request. Anything that fails a check answers the same bare 404
+   * as a dead link, for the reason the read route gives.
+   *
+   * The rows go in through the same `rowFromForm` and table client as the
+   * Tables tab, stamped with the link's label so the table says who logged
+   * what. Deleting is the Tables tab's soft delete: a mistake made from a
+   * phone is restorable from the dashboard.
+   */
+  const entryTarget = (token: string, name: string) => {
+    const link = resolveViewLink(token);
+    const def = link ? viewRegistry.get(link.view) : undefined;
+    if (!link || !def || !def.shareable) return null;
+    if (!entryList(def).some((e) => e.table === name)) return null;
+    const table = getTable(name);
+    return table ? { link, def, table } : null;
+  };
+
+  const backToTab = (token: string, table: string) => `/v/${token}?t=${encodeURIComponent(table)}`;
+
+  app.post("/v/:token/rows/:table", async (c) => {
+    const target = entryTarget(c.req.param("token"), c.req.param("table"));
+    if (!target) return c.notFound();
+    const { link, def, table } = target;
+    try {
+      const { row } = dataTable(table.name).insert(rowFromForm(table, await c.req.parseBody()), {
+        writtenBy: `link:${link.label}`,
+        ifExists: "error",
+      });
+      log.info(`Row ${row.id} added to ${table.name} through share link "${link.label}"`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return renderPublicView(c, link, def, { error: message, tab: table.name, status: 400 });
+    }
+    return c.redirect(backToTab(c.req.param("token"), table.name), 303);
+  });
+
+  app.post("/v/:token/rows/:table/:id", async (c) => {
+    const target = entryTarget(c.req.param("token"), c.req.param("table"));
+    if (!target) return c.notFound();
+    const { link, def, table } = target;
+    try {
+      dataTable(table.name).update(c.req.param("id"), rowFromForm(table, await c.req.parseBody()), {
+        writtenBy: `link:${link.label}`,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return renderPublicView(c, link, def, {
+        error: message,
+        tab: table.name,
+        editId: c.req.param("id"),
+        status: 400,
+      });
+    }
+    return c.redirect(backToTab(c.req.param("token"), table.name), 303);
+  });
+
+  app.post("/v/:token/rows/:table/:id/delete", async (c) => {
+    const target = entryTarget(c.req.param("token"), c.req.param("table"));
+    if (!target) return c.notFound();
+    const { link, def, table } = target;
+    if (!dataTable(table.name).remove(c.req.param("id"))) {
+      return renderPublicView(c, link, def, {
+        error: "That entry is already deleted, or was never there.",
+        tab: table.name,
+        status: 400,
+      });
+    }
+    log.info(`Row ${c.req.param("id")} deleted from ${table.name} through share link "${link.label}"`);
+    return c.redirect(backToTab(c.req.param("token"), table.name), 303);
   });
 
   /* --------------------------------------------------------------- auth */

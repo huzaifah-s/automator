@@ -102,7 +102,8 @@ tables/            data tables — one file per table, `defineTable()` as the
 views/             read-only pages — one file per view, `defineView()` as the
                    default export, grouped by subdirectory like the other two.
                    A view only reads, so it hot-reloads like a workflow. See
-                   "Views" below.
+                   "Views" below. (Its share links may *write*, to the tables
+                   its `entry` names — the server does that, never `load()`.)
 workflows/         user workflows — the only directory most changes touch
                    subdirectories just group them: workflows/pblsh/thing.ts
                    loads the same way, and names stay global and flat.
@@ -716,6 +717,15 @@ repository allows — and it is the whole reason a public route is allowed to
 exist next to "the dashboard is read-only about what a thing is". Do not add a
 route that turns sharing *on* for a view whose file says nothing.
 
+**A share link writes only to the tables its view file names in `entry`, and
+that list is re-read on every write.** The table in the URL is tested against
+`entryList(def)`, never trusted, and a view that stops naming a table stops
+every link writing to it on the next request — the same "database may only
+subtract" rule as `shareable`. Do not add a way to grant a link write access
+from the dashboard, a per-link table list, or a write that skips
+`rowFromForm` and the table client's validation. `load()` stays read-only;
+the writing is the server's.
+
 **A dead share link answers a bare 404, and which kind of dead it is must stay
 unsaid.** Unknown token, expired, revoked, deleted view, view that stopped
 being shareable — one response for all five. "This link has expired" tells
@@ -1321,6 +1331,17 @@ Panels: `stats` `bars` `series` `rows` `note`. On `ctx`: `table` `tables` `sql`
 makes a view bookmarkable and lets a share link carry the slice its sender was
 looking at.
 
+**Entry through a share link.** `entry: ["table", { table, label }]` on a
+`shareable` view lets its links add, edit and soft-delete rows in exactly those
+tables — the link page grows a tab and a form per table above the panels, and
+rows are stamped `written_by: link:<label>`. The routes are
+`POST /v/:token/rows/:table[/:id[/delete]]` in `app.ts`, registered beside
+`GET /v/:token` above the auth block. Every one re-checks the link, the view,
+`shareable`, *and* that `entryList(def)` still names the table, and answers a
+bare 404 otherwise. They write through `rowFromForm` and the table client like
+the Tables tab, never through anything the view file supplies. `views/baby/` is
+the example.
+
 A `money()` column holds whole cents and a chart plots display units, so
 convert before you build a point: pass ringgit to `value` and the formatted
 string to `display`. An axis reading "120k" for a twelve-hundred-ringgit month
@@ -1551,6 +1572,16 @@ These were decided deliberately. Raise a trade-off before changing any of them:
   same asymmetry as pausing (the database may only subtract). A browser-built
   dashboard, with panels and queries stored as rows, is the n8n shape this
   project exists to avoid, and it is what the Views tab must not become.
+
+  **Entry (2026-11-14)** is the one widening, taken deliberately: a shareable
+  view may name tables in `entry`, and its links may then add, edit and
+  soft-delete rows in them. It was added so a family member can log a baby's
+  feeds from a phone without the dashboard password, which also unlocks
+  credentials and workflows. It stays inside this decision rather than
+  beside it: *which* tables is code, the links are still the only thing in the
+  database, and nothing about a table's shape is reachable. A link never
+  touches a table its view does not name, and the dashboard cannot widen the
+  list.
 
   The panel set is closed — stats, bars, series, rows, note — for the same
   reason the MCP tool list is: every addition is weight carried by everything.

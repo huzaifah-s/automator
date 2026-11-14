@@ -37,12 +37,14 @@ const midnight = (ms: number) => {
 };
 
 const pad = (n: number) => String(n).padStart(2, "0");
+/** "7:05 PM" — 12-hour, as the family reads a clock. */
 const clock = (ms: number) => {
   const d = new Date(ms);
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const h = d.getHours();
+  return `${h % 12 || 12}:${pad(d.getMinutes())} ${h < 12 ? "AM" : "PM"}`;
 };
 
-/** "Today 14:05" / "Yesterday 09:30" / "12 Nov 14:05". */
+/** "Today 2:05 PM" / "Yesterday 9:30 AM" / "12 Nov 2:05 PM". */
 const when = (ms: number, now: number) => {
   const days = Math.round((midnight(now) - midnight(ms)) / DAY);
   if (days === 0) return `Today ${clock(ms)}`;

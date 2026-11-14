@@ -1279,15 +1279,26 @@ export function unauthorizedPage() {
  */
 
 /**
- * "2026-11-14 21:05:09" in the server's zone (TZ). Not `toISOString()`: that
- * is always UTC, so a dashboard in Kuala Lumpur showed every time eight hours
- * behind, while the edit form beside it (localInput) showed the right one.
+ * "2026-11-14 9:05:09 PM" in the server's zone (TZ). Not `toISOString()`:
+ * that is always UTC, so a dashboard in Kuala Lumpur showed every time eight
+ * hours behind, while the edit form beside it (localInput) showed the right one.
  */
-const fmt = (ts: number | null) => {
-  if (!ts) return "—";
+const fmt = (ts: number | null) => (ts ? `${localInput(ts).slice(0, 10)} ${clock12(ts, true)}` : "—");
+
+/**
+ * "7:05 PM" (or "7:05:09 PM" with seconds) in the server's zone. Every clock
+ * time a person reads is 12-hour; only the datetime-local input value
+ * (localInput) stays 24-hour, because that is the format the input takes.
+ */
+function clock12(ms: number, seconds = false, millis = false): string {
+  const d = new Date(ms);
   const p = (n: number) => String(n).padStart(2, "0");
-  return `${localInput(ts).replace("T", " ")}:${p(new Date(ts).getSeconds())}`;
-};
+  const h = d.getHours();
+  let t = `${h % 12 || 12}:${p(d.getMinutes())}`;
+  if (seconds || millis) t += `:${p(d.getSeconds())}`;
+  if (millis) t += `.${String(d.getMilliseconds()).padStart(3, "0")}`;
+  return `${t} ${h < 12 ? "AM" : "PM"}`;
+}
 
 // One spelling of a duration for the whole dashboard, views included — see
 // formatDuration in src/core/views.ts.
@@ -3029,7 +3040,7 @@ export function runPage(
           : logs.map(
               (l) => html`
                 <div class="logline">
-                  <span class="muted">${fmt(l.ts).slice(11)}.${String(new Date(l.ts).getMilliseconds()).padStart(3, "0")}</span>
+                  <span class="muted">${clock12(l.ts, true, true)}</span>
                   <span class="${l.level === "error" ? "failed" : l.level === "warn" ? "skipped" : "muted"}">${l.level}</span>
                   <span>${l.msg}${l.data ? html`<pre>${pretty(l.data)}</pre>` : ""}</span>
                 </div>
@@ -4947,10 +4958,10 @@ function localInput(ms: number): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-/** "Today 14:05" / "Yesterday 09:30" / "12 Nov 14:05", in the server's zone. */
+/** "Today 2:05 PM" / "Yesterday 9:30 AM" / "12 Nov 2:05 PM", in the server's zone. */
 function localWhen(ms: number): string {
   const d = new Date(ms);
-  const time = localInput(ms).slice(11);
+  const time = clock12(ms);
   const day = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   const days = Math.round((day(new Date()) - day(d)) / 86_400_000);
   if (days === 0) return `Today ${time}`;
@@ -5508,7 +5519,7 @@ function labelUnit(name: string, col: ColumnDef): string | null {
 function dateWhen(iso: string): string {
   const [y, m, d] = iso.split("-").map(Number);
   if (!y || !m || !d) return iso;
-  return localWhen(new Date(y, m - 1, d).getTime()).replace(/ \d\d:\d\d$/, "");
+  return localWhen(new Date(y, m - 1, d).getTime()).replace(/ \d{1,2}:\d\d [AP]M$/, "");
 }
 
 /**

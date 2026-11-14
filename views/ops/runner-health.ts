@@ -54,7 +54,17 @@ export default defineView({
       else if (row.status === "success") day.ok += row.count;
       perDay.set(row.day, day);
     }
-    const days = [...perDay.entries()].sort((a, b) => a[0] - b[0]);
+    /*
+     * `row.day` is a UTC day number (days since 1970), not a timestamp — it
+     * used to go straight into `new Date()`, which read it as milliseconds and
+     * labelled every bar "01-01". Days with no runs are filled in as zeros so
+     * the axis is evenly spaced in time: a quiet day is part of the answer.
+     */
+    const DAY = 86_400_000;
+    const days: [number, { ok: number; bad: number }][] = [];
+    for (let d = Math.floor(since / DAY); d <= Math.floor(Date.now() / DAY); d++) {
+      days.push([d, perDay.get(d) ?? { ok: 0, bad: 0 }]);
+    }
 
     // Failures per workflow, from the runs themselves rather than from a
     // second aggregate: this is a handful of rows either way, and one source
@@ -79,7 +89,7 @@ export default defineView({
         title: "Runs per day",
         legend: ["Succeeded", "Failed"],
         points: days.map(([day, c]) => ({
-          label: new Date(day).toISOString().slice(5, 10),
+          label: new Date(day * DAY).toISOString().slice(5, 10),
           values: [c.ok, c.bad],
           displays: [`${c.ok} ok`, `${c.bad} failed`],
         })),

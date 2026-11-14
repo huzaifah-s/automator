@@ -457,6 +457,83 @@ export const PROVIDERS = {
     },
   },
 
+  /*
+   * LinkedIn, as one member posting to their own profile. The self-serve
+   * "Share on LinkedIn" + "Sign In with LinkedIn using OpenID Connect"
+   * products, no partner programme.
+   *
+   * The token lives 60 days and self-serve apps get NO refresh token (those
+   * are partner-only), so this is a plain stored token rather than
+   * `defineOAuth`: nothing here can renew it, a person regenerates it in the
+   * developer portal's token generator and pastes it in again. The client id
+   * and secret are optional and only let the test — and
+   * workflows/personal/linkedin-token-alert.ts — ask LinkedIn when the token
+   * expires, so the reminder arrives before the poster starts failing.
+   */
+  linkedin: {
+    label: "LinkedIn",
+    blurb: "A member access token, for posting to your own LinkedIn profile.",
+    docs: "https://www.linkedin.com/developers/tools/oauth/token-generator",
+    fields: {
+      access_token: {
+        label: "Access token",
+        schema: z.string().min(20),
+        placeholder: "AQV…",
+        help:
+          "Token generator › your app › scopes openid, profile, w_member_social. " +
+          "Lasts 60 days; paste a new one here when the reminder says so.",
+      },
+      client_id: {
+        label: "Client ID",
+        schema: z.string().min(5),
+        secret: false,
+        optional: true,
+        help: "From the app's Auth tab. With the secret, lets the automator see when the token expires.",
+      },
+      client_secret: {
+        label: "Client secret",
+        schema: z.string().min(5),
+        optional: true,
+      },
+    },
+    async test(v, signal) {
+      const token = need(v, "access_token");
+
+      // OpenID userinfo: read-only, free, and the same call the poster uses
+      // to find whose profile it is posting to.
+      const me = await probe(
+        "https://api.linkedin.com/v2/userinfo",
+        { headers: { authorization: `Bearer ${token}` } },
+        signal,
+        "LinkedIn",
+      );
+      if (!me?.sub) throw new Error("LinkedIn answered without a member id — is the openid scope missing?");
+
+      let when = "";
+      if (v.client_id && v.client_secret) {
+        const info = await probe(
+          "https://www.linkedin.com/oauth/v2/introspectToken",
+          {
+            method: "POST",
+            headers: { "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+              client_id: v.client_id,
+              client_secret: v.client_secret,
+              token,
+            }).toString(),
+          },
+          signal,
+          "LinkedIn",
+        ).catch(() => undefined);
+        if (typeof info?.expires_at === "number") {
+          when = `, token expires ${new Date(info.expires_at * 1000).toISOString().slice(0, 10)}`;
+        }
+      }
+
+      return `Authenticated as ${me.name ?? me.sub}${when}`;
+    },
+  },
+
   monday: {
     label: "Monday.com",
     blurb: "A personal or service API token, for reading boards and writing back to items.",

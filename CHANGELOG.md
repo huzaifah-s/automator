@@ -6,6 +6,26 @@ Entries record the *reasoning*, not just the diff — `git log` already has the
 diff. If a change settled a question, say what was settled and what the losing
 option was, so nobody relitigates it from scratch.
 
+## 2026-11-14
+
+### LinkedIn: a poster and a token reminder
+
+`linkedin-poster` is the Threads poster's twin for Huzaifah's own LinkedIn,
+through the official self-serve Posts API (Share on LinkedIn + OpenID
+Connect). It works the same way: a Notion database of Approved rows, the row
+locked before anything publishes, and an ambiguous publish never retried. The
+page body is one post rather than a chain, images are uploaded through the
+Images API rather than linked, and the text is escaped because `commentary`
+is "little text", where a stray bracket can cut the post short.
+
+The token goes in a new `linkedin` credential, not `defineOAuth`. Self-serve
+apps get a 60-day token and no refresh token, so there is nothing to refresh:
+a person makes a new one and pastes it in. `linkedin-token-alert` asks
+LinkedIn when the token expires (it needs the optional client id and secret)
+and sends a Telegram nudge at 7, 3 and 1 day(s) left. *Considered:* Unipile or
+other cookie-based APIs. They give DMs too, but cost about €49 a month for one
+account and risk LinkedIn flagging the profile. Posting is all this needs.
+
 ## 2026-11-05
 
 ### One create is one token, and a token can be renamed

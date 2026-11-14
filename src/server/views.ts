@@ -1278,8 +1278,16 @@ export function unauthorizedPage() {
  * value you would grep for, the label is not.
  */
 
-const fmt = (ts: number | null) =>
-  ts ? new Date(ts).toISOString().replace("T", " ").slice(0, 19) : "—";
+/**
+ * "2026-11-14 21:05:09" in the server's zone (TZ). Not `toISOString()`: that
+ * is always UTC, so a dashboard in Kuala Lumpur showed every time eight hours
+ * behind, while the edit form beside it (localInput) showed the right one.
+ */
+const fmt = (ts: number | null) => {
+  if (!ts) return "—";
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${localInput(ts).replace("T", " ")}:${p(new Date(ts).getSeconds())}`;
+};
 
 // One spelling of a duration for the whole dashboard, views included — see
 // formatDuration in src/core/views.ts.
@@ -3021,7 +3029,7 @@ export function runPage(
           : logs.map(
               (l) => html`
                 <div class="logline">
-                  <span class="muted">${new Date(l.ts).toISOString().slice(11, 23)}</span>
+                  <span class="muted">${fmt(l.ts).slice(11)}.${String(new Date(l.ts).getMilliseconds()).padStart(3, "0")}</span>
                   <span class="${l.level === "error" ? "failed" : l.level === "warn" ? "skipped" : "muted"}">${l.level}</span>
                   <span>${l.msg}${l.data ? html`<pre>${pretty(l.data)}</pre>` : ""}</span>
                 </div>

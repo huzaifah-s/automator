@@ -1305,6 +1305,22 @@ a column rather than a guess.
 Columns: `text()` `int()` `real()` `money()` `bool()` `date()` `datetime()`
 `json()` `enumOf([...])`. All take `{ nullable, default, label, help }`.
 
+**Changing a column.** A new column is added at the next boot and is NULL on
+every row that predates it — `default` only applies to writes. `backfill`
+fills those older rows, typically from a column the file has since dropped:
+
+```ts
+backfill: {
+  wee:  { sql: "kind IN ('wee', 'both')",  needs: ["kind"] },
+  poop: { sql: "kind IN ('poop', 'both')", needs: ["kind"] },
+},
+```
+
+It runs every boot as `UPDATE … SET col = (sql) WHERE col IS NULL`, so after
+the first it does nothing. `needs` skips it on a fresh database, where the old
+column never existed. A dropped column is never deleted — it stays in SQLite,
+unread (`tables/baby/nappies.ts` is the example).
+
 ### Reading and writing
 
 From a workflow, `ctx.table(name)`:
@@ -1681,7 +1697,7 @@ Same rules as reading, plus one:
   mistake made from a phone is restorable from the dashboard.
 
 `views/baby/baby.ts` with `tables/baby/` is the worked example: milk (ml,
-breast milk, Nestlé NAN or Dutch Baby, a Vitamin D tick), nappies, sleep, vaccine
+breast milk, Nestlé NAN or Dutch Baby, a Vitamin D tick), diaper changes (wee / poop ticks), sleep, vaccine
 appointments, growth readings and spending by which parent paid (Huzaifah or Zahidah).
 
 ### The personal-finance view

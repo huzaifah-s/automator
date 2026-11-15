@@ -17,8 +17,6 @@
  */
 export const MILKS = ["breast_milk", "nestle_nan", "dutch_baby"] as const;
 
-export const NAPPY_KINDS = ["poop", "wee", "both"] as const;
-
 export const BABY_EXPENSE_CATEGORIES = [
   "milk",
   "diapers",

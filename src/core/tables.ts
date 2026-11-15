@@ -144,6 +144,25 @@ export interface TableDef {
   dedupe?: string | string[];
   /** Default ordering for listings. Defaults to newest first. */
   order?: { column: string; direction?: "asc" | "desc" };
+  /**
+   * Fills a column on the rows that predate it, at every boot.
+   *
+   * A new column is NULL on every older row (see `syncSchema`), and a
+   * `default:` only applies to writes. This is the migration for that: for
+   * each entry, `UPDATE … SET col = (sql) WHERE col IS NULL`. Every write
+   * after the column exists goes through the validator and is never NULL in a
+   * required column, so the `IS NULL` guard makes it a no-op once it has run —
+   * it stays in the file as the record of how the old rows were read.
+   *
+   * `sql` is an SQLite expression over the row's own columns, typically one
+   * the definition has since dropped. `needs` lists those: when one is not in
+   * the database (a fresh install) there is nothing older to fill, so the
+   * entry is skipped. A column named in `needs` is also not warned about as
+   * left behind — the file says what it is for.
+   *
+   *     backfill: { wee: { sql: "kind IN ('wee', 'both')", needs: ["kind"] } }
+   */
+  backfill?: Record<string, { sql: string; needs?: string[] }>;
 }
 
 /** A table definition plus where it was found. */
@@ -207,6 +226,22 @@ export function defineTable(def: TableDef): TableDef {
 
   if (def.order && !names.includes(def.order.column) && !(IMPLICIT_COLUMNS as readonly string[]).includes(def.order.column)) {
     throw new Error(`${def.name}: order names "${def.order.column}", which is not one of its columns`);
+  }
+
+  for (const [col, fill] of Object.entries(def.backfill ?? {})) {
+    if (!names.includes(col)) {
+      throw new Error(`${def.name}: backfill names "${col}", which is not one of its columns`);
+    }
+    if (def.columns[col]!.nullable) {
+      // NULL is a real value in a nullable column, so `WHERE col IS NULL`
+      // would keep overwriting it, every boot, for ever.
+      throw new Error(`${def.name}.${col}: backfill needs a required column — this one is nullable`);
+    }
+    for (const need of fill.needs ?? []) {
+      if (!NAME_PATTERN.test(need)) {
+        throw new Error(`${def.name}.${col}: backfill needs "${need}", which is not a column name`);
+      }
+    }
   }
 
   return def;
@@ -330,9 +365,22 @@ function syncSchema(table: LoadedTable): void {
     }
   }
 
+  // After the ADD COLUMNs, so a backfilled column exists to be filled. Kept
+  // out of any try: a migration that cannot run is a schema problem, and stops
+  // the boot like one.
+  const present = new Set([...existing.keys(), ...Object.keys(table.columns)]);
+  const needed = new Set<string>();
+  for (const [name, fill] of Object.entries(table.backfill ?? {})) {
+    for (const need of fill.needs ?? []) needed.add(need);
+    if ((fill.needs ?? []).some((need) => !present.has(need))) continue;
+    const { changes } = db.prepare(`UPDATE ${t} SET ${name} = (${fill.sql}) WHERE ${name} IS NULL`).run();
+    if (changes > 0) log.info(`table ${table.name}: backfilled ${name} on ${changes} row(s)`);
+  }
+
   for (const name of existing.keys()) {
     if (name in table.columns) continue;
     if ((IMPLICIT_COLUMNS as readonly string[]).includes(name)) continue;
+    if (needed.has(name)) continue;
     log.warn(
       `table ${table.name}: column ${name} exists in the database but not in ${table.file} — ` +
         `left in place and ignored`,

@@ -7,7 +7,7 @@ import { bars, defineView, formatMoney, rows, series, stats } from "../../src/co
  *
  * Both parents, from their phones, each through their own share link minted
  * on the dashboard ("Huzaifah", "Wife"). `entry` below is what turns those
- * links from read-only into the place feeds, nappies, sleep, vaccines, growth
+ * links from read-only into the place feeds, diapers, sleep, vaccines, growth
  * and spending are logged: the link page puts a tab per table above these
  * panels, and every row it writes is stamped with the link's label. Revoking
  * a link on the dashboard stops it reading and writing at once; taking a
@@ -78,12 +78,12 @@ const PAYER: Record<string, string> = { huzaifah: "Huzaifah", zahidah: "Zahidah"
 export default defineView({
   name: "baby",
   title: "Baby",
-  description: "Milk, poop, sleep, vaccines, growth and spending — logged from your phone.",
+  description: "Milk, diapers, sleep, vaccines, growth and spending — logged from your phone.",
 
   shareable: true,
   entry: [
     { table: "baby_feeds", label: "Milk" },
-    { table: "baby_nappies", label: "Poop" },
+    { table: "baby_nappies", label: "Diaper" },
     { table: "baby_sleep", label: "Sleep" },
     { table: "baby_vaccines", label: "Vaccine" },
     { table: "baby_growth", label: "Growth" },
@@ -98,7 +98,7 @@ export default defineView({
     const now = ctx.now;
     const today = midnight(now);
     const feeds = ctx.from("baby_feeds");
-    const nappies = ctx.from("baby_nappies");
+    const diapers = ctx.from("baby_nappies");
     const sleep = ctx.from("baby_sleep");
     const vaccines = ctx.from("baby_vaccines");
     const growth = ctx.from("baby_growth");
@@ -122,19 +122,30 @@ export default defineView({
         WHERE deleted_at IS NULL AND fed_at <= ? ORDER BY fed_at DESC LIMIT 1`,
       now,
     );
-    const [lastPoop] = ctx.sql<{ changed_at: number }>(
-      `SELECT changed_at FROM ${nappies}
-        WHERE deleted_at IS NULL AND kind IN ('poop', 'both') AND changed_at <= ?
+    // A row is a change, not the moment the baby went: the time is when the
+    // diaper came off, and wee / poop are what was in it.
+    const [lastChange] = ctx.sql<{ changed_at: number; wee: number; poop: number }>(
+      `SELECT changed_at, wee, poop FROM ${diapers}
+        WHERE deleted_at IS NULL AND changed_at <= ?
         ORDER BY changed_at DESC LIMIT 1`,
       now,
     );
-    const [nappyCount] = ctx.sql<{ poops: number; wees: number }>(
-      `SELECT COALESCE(SUM(kind IN ('poop', 'both')), 0) AS poops,
-              COALESCE(SUM(kind IN ('wee', 'both')), 0)  AS wees
-         FROM ${nappies} WHERE deleted_at IS NULL AND changed_at >= ? AND changed_at <= ?`,
+    const [lastPoop] = ctx.sql<{ changed_at: number }>(
+      `SELECT changed_at FROM ${diapers}
+        WHERE deleted_at IS NULL AND poop = 1 AND changed_at <= ?
+        ORDER BY changed_at DESC LIMIT 1`,
+      now,
+    );
+    const [diaperCount] = ctx.sql<{ changes: number; poops: number; wees: number }>(
+      `SELECT COUNT(*) AS changes,
+              COALESCE(SUM(poop = 1), 0) AS poops,
+              COALESCE(SUM(wee = 1), 0)  AS wees
+         FROM ${diapers} WHERE deleted_at IS NULL AND changed_at >= ? AND changed_at <= ?`,
       today,
       now,
     );
+    const contents = (d: { wee: number; poop: number }) =>
+      d.wee && d.poop ? "wee + poop" : d.poop ? "poop" : d.wee ? "wee" : "dry";
 
     // A sleep with no end is still going, and counts up to now. Only the part
     // of each sleep that falls after midnight is today's.
@@ -171,9 +182,22 @@ export default defineView({
         tone: vitD ? "good" : "warn",
       },
       {
-        label: "Last poop",
-        value: lastPoop ? `${span(now - lastPoop.changed_at)} ago` : "—",
-        sub: `today: ${nappyCount?.poops ?? 0} poop · ${nappyCount?.wees ?? 0} wee`,
+        label: "Last diaper",
+        value: lastChange ? `${span(now - lastChange.changed_at)} ago` : "—",
+        sub: lastChange
+          ? `${when(lastChange.changed_at, now)} · ${contents(lastChange)}`
+          : "nothing logged yet",
+      },
+      {
+        label: "Diapers today",
+        value: String(diaperCount?.changes ?? 0),
+        // With no poop yet today, how long since the last one is the number
+        // worth watching; with one, it is the "Last diaper" tile's job.
+        sub:
+          `${diaperCount?.wees ?? 0} wet · ` +
+          (diaperCount?.poops || !lastPoop
+            ? `${diaperCount?.poops ?? 0} poop`
+            : `last poop ${span(now - lastPoop.changed_at)} ago`),
       },
       {
         label: "Sleep today",

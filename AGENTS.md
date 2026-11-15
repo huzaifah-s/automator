@@ -843,6 +843,17 @@ the "still owed" panel of exactly the debts it exists to show, and it bit
 for rows the filter had already counted as `me`. If you COALESCE a column in
 one clause, COALESCE it in all of them.
 
+**`backfill` is the one data migration a table file can declare, and it must
+stay idempotent.** It runs inside `syncSchema` on every boot, after the
+`ADD COLUMN`s, as `UPDATE … SET col = (sql) WHERE col IS NULL`. The `IS NULL`
+guard is the whole reason it is safe to run forever: every row written through
+the validator has a value in a required column, so only rows older than the
+column match. Do not use it for a nullable column (NULL is a legitimate value
+there, and it would be overwritten every boot), and list every dropped column
+the expression reads in `needs` — on a fresh database that column does not
+exist, and an expression naming it would stop the boot. `baby_nappies` moved
+from a poop / wee / both `kind` to two ticks this way.
+
 **Views load after workflows, and a broken view warns instead of aborting the
 boot.** This is the opposite of a bad workflow or a bad table, and deliberately
 so: those decide what runs and what the schema is, while a view is a page

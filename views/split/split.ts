@@ -1,4 +1,14 @@
-import { bars, defineView, formatMoney, rows, stats, type Panel, type ViewCtx } from "../../src/core/define.ts";
+import {
+  bars,
+  defineView,
+  formatMoney,
+  rows,
+  stats,
+  type EntryChange,
+  type Panel,
+  type ViewCtx,
+  type ViewLinkInfo,
+} from "../../src/core/define.ts";
 import { listOf, resolveName, settleUp, splitBill, type Transfer } from "./_split.ts";
 
 /**
@@ -6,14 +16,21 @@ import { listOf, resolveName, settleUp, splitBill, type Transfer } from "./_spli
  *
  * ## Who uses it, and how
  *
- * Everyone in a split gets their own share link, labelled with their name as
- * it is spelled on the Person tab ("Huzaifah", "Zahidah"). `entry` turns the
- * link into the place expenses, settle-up payments, groups and people are
- * added, and "Paid by" / "From" open on whoever is holding the link.
+ * Everyone in a split gets their own share link, and **a link is a person**:
+ * make one labelled "Ali" and Ali is somebody a group can be made with, before
+ * he has ever opened it. The first time a link opens, the app adds its holder
+ * to `split_people` (named after the label), or — when there are people
+ * nobody's link opens as yet, as with links made before this rule — asks once
+ * which of them they are and writes the label onto that person's `link`. From
+ * then on it opens as them: "Paid by" starts on them, and "You owe…" is them.
+ * `whoIsWho` is the one place that decides which person a link is.
  *
- * A link shows every group. That is right for a household; a friend given a
- * link for one trip would also see the household's groceries, so for now a
- * trip with friends is better shown from the dashboard than shared.
+ * **A link sees only its holder's groups** — the ones they are a member of or
+ * have money in — and the bills, payments and balances inside them. A friend
+ * given a link for one trip does not see the household's groceries. That is
+ * enforced twice: `app.data()` leaves the rest out, and `canWrite` refuses a
+ * write to a group that is not theirs, so it does not rest on the page's
+ * script behaving. The dashboard, which has no link, sees everything.
  *
  * ## The model
  *
@@ -99,6 +116,51 @@ const add = (m: Map<string, number>, who: string, cents: number) => m.set(who, (
 
 const sentence = (t: Transfer) => `${t.from} pays ${t.to} ${rm(t.cents)}`;
 
+/** How a name or a link label is compared: case and spacing ignored. */
+const norm = (s: string | null | undefined) => (s ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+
+/** A name a split can say without being misread — the same rule the app types against. */
+export const usableName = (s: string) => !!s.trim() && !/[,;&+\d%]|\band\b/i.test(s);
+
+interface PersonRow {
+  id: string;
+  name: string;
+  link: string | null;
+  created_at: number;
+}
+
+/**
+ * Which person each share link is.
+ *
+ * A link opens as the person whose `link` names its label; failing that, the
+ * person whose name is spelled like it. Neither, and it is a link nobody is
+ * yet — `unmatched` — whose holder the app adds or asks. `claimable` is who
+ * such a holder may say they are: people no live link opens as, so one link
+ * can never take over somebody else's.
+ */
+function whoIsWho(ctx: ViewCtx, people: PersonRow[]) {
+  const explicit = new Map<string, string>();
+  const byName = new Map<string, string>();
+  for (const p of people) {
+    if (p.link?.trim() && !explicit.has(norm(p.link))) explicit.set(norm(p.link), p.name);
+    if (!byName.has(norm(p.name))) byName.set(norm(p.name), p.name);
+  }
+  const whoIs = (label: string): string | null => explicit.get(norm(label)) ?? byName.get(norm(label)) ?? null;
+
+  const links = ctx.shareLinks();
+  /** Each person's live links, by label. */
+  const linksOf = new Map<string, ViewLinkInfo[]>();
+  const unmatched: ViewLinkInfo[] = [];
+  for (const l of links) {
+    const who = whoIs(l.label);
+    if (who) linksOf.set(who, [...(linksOf.get(who) ?? []), l]);
+    else if (!unmatched.some((u) => norm(u.label) === norm(l.label))) unmatched.push(l);
+  }
+  const claimable = people.filter((p) => !linksOf.has(p.name)).map((p) => p.name);
+  const viewer = ctx.link?.label ?? null;
+  return { whoIs, linksOf, unmatched, claimable, viewer, me: viewer === null ? null : whoIs(viewer) };
+}
+
 /**
  * Everything the page knows, worked out once: groups with their members and
  * balances, every expense's shares (or why it has none), payments, and what
@@ -107,13 +169,27 @@ const sentence = (t: Transfer) => `${t.from} pays ${t.to} ${rm(t.cents)}`;
  * disagree about who owes what.
  */
 function ledger(ctx: ViewCtx) {
-  const personRows = ctx.sql<{ id: string; name: string }>(
-    `SELECT id, name FROM ${ctx.from("split_people")} WHERE deleted_at IS NULL ORDER BY created_at ASC`,
+  const personRows = ctx.sql<PersonRow>(
+    `SELECT id, name, link, created_at FROM ${ctx.from("split_people")} WHERE deleted_at IS NULL ORDER BY created_at ASC`,
   );
   const people = personRows.map((p) => p.name);
+  const ids = whoIsWho(ctx, personRows);
 
-  /** Things to fix. Every entry here except a group's member list is left out of the balances. */
-  const problems: { what: string; problem: string; table?: string; id?: string }[] = [];
+  /**
+   * Things to fix. Every entry here except a group's member list is left out
+   * of the balances. `group` is the group it belongs to, so a link is shown
+   * only its own; for one whose group is gone, `involves` and `by` (who wrote
+   * it) say whose it is.
+   */
+  const problems: {
+    what: string;
+    problem: string;
+    table?: string;
+    id?: string;
+    group?: string;
+    involves?: string[];
+    by?: string | null;
+  }[] = [];
 
   /* ------------------------------------------------------------ groups */
 
@@ -140,10 +216,22 @@ function ledger(ctx: ViewCtx) {
           what: `Group ${g.name}`,
           table: "split_groups",
           id: g.id,
+          group: g.name,
           problem: `"${typed}" is not on the Person tab — still counted as a member; add them there, or take them out of the group`,
         });
         members.push(typed);
       } else if (!members.includes(who)) members.push(who);
+    }
+    if (!listOf(g.members).length) {
+      problems.push({
+        what: `Group ${g.name}`,
+        table: "split_groups",
+        id: g.id,
+        group: g.name,
+        problem:
+          "nobody is ticked, so it counts everyone — including every friend given a link, now and later. " +
+          "Tick who's in it",
+      });
     }
     groups.set(g.name, {
       id: g.id,
@@ -170,6 +258,7 @@ function ledger(ctx: ViewCtx) {
         what: `Group ${g.name}`,
         table: "split_groups",
         id: g.id,
+        group: g.name,
         problem: `usual split "${g.split}": ${check.error}`,
       });
     }
@@ -194,6 +283,8 @@ function ledger(ctx: ViewCtx) {
         what: label,
         table: "split_expenses",
         id: e.id,
+        involves: [e.paid_by],
+        by: e.written_by,
         problem: `the group "${e.group_name}" no longer exists — pick another`,
       });
       continue;
@@ -206,6 +297,7 @@ function ledger(ctx: ViewCtx) {
         what: label,
         table: "split_expenses",
         id: e.id,
+        group: g.name,
         problem: e.split?.trim() ? `split "${e.split}": ${result.error}` : `group's usual split: ${result.error}`,
       });
       continue;
@@ -232,12 +324,14 @@ function ledger(ctx: ViewCtx) {
         what: label,
         table: "split_payments",
         id: p.id,
+        involves: [p.paid_by, p.paid_to],
+        by: p.written_by,
         problem: `the group "${p.group_name}" no longer exists — pick another`,
       });
       continue;
     }
     if (p.paid_by === p.paid_to) {
-      problems.push({ what: label, table: "split_payments", id: p.id, problem: "from and to are the same person" });
+      problems.push({ what: label, table: "split_payments", id: p.id, group: g.name, problem: "from and to are the same person" });
       continue;
     }
     add(g.net, p.paid_by, p.amount_cents);
@@ -245,7 +339,72 @@ function ledger(ctx: ViewCtx) {
     g.lastActivity = Math.max(g.lastActivity, p.created_at);
   }
 
-  return { people, personRows, known, groups, expenses, shares, payments, problems };
+  /**
+   * Whether the link viewing this may see a group: its holder is a member or
+   * has money in it. Everything on the dashboard (no link) is visible; a link
+   * nobody is yet sees nothing until its holder says who they are.
+   */
+  const canSee = (groupName: string): boolean => {
+    if (ids.viewer === null) return true;
+    const g = groups.get(groupName);
+    return !!ids.me && !!g && (g.members.includes(ids.me) || g.net.has(ids.me));
+  };
+
+  return { people, personRows, ids, known, groups, expenses, shares, payments, problems, canSee };
+}
+
+/**
+ * What a share link may write, on top of `entry` — see "A link sees only its
+ * holder's groups" above. Each refusal is a sentence the holder reads.
+ */
+function refuse(ctx: ViewCtx, change: EntryChange): string | null {
+  const { people, ids, groups, canSee } = ledger(ctx);
+  const label = ids.viewer ?? "";
+  const v = change.values ?? {};
+  const r = (change.row ?? {}) as Record<string, any>;
+  const str = (x: unknown) => (typeof x === "string" ? x : x == null ? "" : String(x));
+
+  if (change.table === "split_people") {
+    if (change.op === "insert") {
+      if (str(v.link) && norm(str(v.link)) !== norm(label)) return "Only a person's own link can be set as theirs.";
+      return null;
+    }
+    if (change.op === "update") {
+      if ("name" in v && str(v.name) !== r.name) return "Rename people on the dashboard — every bill names them by name.";
+      if ("link" in v && norm(str(v.link)) !== norm(r.link)) {
+        // Saying "this is me" from a link that is nobody yet, about somebody
+        // no live link already opens as. Nothing else moves a link.
+        if (norm(str(v.link)) !== norm(label)) return "Only a person's own link can be set as theirs.";
+        if (ids.me) return `This link is already ${ids.me}.`;
+        if (!ids.claimable.includes(r.name)) return `${r.name} already has a link of their own.`;
+      }
+      return null;
+    }
+    if (r.name && r.name === ids.me) return "You can't remove yourself.";
+    const elsewhere = [...groups.values()].find((g) => g.members.includes(r.name) && !canSee(g.name));
+    return elsewhere ? `${r.name} is in a group you're not in, so they stay — the dashboard can remove them.` : null;
+  }
+
+  if (!ids.me) return "Say who you are first — reopen your link.";
+
+  if (change.table === "split_groups") {
+    if (change.op !== "insert" && !canSee(r.name)) return "That group isn't one of yours.";
+    if (change.op === "delete") return null;
+    const typed = listOf(str("members" in v ? v.members : r.members));
+    const members = typed.map((n) => resolveName(n, people) ?? n);
+    if (!members.length) return "Tick who's in the group.";
+    if (!members.includes(ids.me)) return "Keep yourself in the group — your link only shows the groups you're in.";
+    return null;
+  }
+
+  // Expenses and payments: the row's group (unless it is gone, which only its
+  // own people ever see) and the group it is moving to must both be theirs.
+  if (change.op !== "insert" && groups.has(r.group_name) && !canSee(r.group_name)) return "That isn't in one of your groups.";
+  if (change.op !== "delete") {
+    const target = str("group_name" in v ? v.group_name : r.group_name);
+    if (groups.has(target) && !canSee(target)) return "Pick one of your groups.";
+  }
+  return null;
 }
 
 export default defineView({
@@ -261,6 +420,8 @@ export default defineView({
     { table: "split_people", label: "Person" },
   ],
 
+  canWrite: refuse,
+
   refresh: 120,
 
   controls: {
@@ -274,7 +435,50 @@ export default defineView({
   app: {
     script: "./app.mjs",
     data(ctx) {
-      const { personRows, known, groups, expenses, shares, payments, problems } = ledger(ctx);
+      const { personRows, ids, known, groups, expenses, shares, payments, problems, canSee } = ledger(ctx);
+
+      // Who this link is, and who else has one: a link is a person, so a
+      // link nobody is yet is offered in "Who's in it" as if it were one.
+      const people = personRows.map((p) => ({
+        id: p.id,
+        name: p.name,
+        hasLink: ids.linksOf.has(p.name),
+        opened: (ids.linksOf.get(p.name) ?? []).some((l) => l.lastUsedAt !== null),
+      }));
+      // `pickable`: offered in "Who's in it" as a person before they open it.
+      // Only while everyone on People has a link — otherwise a link nobody is
+      // yet may be one of those people ("Abang" for Huzaifah, made before a
+      // link was a person), and offering both would split bills with one
+      // person twice. It becomes them, or someone new, when its holder opens it.
+      const linkOnly = ids.unmatched
+        .filter((l) => norm(l.label) !== norm(ids.viewer))
+        .map((l) => ({ label: l.label, pickable: usableName(l.label) && !ids.claimable.length }));
+      const who = { label: ids.viewer, me: ids.me, claimable: ids.me ? [] : ids.claimable, usable: usableName(ids.viewer ?? "") };
+
+      // A link nobody is yet gets the names to choose from and nothing else.
+      if (ids.viewer !== null && !ids.me) {
+        return {
+          who,
+          people,
+          linkOnly,
+          categories: [],
+          groups: [],
+          expenses: [],
+          payments: [],
+          overall: { net: {}, transfers: [] },
+          problems: [],
+        };
+      }
+
+      const mine = (p: (typeof problems)[number]) =>
+        p.group !== undefined
+          ? canSee(p.group)
+          : ids.viewer === null || (!!ids.me && (p.involves?.includes(ids.me) || p.by === `link:${ids.viewer}`));
+      const seen = [...groups.values()].filter((g) => canSee(g.name));
+      const seenNames = new Set(seen.map((g) => g.name));
+      // An expense whose group is gone is shown to whoever it names or wrote it, so it can be fixed.
+      const orphanMine = (groupName: string, involves: string[], by: string | null) =>
+        !groups.has(groupName) && (ids.viewer === null || (!!ids.me && (involves.includes(ids.me) || by === `link:${ids.viewer}`)));
       // The usual split as percentages per member, so the expense form can
       // show what "usual" comes to without parsing the text again in a browser.
       const usual = (g: Group) => {
@@ -284,11 +488,13 @@ export default defineView({
       };
       const obj = (m: Map<string, number>) => Object.fromEntries([...m].filter(([, c]) => c !== 0));
       const overall = new Map<string, number>();
-      for (const g of groups.values()) for (const [who, c] of g.net) add(overall, who, c);
+      for (const g of seen) for (const [who, c] of g.net) add(overall, who, c);
       return {
-        people: personRows,
+        who,
+        people,
+        linkOnly,
         categories: Object.entries(CATEGORY).map(([value, label]) => ({ value, label })),
-        groups: [...groups.values()]
+        groups: seen
           .sort((a, b) => b.lastActivity - a.lastActivity)
           .map((g) => ({
             id: g.id,
@@ -303,7 +509,9 @@ export default defineView({
             transfers: settleUp(g.net),
             lastActivity: g.lastActivity,
           })),
-        expenses: expenses.map((e) => {
+        expenses: expenses
+          .filter((e) => seenNames.has(e.group_name) || orphanMine(e.group_name, [e.paid_by], e.written_by))
+          .map((e) => {
           const s = shares.get(e.id);
           return {
             ...e,
@@ -311,9 +519,11 @@ export default defineView({
             error: typeof s === "string" ? s : null,
           };
         }),
-        payments,
+        payments: payments.filter(
+          (p) => seenNames.has(p.group_name) || orphanMine(p.group_name, [p.paid_by, p.paid_to], p.written_by),
+        ),
         overall: { net: obj(overall), transfers: settleUp(overall) },
-        problems,
+        problems: problems.filter(mine).map(({ involves, by, ...p }) => p),
       };
     },
   },
@@ -322,11 +532,14 @@ export default defineView({
     const filter = ctx.control("group").trim().toLowerCase();
     const period = ctx.period("period");
 
-    const { people, groups, expenses, shares, payments, problems } = ledger(ctx);
+    const { people, ids, groups, expenses, shares, payments, problems, canSee } = ledger(ctx);
 
     /* ------------------------------------------------------------- scope */
 
-    const inScope = (name: string) => !filter || name.toLowerCase().includes(filter);
+    // The server never draws these panels for a link of a view with an app,
+    // but if it ever did, they would show the holder only their own groups —
+    // the same rule as app.data().
+    const inScope = (name: string) => canSee(name) && (!filter || name.toLowerCase().includes(filter));
     const scoped = [...groups.values()].filter((g) => inScope(g.name));
 
     const overall = new Map<string, number>();
@@ -344,24 +557,57 @@ export default defineView({
 
     const panels: Panel[] = [];
 
-    if (problems.length) {
+    const shown = problems.filter((p) => (p.group !== undefined ? canSee(p.group) : ids.viewer === null));
+    if (shown.length) {
       panels.push(
         rows({
-          title: `Needs fixing · ${problems.length}`,
+          title: `Needs fixing · ${shown.length}`,
           note:
             "An expense or payment listed here counts in no balance until it's fixed — edit it on its tab above.",
           columns: [
             { key: "what", label: "Entry" },
             { key: "problem", label: "Problem" },
           ],
-          data: problems,
+          data: shown.map((p) => ({ what: p.what, problem: p.problem })),
+        }),
+      );
+    }
+
+    // Which person each link opens as — the one place a link that is nobody
+    // yet, or one that will ask "Who are you?", shows up on the dashboard.
+    const links = ctx.link ? [] : ctx.shareLinks();
+    if (links.length) {
+      const when = (ms: number | null) =>
+        ms === null ? "never" : new Date(ms).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
+      panels.push(
+        rows({
+          title: "Share links",
+          note:
+            "Each link opens as one person and shows only the groups they're in. A link that isn't anyone yet " +
+            "adds its holder on first open, or asks who they are when someone on People has no link of their own.",
+          columns: [
+            { key: "link", label: "Link" },
+            { key: "as", label: "Opens as" },
+            { key: "used", label: "Last opened" },
+          ],
+          data: links.map((l) => ({
+            link: l.label,
+            as:
+              ids.whoIs(l.label) ??
+              (ids.claimable.length
+                ? `nobody yet — will ask: ${ids.claimable.join(", ")} or someone new`
+                : usableName(l.label)
+                  ? `nobody yet — becomes "${l.label}" on first open`
+                  : "nobody yet — will ask for a name"),
+            used: when(l.lastUsedAt),
+          })),
         }),
       );
     }
 
     // One tile per person who has ever been in play here, newest money first.
     const everyone = [...new Set([...people, ...overall.keys()])].filter(
-      (who) => overall.has(who) || paidTotal.has(who) || people.includes(who),
+      (who) => overall.has(who) || paidTotal.has(who) || (ids.viewer === null && people.includes(who)),
     );
     if (everyone.length) {
       panels.push(

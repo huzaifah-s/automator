@@ -1702,6 +1702,22 @@ Same rules as reading, plus one:
   they are on the dashboard). Delete is the Tables tab's soft delete, so a
   mistake made from a phone is restorable from the dashboard.
 
+**A view can narrow what a link may write** with `canWrite(ctx, change)`: it is
+asked about every write a link makes, sees `ctx.link` (the link's label) and
+the row and values involved, and returns a sentence to refuse. It can only
+refuse — the `entry` list and the table's validation still apply. A view with
+its own phone `app` takes writes only through the app's JSON routes; its HTML
+form routes answer 404.
+
+**Split bills** (`views/split/`) uses both: each person gets a share link, and
+a link *is* a person. Make one labelled "Ali" and Ali can be ticked into a
+group before he has opened it; the first open adds him to People. A link
+opens as the person whose name matches its label, or whose **Share link**
+column names it — links made before that column existed ask their holder
+"Who are you?" once and fill it in. A link shows and writes only the groups
+its holder is in, so a friend on a trip never sees the household's bills.
+The dashboard's **Share links** panel says who each link opens as.
+
 `views/baby/baby.ts` with `tables/baby/` is the worked example: milk (ml,
 breast milk, Nestlé NAN or Dutch Baby, a Vitamin D tick), diaper changes (wee / poop ticks), sleep, vaccine
 appointments, growth readings and spending by which parent paid (Huzaifah or Zahidah).

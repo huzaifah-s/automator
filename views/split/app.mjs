@@ -13,6 +13,11 @@
 //   #/pay?g=…        record a payment    #/p/<id>    edit one
 //   #/group[/<id>]   new / edit a group  #/people    people
 //
+// A link is a person (see split.ts): `D.who.me` is who this link opens as.
+// A link that is nobody yet adds its holder on first open, or — when there
+// are people no link opens as yet — shows "Who are you?" once instead of
+// everything else.
+//
 // Everything typed by a person reaches the page through text nodes (`h()`),
 // never innerHTML.
 
@@ -96,10 +101,9 @@ function allocate(amount, weights) {
   return out;
 }
 
-const me = () => {
-  const l = V.label.trim().toLowerCase();
-  return D.people.find((p) => p.name.toLowerCase() === l)?.name ?? null;
-};
+const me = () => D.who.me;
+const BAD_NAME = /[,;&+\d%]|\band\b/i;
+const cleanName = (s) => String(s ?? "").trim().replace(/\s+/g, " ");
 const You = (n) => (n === me() ? "You" : n);
 const you = (n) => (n === me() ? "you" : n);
 const groupById = (id) => D.groups.find((g) => g.id === id);
@@ -146,6 +150,26 @@ async function api(path, body) {
   return j;
 }
 const insert = (t, v) => api(t, v);
+
+/**
+ * Adds anyone in `names` who is not on People yet — a link holder ticked into
+ * a group before they have opened their link. A name a link already
+ * resolves to by spelling needs nothing more than the row.
+ */
+async function ensurePeople(names) {
+  let added = false;
+  for (const n of names) {
+    if (D.people.some((p) => p.name.toLowerCase() === n.toLowerCase())) continue;
+    try {
+      await insert("split_people", { name: n });
+    } catch (err) {
+      // Somebody else added them a moment ago; anything else is real.
+      if (!/already taken/.test(err.message)) throw err;
+    }
+    added = true;
+  }
+  if (added) await load();
+}
 const update = (t, id, v) => api(`${t}/${enc(id)}`, v);
 const remove = (t, id) => api(`${t}/${enc(id)}/delete`);
 
@@ -170,7 +194,8 @@ function render() {
   const [a, b] = parts;
   let view;
   try {
-    if (a === "g") view = groupView(b);
+    if (!D.who.me) view = whoAreYou();
+    else if (a === "g") view = groupView(b);
     else if (a === "add") view = expenseForm(null, q);
     else if (a === "e") view = expenseForm(b, q);
     else if (a === "pay") view = paymentForm(null, q);
@@ -308,7 +333,7 @@ function homeView() {
       "div",
       { class: "links" },
       h("a", { href: "#/people" }, "People"),
-      h("span", {}, `Using ${V.label}'s link`),
+      h("span", {}, m && m.toLowerCase() !== V.label.trim().toLowerCase() ? `${m} · link “${V.label}”` : `${V.label}'s link`),
     ),
   );
   if (D.groups.length) kids.push(h("a", { class: "fab", href: "#/add" }, "+ Add expense"));
@@ -1301,15 +1326,24 @@ function groupForm(id) {
   const refs = {};
   const back = editing ? `#/g/${enc(editing.id)}` : "#/";
 
+  /** People, then anyone a group already names, then links nobody has opened yet. */
   const everyone = () => {
     const out = D.people.map((p) => p.name);
     for (const n of editing?.members ?? []) if (!out.includes(n)) out.push(n);
+    for (const l of D.linkOnly) if (l.pickable && !out.some((n) => n.toLowerCase() === l.label.toLowerCase())) out.push(l.label);
     return out;
   };
+  const pending = (n) => !D.people.some((p) => p.name === n) && D.linkOnly.some((l) => l.label === n);
   const chosen = () => everyone().filter((n) => f.ticked.has(n));
 
   function refresh() {
-    let why = !f.name.trim() ? "Give the group a name" : !chosen().length ? "Tick who's in it" : null;
+    let why = !f.name.trim()
+      ? "Give the group a name"
+      : !chosen().length
+        ? "Tick who's in it"
+        : m && !f.ticked.has(m)
+          ? "Keep yourself ticked — your link only shows the groups you're in"
+          : null;
     if (!why && f.mode === "pct") {
       const vals = chosen().map((n) => toNum(f.pct[n]));
       const sum = vals.reduce((a, v) => a + (v > 0 ? v : 0), 0);
@@ -1327,7 +1361,7 @@ function groupForm(id) {
   async function addPerson() {
     const name = f.newPerson.trim().replace(/\s+/g, " ");
     if (!name) return;
-    if (/[,;&+\d%]|\band\b/i.test(name)) {
+    if (BAD_NAME.test(name)) {
       error = "Keep a name to letters and spaces — commas, numbers and \"and\" are how splits are written.";
       draw();
       return;
@@ -1365,6 +1399,13 @@ function groupForm(id) {
             saving = true;
             refresh();
             const names = chosen();
+            try {
+              await ensurePeople(names);
+            } catch (err) {
+              saving = false;
+              error = err.message;
+              return draw();
+            }
             const values = {
               name: f.name.trim(),
               members: names.join(", "),
@@ -1428,7 +1469,12 @@ function groupForm(id) {
                 },
               }),
               avatar(n),
-              h("div", { class: "grow" }, h("div", { class: "t" }, n === m ? `${n} (you)` : n)),
+              h(
+                "div",
+                { class: "grow" },
+                h("div", { class: "t" }, n === m ? `${n} (you)` : n),
+                pending(n) ? h("div", { class: "s" }, "has a link, hasn't opened it yet") : null,
+              ),
             ),
           ),
           h(
@@ -1544,6 +1590,111 @@ function groupForm(id) {
   return shell;
 }
 
+/* ------------------------------------------------------- who are you */
+
+/**
+ * A link nobody is yet, when there are people no link opens as — links made
+ * before a link was a person, labelled "Sayang" for Zahidah. Asked once:
+ * picking a name writes this link's label onto that person, and from then on
+ * it opens as them. The server only lets a link claim somebody no other link
+ * already opens as.
+ */
+function whoAreYou() {
+  const label = V.label.trim();
+  let name = D.who.usable ? label : "";
+  let error = null;
+  let busy = false;
+  const shell = page();
+
+  async function claim(person) {
+    if (busy) return;
+    busy = true;
+    try {
+      await update("split_people", person.id, { link: label });
+      await load();
+      go("#/");
+    } catch (err) {
+      busy = false;
+      error = err.message;
+      draw();
+    }
+  }
+
+  async function addMe() {
+    const n = cleanName(name);
+    if (!n || busy) return;
+    if (BAD_NAME.test(n)) {
+      error = "Keep a name to letters and spaces — commas, numbers and \"and\" are how splits are written.";
+      return draw();
+    }
+    busy = true;
+    try {
+      await insert("split_people", { name: n, link: label });
+      await load();
+      go("#/");
+    } catch (err) {
+      busy = false;
+      error = err.message;
+      draw();
+    }
+  }
+
+  function draw() {
+    const choices = D.people.filter((p) => D.who.claimable.includes(p.name));
+    fill(
+      shell,
+      h(
+        "header",
+        { class: "hero" },
+        h("div", { class: "hello" }, `Split bills · link “${label}”`),
+        h("div", { class: "big" }, "Who are you?"),
+      ),
+      h("p", { class: "lead" }, "Pick yourself once and this link opens as you from now on — bills you add are paid by you, and you'll see the groups you're in."),
+      error ? h("div", { class: "err" }, error) : null,
+      choices.length
+        ? h(
+            "div",
+            { class: "list" },
+            choices.map((p) =>
+              h(
+                "button",
+                { type: "button", class: "item pick", onclick: () => claim(p) },
+                avatar(p.name),
+                h("div", { class: "grow" }, h("div", { class: "t" }, p.name)),
+                h("span", { class: "pill" }, "That's me"),
+              ),
+            ),
+          )
+        : null,
+      h("div", { class: "sec" }, h("h2", {}, choices.length ? "None of these" : "Your name")),
+      h(
+        "div",
+        { class: "list" },
+        h(
+          "div",
+          { class: "who" },
+          h("input", {
+            type: "text",
+            class: "grow",
+            placeholder: "Your name",
+            value: name,
+            oninput: (ev) => (name = ev.target.value),
+            onkeydown: (ev) => {
+              if (ev.key === "Enter") {
+                ev.preventDefault();
+                addMe();
+              }
+            },
+          }),
+          h("button", { type: "button", class: "pill", onclick: addMe }, "Add me"),
+        ),
+      ),
+    );
+  }
+  draw();
+  return shell;
+}
+
 /* -------------------------------------------------------------- people */
 
 function peopleView() {
@@ -1555,7 +1706,7 @@ function peopleView() {
   async function add() {
     const n = name.trim().replace(/\s+/g, " ");
     if (!n) return;
-    if (/[,;&+\d%]|\band\b/i.test(n)) {
+    if (BAD_NAME.test(n)) {
       error = "Keep a name to letters and spaces — commas, numbers and \"and\" are how splits are written.";
       return draw();
     }
@@ -1579,11 +1730,17 @@ function peopleView() {
         { class: "list" },
         D.people.map((p) => {
           const groups = D.groups.filter((g) => g.members.includes(p.name)).length;
+          const link = p.name === m ? null : !p.hasLink ? "no link" : p.opened ? "has a link" : "has a link, not opened yet";
           return h(
             "div",
             { class: "item" },
             avatar(p.name),
-            h("div", { class: "grow" }, h("div", { class: "t" }, p.name === m ? `${p.name} (you)` : p.name), h("div", { class: "s" }, `in ${groups} group${groups === 1 ? "" : "s"}`)),
+            h(
+              "div",
+              { class: "grow" },
+              h("div", { class: "t" }, p.name === m ? `${p.name} (you)` : p.name),
+              h("div", { class: "s" }, [groups ? `in ${groups} of your groups` : null, link].filter(Boolean).join(" · ") || "not in your groups"),
+            ),
             p.name === m
               ? null
               : h(
@@ -1606,6 +1763,19 @@ function peopleView() {
                 ),
           );
         }),
+        D.linkOnly.map((l) =>
+          h(
+            "div",
+            { class: "item" },
+            avatar(l.label),
+            h(
+              "div",
+              { class: "grow" },
+              h("div", { class: "t" }, `“${l.label}”`),
+              h("div", { class: "s" }, l.pickable ? "has a link, not opened yet" : "a link that hasn't said who it is yet — it asks when opened"),
+            ),
+          ),
+        ),
         h(
           "div",
           { class: "who" },
@@ -1625,7 +1795,13 @@ function peopleView() {
           h("button", { type: "button", class: "pill", onclick: add }, "Add"),
         ),
       ),
-      h("p", { class: "lead" }, "Anyone here can be put in a group or a bill. To let someone add bills themselves, make them a share link on the dashboard labelled with their name."),
+      h(
+        "p",
+        { class: "lead" },
+        "Everyone with a share link is here already, and can be put in a group before they've opened it. " +
+          "Add someone by hand only if they won't log bills themselves — a friend on one trip. " +
+          "To let someone log bills, make them a share link on the dashboard, labelled with their name.",
+      ),
     );
   }
   draw();
@@ -1722,6 +1898,8 @@ font:500 13.5px var(--sans);cursor:pointer;white-space:nowrap;overflow:hidden;te
 .seg button.on{background:var(--panel);color:var(--fg);font-weight:650;box-shadow:0 1px 3px rgba(0,0,0,.18)}
 .item.more{width:100%;background:transparent;border-left:0;border-right:0;border-bottom:0;color:var(--accent);
 font:500 14px var(--sans);cursor:pointer;justify-content:center}
+button.item.pick{width:100%;background:transparent;border-left:0;border-right:0;border-bottom:0;font:inherit;text-align:left;cursor:pointer}
+button.item.pick:first-child{border-top:0}
 .pay{display:grid;grid-template-columns:1fr auto 1fr;gap:8px;align-items:end}
 .pay .arrow{padding-bottom:12px;color:var(--muted);font-size:18px}
 `,
@@ -1733,6 +1911,14 @@ font:500 14px var(--sans);cursor:pointer;justify-content:center}
 async function boot() {
   try {
     await load();
+    // A link nobody is yet, with nobody it could be: it is a new person,
+    // named after its label. With people to choose from, whoAreYou asks.
+    if (!D.who.me && !D.who.claimable.length && D.who.usable) {
+      try {
+        await insert("split_people", { name: V.label.trim().replace(/\s+/g, " "), link: V.label.trim() });
+      } catch {}
+      await load();
+    }
   } catch (err) {
     fill(app, page(h("div", { class: "err" }, err.message)));
     return;

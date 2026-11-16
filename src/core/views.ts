@@ -34,6 +34,8 @@ import { basename, dirname, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { databasePath, store } from "./db.ts";
 import { log } from "./logger.ts";
+import { viewLinks } from "./view-links.ts";
+import type { ViewLinkRecord } from "./types.ts";
 import {
   allTables,
   getTable,
@@ -416,6 +418,19 @@ export interface ViewDef {
    */
   entry?: readonly (string | EntryTable)[];
   /**
+   * The view's own say over one write through a share link, on top of the
+   * `entry` checks — for a view whose links are people who should only touch
+   * their own part of the data (`views/split/`: a link writes only to groups
+   * its holder is in).
+   *
+   * Called on every write a link makes, form or JSON, before it reaches the
+   * table, with the same read-only `ctx` as `load()` and `ctx.link` set to
+   * the link. Return a sentence to refuse (the holder sees it), or nothing to
+   * allow. It cannot widen anything: a table not in `entry` never gets here,
+   * and the write still validates like the Tables tab. A throw refuses too.
+   */
+  canWrite?(ctx: ViewCtx, change: EntryChange): string | null | undefined | Promise<string | null | undefined>;
+  /**
    * A page of the view's own for its share links, in place of the panels and
    * the generic entry forms — for a job those forms do badly, like dividing a
    * bill between ticked people. The dashboard still shows `load()`'s panels.
@@ -448,6 +463,24 @@ export interface ViewApp {
    * `load()`, so it may do the maths and hand the page the answers.
    */
   data(ctx: ViewCtx): unknown | Promise<unknown>;
+}
+
+/** One write a share link is about to make — what `canWrite` is asked about. */
+export interface EntryChange {
+  table: string;
+  op: "insert" | "update" | "delete";
+  /** The row as it is now, for an update or delete; null for an insert. */
+  row: Row | null;
+  /** The fields being written, for an insert or update; null for a delete. */
+  values: Record<string, unknown> | null;
+}
+
+/** A share link as a view sees it: who it was made for, never its token. */
+export interface ViewLinkInfo {
+  label: string;
+  createdAt: number;
+  /** Null until somebody opens it. */
+  lastUsedAt: number | null;
 }
 
 /** One table a view's share links may write to, with the tab label it shows under. */
@@ -546,6 +579,16 @@ export interface ViewCtx {
   now: number;
   /** True when this render is being served over a public share link. */
   isPublic: boolean;
+  /**
+   * The share link this render is served over — its label is who it was made
+   * for — or null on the dashboard. Set exactly when `isPublic` is.
+   */
+  link: ViewLinkInfo | null;
+  /**
+   * This view's live share links, oldest first; expired ones are left out.
+   * Labels only — a token is never readable once minted, here or anywhere.
+   */
+  shareLinks(): ViewLinkInfo[];
 }
 
 export function defineView(def: ViewDef): ViewDef {
@@ -555,6 +598,10 @@ export function defineView(def: ViewDef): ViewDef {
   }
   if (!def.title?.trim()) throw new Error(`View "${def.name}" is missing a title`);
   if (typeof def.load !== "function") throw new Error(`View "${def.name}" has no load()`);
+  if (def.canWrite && typeof def.canWrite !== "function") throw new Error(`View "${def.name}": canWrite must be a function`);
+  if (def.canWrite && !def.entry?.length) {
+    throw new Error(`View "${def.name}" has canWrite but no entry tables — there is nothing for it to check`);
+  }
   if (def.app) {
     if (!def.shareable) {
       throw new Error(`View "${def.name}" has an app, which is only served over share links — it needs shareable: true`);
@@ -748,9 +795,14 @@ export function resolveControls(
 export function buildViewCtx(
   def: ViewDef,
   controls: Record<string, string>,
-  opts: { isPublic: boolean } = { isPublic: false },
+  opts: { isPublic: boolean; link?: ViewLinkRecord | null } = { isPublic: false },
 ): ViewCtx {
   const now = Date.now();
+  const info = (l: ViewLinkRecord): ViewLinkInfo => ({
+    label: l.label,
+    createdAt: l.created_at,
+    lastUsedAt: l.last_used_at,
+  });
   return {
     table: readOnlyTable,
     tables: allTables,
@@ -803,6 +855,13 @@ export function buildViewCtx(
     controls,
     now,
     isPublic: opts.isPublic,
+    link: opts.isPublic && opts.link ? info(opts.link) : null,
+    shareLinks() {
+      return viewLinks(def.name)
+        .filter((l) => !l.expires_at || l.expires_at >= now)
+        .sort((a, b) => a.created_at - b.created_at)
+        .map(info);
+    },
   };
 }
 

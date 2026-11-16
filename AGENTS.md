@@ -1352,7 +1352,10 @@ export default defineView({
 ```
 
 Panels: `stats` `bars` `series` `rows` `note`. On `ctx`: `table` `tables` `sql`
-`from` `runs` `control` `period` `controls` `now` `isPublic`. Controls are
+`from` `runs` `control` `period` `controls` `now` `isPublic` `link`
+`shareLinks`. `link` is the share link serving the render (`{ label,
+createdAt, lastUsedAt }`, null on the dashboard); `shareLinks()` is the view's
+live links, labels only — a token is never readable after it is minted. Controls are
 `period`, `select` and `search`, resolved from the querystring — which is what
 makes a view bookmarkable and lets a share link carry the slice its sender was
 looking at.
@@ -1384,7 +1387,21 @@ and the same table client, in API units (cents, not "42.50"), answering
 and reload watcher read only `.ts`/`.js`, so it is neither taken for a view
 nor counted as shared code, and it is read from disk per request. Render
 anything a person typed through text nodes, never `innerHTML` — a group name
-is typed by whoever holds a link.
+is typed by whoever holds a link. A view with an app gets **no** form routes:
+`formTarget` answers 404 for it, because their error path redraws `load()`'s
+panels — the dashboard's page — for whoever holds the link. That leaked a
+household's bills to a trip friend's link before it was closed.
+
+**`canWrite(ctx, change)` narrows what a link may write.** Asked by
+`refusal()` in `app.ts` on every link write, form or JSON, after
+`entryTarget`: `change` is `{ table, op, row, values }` (the live row for an
+update or delete), `ctx.link` is set, and a returned sentence refuses with 403
+(a throw refuses too, with the detail logged). It can only subtract — a table
+outside `entry` never reaches it, and an allowed write still validates like
+the Tables tab. Use it when a view's links are *people* who should touch only
+their own part: `views/split/` refuses a write to a group its holder is not
+in. Narrowing only in `app.data()` is not enough — the JSON routes take any
+row id a script sends.
 
 A `money()` column holds whole cents and a chart plots display units, so
 convert before you build a point: pass ringgit to `value` and the formatted
@@ -1637,6 +1654,10 @@ These were decided deliberately. Raise a trade-off before changing any of them:
   and `entry` and validate like the Tables tab. Nothing about it is stored in
   the database. An app is not a way round the panel set for the *dashboard*,
   which still renders `load()`.
+
+  **`canWrite` (2026-11-17)** is not a widening: it lets a view *refuse* a
+  link's write that `entry` would allow, and nothing else. It is code in the
+  view file, asked per request, like `entry` itself.
 
   The panel set is closed — stats, bars, series, rows, note — for the same
   reason the MCP tool list is: every addition is weight carried by everything.

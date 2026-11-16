@@ -52,6 +52,7 @@ import {
   entryList,
   resolveControls,
   viewRegistry,
+  type EntryChange,
   type LoadedView,
   type Panel,
 } from "../core/views.ts";
@@ -596,7 +597,7 @@ export function createApp(registry: Registry): Hono {
   const runView = async (
     def: LoadedView,
     query: Record<string, string | string[] | undefined>,
-    opts: { isPublic: boolean },
+    opts: { isPublic: boolean; link?: ViewLinkRecord | null },
   ): Promise<{ panels: Panel[]; controls: Record<string, string> }> => {
     const controls = resolveControls(def, query);
     try {
@@ -657,7 +658,7 @@ export function createApp(registry: Registry): Hono {
     extra: { error?: string | null; tab?: string; editId?: string; status?: number } = {},
   ) => {
     const token = c.req.param("token");
-    const { panels, controls } = await runView(def, c.req.queries(), { isPublic: true });
+    const { panels, controls } = await runView(def, c.req.queries(), { isPublic: true, link });
 
     // The tab comes from the querystring and is only ever a *choice among*
     // the view's own entry tables — an unknown one falls back to the first.
@@ -733,7 +734,7 @@ export function createApp(registry: Registry): Hono {
     c.header("X-Robots-Tag", "noindex, nofollow");
     c.header("Cache-Control", "no-store");
     try {
-      const ctx = buildViewCtx(def, resolveControls(def, c.req.queries()), { isPublic: true });
+      const ctx = buildViewCtx(def, resolveControls(def, c.req.queries()), { isPublic: true, link });
       return c.json(await def.app.data(ctx));
     } catch (err) {
       log.error(`View "${def.name}" app data failed — ${err instanceof Error ? err.message : err}`);
@@ -767,14 +768,55 @@ export function createApp(registry: Registry): Hono {
     return table ? { link, def, table } : null;
   };
 
+  /*
+   * The view's own `canWrite`, asked after `entryTarget` has said yes. It can
+   * only refuse: a table `entryTarget` turned away never gets this far, and
+   * an allowed write still goes through the table client's validation. A
+   * throw refuses with a bare sentence and the detail goes to the log, the
+   * way a failing `data()` does.
+   */
+  const refusal = async (
+    target: { link: ViewLinkRecord; def: LoadedView; table: LoadedTable },
+    op: EntryChange["op"],
+    id: string | null,
+    values: Record<string, unknown> | null,
+  ): Promise<string | null> => {
+    const { link, def, table } = target;
+    if (!def.canWrite) return null;
+    const row = id ? dataTable(table.name).get(id) : null;
+    try {
+      const ctx = buildViewCtx(def, resolveControls(def, {}), { isPublic: true, link });
+      const why = await def.canWrite(ctx, { table: table.name, op, row: row && !row.deleted_at ? row : null, values });
+      return why ? String(why) : null;
+    } catch (err) {
+      log.error(`View "${def.name}" canWrite failed — ${err instanceof Error ? err.message : err}`);
+      return "This change could not be checked, so it was not saved.";
+    }
+  };
+
+  /*
+   * A view with an app writes through the JSON routes below, never these
+   * form routes: its link page is the app, so the panels these redraw on an
+   * error are a page its links were never meant to show — `load()` is the
+   * dashboard's, and may not narrow itself to the link holder. They answer
+   * the same bare 404 as any other route a link may not use.
+   */
+  const formTarget = (token: string, name: string) => {
+    const target = entryTarget(token, name);
+    return target && !target.def.app ? target : null;
+  };
+
   const backToTab = (token: string, table: string) => `/v/${token}?t=${encodeURIComponent(table)}`;
 
   app.post("/v/:token/rows/:table", async (c) => {
-    const target = entryTarget(c.req.param("token"), c.req.param("table"));
+    const target = formTarget(c.req.param("token"), c.req.param("table"));
     if (!target) return c.notFound();
     const { link, def, table } = target;
     try {
-      const { row } = dataTable(table.name).insert(rowFromForm(table, await c.req.parseBody()), {
+      const values = rowFromForm(table, await c.req.parseBody());
+      const refused = await refusal(target, "insert", null, values);
+      if (refused) throw new Error(refused);
+      const { row } = dataTable(table.name).insert(values, {
         writtenBy: `link:${link.label}`,
         ifExists: "error",
       });
@@ -787,11 +829,14 @@ export function createApp(registry: Registry): Hono {
   });
 
   app.post("/v/:token/rows/:table/:id", async (c) => {
-    const target = entryTarget(c.req.param("token"), c.req.param("table"));
+    const target = formTarget(c.req.param("token"), c.req.param("table"));
     if (!target) return c.notFound();
     const { link, def, table } = target;
     try {
-      dataTable(table.name).update(c.req.param("id"), rowFromForm(table, await c.req.parseBody()), {
+      const values = rowFromForm(table, await c.req.parseBody());
+      const refused = await refusal(target, "update", c.req.param("id"), values);
+      if (refused) throw new Error(refused);
+      dataTable(table.name).update(c.req.param("id"), values, {
         writtenBy: `link:${link.label}`,
       });
     } catch (err) {
@@ -807,9 +852,11 @@ export function createApp(registry: Registry): Hono {
   });
 
   app.post("/v/:token/rows/:table/:id/delete", async (c) => {
-    const target = entryTarget(c.req.param("token"), c.req.param("table"));
+    const target = formTarget(c.req.param("token"), c.req.param("table"));
     if (!target) return c.notFound();
     const { link, def, table } = target;
+    const refused = await refusal(target, "delete", c.req.param("id"), null);
+    if (refused) return renderPublicView(c, link, def, { error: refused, tab: table.name, status: 403 });
     if (!dataTable(table.name).remove(c.req.param("id"))) {
       return renderPublicView(c, link, def, {
         error: "That entry is already deleted, or was never there.",
@@ -839,7 +886,10 @@ export function createApp(registry: Registry): Hono {
     if (!target) return c.notFound();
     const { link, table } = target;
     try {
-      const { row } = dataTable(table.name).insert(await jsonBody(c), {
+      const values = await jsonBody(c);
+      const refused = await refusal(target, "insert", null, values);
+      if (refused) return c.json({ error: refused }, 403);
+      const { row } = dataTable(table.name).insert(values, {
         writtenBy: `link:${link.label}`,
         ifExists: "error",
       });
@@ -855,7 +905,10 @@ export function createApp(registry: Registry): Hono {
     if (!target) return c.notFound();
     const { link, table } = target;
     try {
-      const row = dataTable(table.name).update(c.req.param("id"), await jsonBody(c), {
+      const values = await jsonBody(c);
+      const refused = await refusal(target, "update", c.req.param("id"), values);
+      if (refused) return c.json({ error: refused }, 403);
+      const row = dataTable(table.name).update(c.req.param("id"), values, {
         writtenBy: `link:${link.label}`,
       });
       return c.json({ row });
@@ -868,6 +921,8 @@ export function createApp(registry: Registry): Hono {
     const target = entryTarget(c.req.param("token"), c.req.param("table"));
     if (!target) return c.notFound();
     const { link, table } = target;
+    const refused = await refusal(target, "delete", c.req.param("id"), null);
+    if (refused) return c.json({ error: refused }, 403);
     if (!dataTable(table.name).remove(c.req.param("id"))) {
       return c.json({ error: "That entry is already deleted, or was never there." }, 400);
     }

@@ -8,6 +8,49 @@ option was, so nobody relitigates it from scratch.
 
 ## 2026-11-17
 
+### Split bills: a share link is a person, and sees only their groups
+
+The first cut kept share links and People as two lists joined by spelling: a
+link labelled "Zahidah" opened as the person named Zahidah, if somebody had
+typed her in by hand. Making a group meant adding people who already had
+links, and a link whose label did not match anyone ("Abang") opened as
+nobody, so its holder picked themselves on every bill. And every link saw
+every group, so a trip friend's link showed the household's groceries.
+
+Now a link is a person. It opens as the person whose **Share link** column
+(`split_people.link`, new) names its label, or else whose name matches it. A
+link that is nobody yet adds its holder to People on first open; if People
+has somebody no link opens as yet (links made before this change), it asks
+"Who are you?" once and writes the label onto the person picked. A link may
+only claim somebody no other link opens as. Links nobody has opened are
+offered in "Who's in it" — but only while everyone on People has a link,
+because until then "Abang" may be Huzaifah, and offering both would split
+bills with him twice.
+
+A link sees only groups its holder is a member of or has money in, and the
+bills, payments and balances inside them; the dashboard still sees all. That
+is enforced on writes too, through a new generic hook:
+
+- **`canWrite(ctx, change)` on a view** — asked on every share-link write,
+  after the `entry` checks, with `ctx.link` set. It returns a sentence to
+  refuse. It can only subtract.
+- **`ctx.link` and `ctx.shareLinks()`** — which link is viewing, and the
+  view's live links, by label. Never a token.
+- **A view with an app has no HTML form routes** (404). Their error path
+  redraws `load()`'s panels for the link holder, and testing this showed that
+  page listing the household's bills to a trip friend whose write had just
+  been refused.
+
+A group with nobody ticked still counts everyone, as before, but is now
+flagged under "Needs fixing": since every link adds its holder to People,
+"everyone" now includes every friend ever given a link.
+
+*Settled:* the identity is the link's **label**, not its id. A re-minted link
+with the same label is still the same person, and the Share link column is
+readable and editable on the Tables tab. Claiming happens from the link
+itself — no link can set another link's person — so a friend's link cannot
+make "Abang" open as someone else.
+
 ### Split bills, and two widenings it needed
 
 `views/split/` is a Splitwise for the household and trips: groups with

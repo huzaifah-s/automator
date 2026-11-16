@@ -192,6 +192,7 @@ export type {
   BarRow,
   ChoiceDef,
   ControlDef,
+  EntryChange,
   Panel,
   Period,
   PeriodKey,
@@ -205,6 +206,7 @@ export type {
   ViewApp,
   ViewCtx,
   ViewDef,
+  ViewLinkInfo,
 } from "./views.ts";
 export { defineCredential } from "./credentials.ts";
 export type { CredentialValues } from "./credentials.ts";

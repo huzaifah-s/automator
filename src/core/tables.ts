@@ -89,6 +89,16 @@ export interface ColumnDef {
   label?: string;
   /** One line describing the column, shown on the dashboard and over MCP. */
   help?: string;
+  /**
+   * `oneOf` only: the value must be `column` of a live row in `table`, and a
+   * form offers those values as a dropdown. See `oneOf`.
+   */
+  from?: { table: string; column: string };
+  /**
+   * `oneOf` only: on a share link's form, a new row starts on the option that
+   * matches the link's label — "Paid by" opens on whoever is holding the link.
+   */
+  linkDefault?: boolean;
 }
 
 const column =
@@ -123,6 +133,29 @@ export const money = column("money");
 export function enumOf(values: readonly string[], opts: Omit<ColumnDef, "kind" | "values"> = {}): ColumnDef {
   if (values.length === 0) throw new Error("enumOf() needs at least one value");
   return { kind: "enum", values, ...opts };
+}
+
+/**
+ * A choice among another table's rows: the value is that table's `column`
+ * (default `name`) on a live row, and the forms render the current values as
+ * a dropdown.
+ *
+ * This is `enumOf` for a set the people using it grow themselves — the groups
+ * of a bill split, the people in it — where a closed list in code would make
+ * adding a friend to a trip a commit. The set is rows; the *rule* that this
+ * column draws from that table is still code, like every other column.
+ *
+ * Stored as plain text, not an id: a listing, a search and `ctx.sql` read the
+ * name directly. The cost is that renaming a row orphans the values that named
+ * it — they stay readable, and a write that leaves them untouched is accepted,
+ * but a new write has to pick a name that exists.
+ */
+export function oneOf(
+  table: string,
+  opts: Omit<ColumnDef, "kind" | "values" | "from"> & { column?: string } = {},
+): ColumnDef {
+  const { column = "name", ...rest } = opts;
+  return { kind: "text", from: { table, column }, ...rest };
 }
 
 /* ---------------------------------------------------------------- tables */
@@ -215,6 +248,9 @@ export function defineTable(def: TableDef): TableDef {
     const c = def.columns[col]!;
     if (c.kind === "enum" && (!c.values || c.values.length === 0)) {
       throw new Error(`${def.name}.${col}: an enum column needs values — use enumOf([...])`);
+    }
+    if (c.from && c.kind !== "text") {
+      throw new Error(`${def.name}.${col}: only a text column can draw from another table — use oneOf()`);
     }
   }
 
@@ -685,6 +721,60 @@ function buildOrder(table: TableDef, order: QueryOptions["order"]): string {
   return `ORDER BY ${name} ${direction}, id ${direction}`;
 }
 
+/* ------------------------------------------------------------- oneOf */
+
+/** Most choices a `oneOf` dropdown lists, and the most an error message names. */
+const MAX_CHOICES = 500;
+
+/**
+ * The values a `oneOf` column accepts right now, in the source table's own
+ * order — so a table of trips ordered newest first offers the newest first.
+ * Empty for any other column, or when the source table is not loaded.
+ */
+export function choicesFor(col: ColumnDef): string[] {
+  if (!col.from) return [];
+  const source = registry.get(col.from.table);
+  if (!source || !source.columns[col.from.column]) return [];
+  const raw = db
+    .prepare(
+      `SELECT ${col.from.column} AS v FROM ${physical(source.name)}
+        WHERE deleted_at IS NULL AND ${col.from.column} IS NOT NULL
+        ${buildOrder(source, undefined)} LIMIT ${MAX_CHOICES}`,
+    )
+    .all() as { v: unknown }[];
+  return [...new Set(raw.map((r) => String(r.v)).filter((v) => v.trim() !== ""))];
+}
+
+/**
+ * Refuses a `oneOf` value that names no live row. `keep` is the value the row
+ * already holds, which an update may leave as it is even after its source row
+ * was renamed or deleted — otherwise editing an old expense's note would fail
+ * on a payer who has since left the list.
+ */
+function checkChoices(def: TableDef, values: Record<string, unknown>, keep?: Row): void {
+  for (const [name, col] of Object.entries(def.columns)) {
+    if (!col.from || !(name in values)) continue;
+    const v = values[name];
+    if (v === null || v === undefined) continue;
+    if (keep && keep[name] === v) continue;
+    const source = registry.get(col.from.table);
+    if (!source) throw new Error(`${def.name}.${name}: draws from "${col.from.table}", which is not loaded`);
+    const hit = db
+      .prepare(
+        `SELECT 1 FROM ${physical(source.name)} WHERE deleted_at IS NULL AND ${col.from.column} = ? LIMIT 1`,
+      )
+      .get(v as string);
+    if (hit) continue;
+    const options = choicesFor(col);
+    throw new Error(
+      `${def.name}.${name}: "${v}" is not a ${col.from.table}.${col.from.column}` +
+        (options.length
+          ? ` — it is one of: ${options.slice(0, 20).join(", ")}${options.length > 20 ? ", …" : ""}`
+          : ` — ${col.from.table} has no rows yet, add one there first`),
+    );
+  }
+}
+
 /* ---------------------------------------------------------------- client */
 
 export interface InsertResult {
@@ -765,6 +855,7 @@ function clientFor(def: LoadedTable): TableClient {
       const clean = parsed.data as Record<string, unknown>;
 
       const existing = findByDedupe(clean);
+      if (!existing) checkChoices(def, clean);
       if (existing) {
         if ((opts.ifExists ?? "ignore") === "error") {
           throw new Error(
@@ -799,6 +890,7 @@ function clientFor(def: LoadedTable): TableClient {
 
       const current = this.get(id);
       if (!current) throw new Error(`${def.name}: no row with id ${id}`);
+      checkChoices(def, clean, current);
 
       const fields = Object.keys(clean);
       if (fields.length === 0) return current;
@@ -981,6 +1073,22 @@ export async function loadTables(dir = "./tables"): Promise<LoadedTable[]> {
 
     registerTable(table);
     loaded.push(table);
+  }
+
+  // After every file, so a table may draw from one that sorts after it.
+  for (const table of loaded) {
+    for (const [name, col] of Object.entries(table.columns)) {
+      if (!col.from) continue;
+      const source = registry.get(col.from.table);
+      const target = source?.columns[col.from.column];
+      if (!source) {
+        errors.push(`${table.file}: ${name} draws from table "${col.from.table}", which is not loaded`);
+      } else if (!target || (target.kind !== "text" && target.kind !== "enum")) {
+        errors.push(
+          `${table.file}: ${name} draws from ${col.from.table}.${col.from.column}, which is not a text column there`,
+        );
+      }
+    }
   }
 
   if (errors.length) {

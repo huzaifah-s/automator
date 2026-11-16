@@ -95,6 +95,9 @@ background:var(--panel);border:1px solid var(--border);color:var(--fg)}
 border-radius:8px;padding:0 11px;height:var(--vh);font:13px var(--sans);min-width:0;
 box-sizing:border-box}
 .vctl select:focus,.vctl input:focus{outline:none;border-color:var(--accent)}
+/* The dashboard's toolbar gives a search box flex:1, which in this column-flex
+   label grows it from a zero basis and collapses it to its text's height. */
+.vctl label>input{flex:none}
 /* The house select: the browser's own arrow off, ours drawn in its place, the
    same way .pick does it on the dashboard. Without this the control keeps the
    platform's border radius and background on some browsers whatever we set. */

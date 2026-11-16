@@ -1303,7 +1303,13 @@ Every table also gets `id`, `created_at`, `updated_at`, `deleted_at` and
 a column rather than a guess.
 
 Columns: `text()` `int()` `real()` `money()` `bool()` `date()` `datetime()`
-`json()` `enumOf([...])`. All take `{ nullable, default, label, help }`.
+`json()` `enumOf([...])` `oneOf("other_table")`. All take `{ nullable, default, label, help }`.
+
+`oneOf("split_people")` is a dropdown of another table's rows: the value must
+be the `name` (or `{ column: "…" }`) of a live row there, so the people using a
+page can grow the list themselves where `enumOf` would need a commit.
+`linkDefault: true` starts a share link's form on the row matching the link's
+label.
 
 **Changing a column.** A new column is added at the next boot and is NULL on
 every row that predates it — `default` only applies to writes. `backfill`

@@ -907,6 +907,21 @@ itself. The one place that *does* convert is `rowFromForm` in `app.ts`, because
 a form field states its units and has a person behind it. Do not "helpfully"
 add coercion anywhere between those two.
 
+**`oneOf(table)` is `enumOf` for a set the users grow themselves, and it
+stores the name, not an id.** `paid_by: oneOf("split_people")` only accepts the
+`name` (or `{ column }`) of a live row there, and every form renders those
+rows as a dropdown in that table's own `order`. Use it where a closed list in
+code would make "add a friend to this trip" a commit; keep `enumOf` where the
+set is the code's to decide (categories). The value is plain text so
+`ctx.sql`, search and listings read it directly — which means renaming or
+deleting the source row orphans it. That is handled in one place,
+`checkChoices` in `tables.ts`: a new write must name a live row, but an update
+may leave a row's existing value untouched, or editing an old expense's note
+would fail on a payer who has since been removed. The edit form keeps the
+orphaned value selected for the same reason. `linkDefault: true` makes a share
+link's form open on the option matching the link's label ("Paid by" starts on
+whoever is holding it). `views/split/` is the example.
+
 **A null in a dedupe column opts the row out of deduping, and the lookup has to
 agree with the index.** SQLite's unique indexes treat NULLs as distinct, so the
 partial index would happily accept two null-keyed rows; `findByDedupe` returns
@@ -1353,6 +1368,24 @@ bare 404 otherwise. They write through `rowFromForm` and the table client like
 the Tables tab, never through anything the view file supplies. `views/baby/` is
 the example.
 
+**An app instead of the link page.** `app: { script: "./app.mjs", data(ctx) }`
+on a shareable view makes its links open the view's own page instead of the
+panels and generic forms — for a job those forms do badly (`views/split/`:
+ticking who is in a bill, a live "RM 10.50 left to assign"). The dashboard
+still shows `load()`'s panels. The server serves a shell with the theme
+colours only (`THEME_CSS` — the dashboard's components would restyle the
+app's own `.pill`s and `label`s), `window.VIEW = { base, label, title }`, and
+the script inlined; the script reads `GET <base>/data` (`app.data()` with the
+same read-only ctx as `load()`) and writes JSON to
+`POST <base>/api/rows/:table[/:id[/delete]]`. Those three take the same
+`entryTarget` checks as the form routes — link, view, `shareable`, `entry` —
+and the same table client, in API units (cents, not "42.50"), answering
+`{ row }` or `{ error }`. The script ends in `.mjs` on purpose: the view loader
+and reload watcher read only `.ts`/`.js`, so it is neither taken for a view
+nor counted as shared code, and it is read from disk per request. Render
+anything a person typed through text nodes, never `innerHTML` — a group name
+is typed by whoever holds a link.
+
 A `money()` column holds whole cents and a chart plots display units, so
 convert before you build a point: pass ringgit to `value` and the formatted
 string to `display`. An axis reading "120k" for a twelve-hundred-ringgit month
@@ -1593,6 +1626,17 @@ These were decided deliberately. Raise a trade-off before changing any of them:
   database, and nothing about a table's shape is reachable. A link never
   touches a table its view does not name, and the dashboard cannot widen the
   list.
+
+  **Apps (2026-11-16)** are the second widening, also deliberate: a
+  shareable view may ship a browser script (`app`) that its links open in
+  place of the panels. It was added because splitting a bill — tick who is
+  in, type each share, see what is left — cannot be made out of a generic
+  form a field at a time. It stays inside the decision the same way entry
+  does: the script is a file in the repo, it reads only what the view's
+  `data()` hands it, and it writes only through routes that re-check the link
+  and `entry` and validate like the Tables tab. Nothing about it is stored in
+  the database. An app is not a way round the panel set for the *dashboard*,
+  which still renders `load()`.
 
   The panel set is closed — stats, bars, series, rows, note — for the same
   reason the MCP tool list is: every addition is weight carried by everything.

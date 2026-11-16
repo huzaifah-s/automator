@@ -1,6 +1,6 @@
 import { html, raw } from "hono/html";
 import type { HtmlEscapedString } from "hono/utils/html";
-import type { ColumnDef, LoadedTable, Row } from "../core/tables.ts";
+import { choicesFor, type ColumnDef, type LoadedTable, type Row } from "../core/tables.ts";
 import { entryList, formatDuration } from "../core/views.ts";
 import type { LoadedView, Panel } from "../core/views.ts";
 import type { Flow, FlowNode, FlowUse, RunMark, RunTrace } from "../core/flow.ts";
@@ -780,6 +780,13 @@ details.item>summary{flex-wrap:wrap}
 .fbox>summary .fopen,.fbox>summary .fclose{display:none}
 }
 `;
+
+/**
+ * The dashboard's colours, type and reset without its components — what a
+ * view's own app page gets. The components (`.pill`, `.btn`, `label`, …) would
+ * otherwise restyle the app's elements of the same names under it.
+ */
+const THEME_CSS = CSS.slice(0, CSS.indexOf("/* ---- shell ---- */"));
 
 /**
  * The one script the dashboard ships. It refreshes the page by swapping
@@ -4977,7 +4984,12 @@ function localWhen(ms: number): string {
  * values read as words, and an empty date or time starting at *now* — the
  * moment being logged is almost always the one the form was opened in.
  */
-function fieldFor(name: string, col: ColumnDef, current: unknown, opts: { plain?: boolean } = {}) {
+function fieldFor(
+  name: string,
+  col: ColumnDef,
+  current: unknown,
+  opts: { plain?: boolean; viewer?: string } = {},
+) {
   const id = `f_${name}`;
   const label = columnLabel(name, col);
   const required = !col.nullable && col.default === undefined;
@@ -4992,6 +5004,27 @@ function fieldFor(name: string, col: ColumnDef, current: unknown, opts: { plain?
   const shown = (v: string) => (opts.plain ? spoken(v) : v);
 
   const control = (() => {
+    if (col.from) {
+      // A `oneOf` column: today's rows of the source table, plus the value
+      // being edited when its row has since gone, so opening an old entry
+      // does not quietly change it to the first option.
+      const options = choicesFor(col);
+      if (value != null && !options.includes(String(value))) options.unshift(String(value));
+      let picked = value == null ? null : String(value);
+      if (picked == null && fresh && col.linkDefault && opts.viewer) {
+        const who = opts.viewer.trim().toLowerCase();
+        picked = options.find((o) => o.toLowerCase() === who) ?? null;
+      }
+      if (options.length === 0) {
+        return html`<select id="${id}" name="${name}" ${required ? raw("required") : ""}>
+          <option value="">Add one under ${col.from.table.replace(/_/g, " ")} first</option>
+        </select>`;
+      }
+      return html`<select id="${id}" name="${name}" ${required ? raw("required") : ""}>
+        ${col.nullable ? html`<option value="">—</option>` : ""}
+        ${options.map((v) => html`<option value="${v}" ${picked === v ? raw("selected") : ""}>${v}</option>`)}
+      </select>`;
+    }
     switch (col.kind) {
       case "enum":
         return html`<select id="${id}" name="${name}" ${required ? raw("required") : ""}>
@@ -5589,7 +5622,7 @@ function renderEntry(entry: PublicEntry, path: string) {
         : ""}
       <div class="form cols">
         ${Object.entries(table.columns).map(([name, col]) =>
-          fieldFor(name, col, editing ? editing[name] : undefined, { plain: true }),
+          fieldFor(name, col, editing ? editing[name] : undefined, { plain: true, viewer: entry.label }),
         )}
         <div class="bar">
           <button class="btn primary" type="submit">${editing ? "Save changes" : `Add ${current.label.toLowerCase()}`}</button>
@@ -5691,6 +5724,32 @@ const ENTRY_JS = `(function () {
     refresh();
   });
 })();`;
+
+/**
+ * A view's own app over a share link (`app` on `ViewDef`): the dashboard's
+ * colours and type, an empty `#app`, and the view's script, which builds the
+ * page from `GET <base>/data` and writes through `<base>/api/rows/…`.
+ *
+ * `window.VIEW` carries the link's base path and label. It is JSON put inside
+ * a script element, so `<` is escaped — a label is typed by whoever minted the
+ * link and must not be able to close the element.
+ */
+export function viewAppPage(args: { view: LoadedView; script: string; base: string; label: string }) {
+  const config = JSON.stringify({ base: args.base, label: args.label, title: args.view.title }).replace(
+    /</g,
+    "\\u003c",
+  );
+  return html`<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="robots" content="noindex,nofollow">
+<title>${args.view.title}</title>
+<style>${raw(THEME_CSS)}</style>
+</head><body><div id="app"></div>
+<script>window.VIEW = ${raw(config)};</script>
+<script type="module">${raw(args.script)}</script></body></html>`;
+}
 
 /**
  * A view served over a share link.

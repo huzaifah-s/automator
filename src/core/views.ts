@@ -30,7 +30,7 @@
  */
 
 import { Database } from "bun:sqlite";
-import { basename, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { databasePath, store } from "./db.ts";
 import { log } from "./logger.ts";
@@ -415,12 +415,39 @@ export interface ViewDef {
    * names the tab ("Milk" for `baby_feeds`).
    */
   entry?: readonly (string | EntryTable)[];
+  /**
+   * A page of the view's own for its share links, in place of the panels and
+   * the generic entry forms — for a job those forms do badly, like dividing a
+   * bill between ticked people. The dashboard still shows `load()`'s panels.
+   *
+   * It stays inside the views decision: the script is a file in the repo, it
+   * reads only what `data()` returns, and it writes only through the link's
+   * JSON routes, which take exactly the tables in `entry` and validate like
+   * every other write. See "Adding a view" in AGENTS.md.
+   */
+  app?: ViewApp;
   /** Seconds between background refreshes of the page. Null leaves it alone. */
   refresh?: number | null;
   /** Filters rendered above the panels and resolved from the querystring. */
   controls?: Record<string, ControlDef>;
   /** Builds the page. Called per request; must not write anything. */
   load(ctx: ViewCtx): Panel[] | Promise<Panel[]>;
+}
+
+/** A view's own share-link page — see `app` on `ViewDef`. */
+export interface ViewApp {
+  /**
+   * The browser script, relative to the view file. It must end in `.mjs`: the
+   * loader and the reload watcher read only `.ts` and `.js`, so the script is
+   * neither mistaken for a view nor treated as shared code, and it is read
+   * from disk on every request.
+   */
+  script: string;
+  /**
+   * What the script reads, as JSON — built from the same read-only `ctx` as
+   * `load()`, so it may do the maths and hand the page the answers.
+   */
+  data(ctx: ViewCtx): unknown | Promise<unknown>;
 }
 
 /** One table a view's share links may write to, with the tab label it shows under. */
@@ -446,6 +473,8 @@ export interface LoadedView extends ViewDef {
   folder: string | null;
   /** Content hash of the file, for the "updated" column. */
   hash: string;
+  /** Absolute path of `app.script`, checked at load. */
+  appScript?: string;
 }
 
 /** The read side of a data table. A view gets no writes, by construction. */
@@ -526,6 +555,15 @@ export function defineView(def: ViewDef): ViewDef {
   }
   if (!def.title?.trim()) throw new Error(`View "${def.name}" is missing a title`);
   if (typeof def.load !== "function") throw new Error(`View "${def.name}" has no load()`);
+  if (def.app) {
+    if (!def.shareable) {
+      throw new Error(`View "${def.name}" has an app, which is only served over share links — it needs shareable: true`);
+    }
+    if (!/^[\w./-]+\.mjs$/.test(def.app.script) || def.app.script.split("/").includes("..")) {
+      throw new Error(`View "${def.name}": app.script must be a .mjs file beside the view, e.g. "./app.mjs"`);
+    }
+    if (typeof def.app.data !== "function") throw new Error(`View "${def.name}": app has no data()`);
+  }
   if (def.entry?.length && !def.shareable) {
     throw new Error(
       `View "${def.name}" lists entry tables but is not shareable — entry is written through ` +
@@ -841,9 +879,19 @@ export async function loadViews(dir = "./views", version?: string): Promise<Load
       }
     }
 
+    let appScript: string | undefined;
+    if (def.app) {
+      appScript = resolve(dirname(file), def.app.script);
+      if (!appScript.startsWith(root + "/") || !existsSync(appScript)) {
+        errors.push(`${rel}: app.script "${def.app.script}" is not a file beside the view`);
+        continue;
+      }
+    }
+
     const slash = rel.lastIndexOf("/");
     loaded.push({
       ...def,
+      appScript,
       file: rel,
       folder: slash === -1 ? null : rel.slice(0, slash),
       hash: new Bun.CryptoHasher("sha256").update(await Bun.file(file).text()).digest("hex"),

@@ -41,6 +41,7 @@ import { z } from "zod";
 import type { Connector } from "../connectors/types.ts";
 import {
   allTables,
+  choicesFor,
   getTable,
   table as dataTable,
   type ColumnDef,
@@ -221,6 +222,15 @@ const TOOLS: Tool[] = [
           if (col.nullable) bits.push("optional");
           if (col.default !== undefined) bits.push(`default ${JSON.stringify(col.default)}`);
           if (col.kind === "enum") bits.push(`one of: ${(col.values ?? []).join(", ")}`);
+          if (col.from) {
+            const options = choicesFor(col);
+            bits.push(
+              `a ${col.from.table}.${col.from.column}` +
+                (options.length
+                  ? `: ${options.slice(0, 20).join(", ")}${options.length > 20 ? ", …" : ""}`
+                  : ` — none yet`),
+            );
+          }
           out.push(`  ${name} (${bits.join(", ")})${col.help ? ` — ${col.help}` : ""}`);
         }
         if (def.dedupe) {

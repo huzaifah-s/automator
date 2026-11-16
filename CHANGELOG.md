@@ -6,6 +6,35 @@ Entries record the *reasoning*, not just the diff — `git log` already has the
 diff. If a change settled a question, say what was settled and what the losing
 option was, so nobody relitigates it from scratch.
 
+## 2026-11-17
+
+### Split bills, and two widenings it needed
+
+`views/split/` is a Splitwise for the household and trips: groups with
+members and a usual split, expenses split equally / by % / by RM among ticked
+people, "pay someone back", and settle-up suggestions that use the fewest
+payments. Its share links open a phone app (`views/split/app.mjs`) rather
+than the generic entry forms.
+
+Two generic pieces came with it:
+
+- **`oneOf(table)` columns** — a dropdown of another table's live rows, so
+  people and groups are added from the phone rather than by commit. Stored as
+  the name, not an id: readable in SQL, at the cost that a renamed row orphans
+  its old values (accepted on an update that leaves them alone, refused on a
+  new write). `linkDefault` opens the form on the link holder.
+- **View apps** (`app` on a view) — a browser script a share link opens in
+  place of the panels. The generic forms were tried first, with the split
+  typed as text ("Huzaifah 70%, Zahidah 30%"); it was correct and nobody could
+  use it. The app reads only what the view's `data()` returns and writes only
+  through JSON routes with the same checks as the form routes. See AGENTS.md,
+  "Settled architecture".
+
+*Settled:* Home's "who owes whom" adds up each group's own settle-up list per
+pair, rather than simplifying across all groups at once. The global version
+can route a debt through a third person in another group, so the number on
+Home was not what settling the groups costs (RM 10 shown, RM 30 needed).
+
 ## 2026-11-14
 
 ### LinkedIn: a poster and a token reminder

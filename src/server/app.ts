@@ -118,6 +118,7 @@ import {
   secretFormPage,
   unauthorizedPage,
   publicViewPage,
+  viewAppPage,
   viewPage,
   viewsPage,
   workflowPage,
@@ -703,7 +704,41 @@ export function createApp(registry: Registry): Hono {
     if (!link || !def || !def.shareable) return c.notFound();
 
     noteViewLinkUse(link.id);
+    if (def.app && def.appScript) {
+      c.header("X-Robots-Tag", "noindex, nofollow");
+      c.header("Cache-Control", "no-store");
+      return c.html(
+        viewAppPage({
+          view: def,
+          // Read per request, so an edit to the script is live on the next
+          // load without the view reloader having to know about it.
+          script: await Bun.file(def.appScript).text(),
+          base: `/v/${c.req.param("token")}`,
+          label: link.label,
+        }) as any,
+      );
+    }
     return renderPublicView(c, link, def);
+  });
+
+  /*
+   * What a view's app reads — `app.data()`, with the same read-only ctx and
+   * the same checks as the page itself. A failure says only that it failed:
+   * the holder of a link does not get the stack.
+   */
+  app.get("/v/:token/data", async (c) => {
+    const link = resolveViewLink(c.req.param("token"));
+    const def = link ? viewRegistry.get(link.view) : undefined;
+    if (!link || !def || !def.shareable || !def.app) return c.notFound();
+    c.header("X-Robots-Tag", "noindex, nofollow");
+    c.header("Cache-Control", "no-store");
+    try {
+      const ctx = buildViewCtx(def, resolveControls(def, c.req.queries()), { isPublic: true });
+      return c.json(await def.app.data(ctx));
+    } catch (err) {
+      log.error(`View "${def.name}" app data failed — ${err instanceof Error ? err.message : err}`);
+      return c.json({ error: "This page could not be loaded. Whoever shared it with you can see why." }, 500);
+    }
   });
 
   /*
@@ -784,6 +819,60 @@ export function createApp(registry: Registry): Hono {
     }
     log.info(`Row ${c.req.param("id")} deleted from ${table.name} through share link "${link.label}"`);
     return c.redirect(backToTab(c.req.param("token"), table.name), 303);
+  });
+
+  /*
+   * The same three writes for a view's app, in JSON. Same `entryTarget`, same
+   * table client, same stamp — only the shapes differ: the body is the API's
+   * own units (money in cents, dates as YYYY-MM-DD), because a script is not a
+   * person typing "42.50", and the answer is `{ row }` or `{ error }` rather
+   * than a redirect.
+   */
+  const jsonBody = async (c: any): Promise<Record<string, unknown>> => {
+    const body = await c.req.json().catch(() => null);
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("expected a JSON object");
+    return body as Record<string, unknown>;
+  };
+
+  app.post("/v/:token/api/rows/:table", async (c) => {
+    const target = entryTarget(c.req.param("token"), c.req.param("table"));
+    if (!target) return c.notFound();
+    const { link, table } = target;
+    try {
+      const { row } = dataTable(table.name).insert(await jsonBody(c), {
+        writtenBy: `link:${link.label}`,
+        ifExists: "error",
+      });
+      log.info(`Row ${row.id} added to ${table.name} through share link "${link.label}"`);
+      return c.json({ row });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+  });
+
+  app.post("/v/:token/api/rows/:table/:id", async (c) => {
+    const target = entryTarget(c.req.param("token"), c.req.param("table"));
+    if (!target) return c.notFound();
+    const { link, table } = target;
+    try {
+      const row = dataTable(table.name).update(c.req.param("id"), await jsonBody(c), {
+        writtenBy: `link:${link.label}`,
+      });
+      return c.json({ row });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+  });
+
+  app.post("/v/:token/api/rows/:table/:id/delete", async (c) => {
+    const target = entryTarget(c.req.param("token"), c.req.param("table"));
+    if (!target) return c.notFound();
+    const { link, table } = target;
+    if (!dataTable(table.name).remove(c.req.param("id"))) {
+      return c.json({ error: "That entry is already deleted, or was never there." }, 400);
+    }
+    log.info(`Row ${c.req.param("id")} deleted from ${table.name} through share link "${link.label}"`);
+    return c.json({ ok: true });
   });
 
   /* --------------------------------------------------------------- auth */

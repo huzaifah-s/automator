@@ -155,6 +155,7 @@ export {
   datetime,
   json,
   enumOf,
+  oneOf,
 } from "./tables.ts";
 export type {
   AggregateOptions,
@@ -201,6 +202,7 @@ export type {
   SeriesPoint,
   StatItem,
   Tone,
+  ViewApp,
   ViewCtx,
   ViewDef,
 } from "./views.ts";
